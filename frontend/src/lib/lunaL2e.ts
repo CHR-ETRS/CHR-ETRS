@@ -1,7 +1,7 @@
 /**
- * Luna L2E — Sanctuary companion-persona state helpers (alias/skin inside Sanctuary).
+ * Luna L2E Portal — client-side state helpers for Luna’s own surface.
  * Organizational wellbeing / Learn-to-Earn demo — not clinical advice.
- * Not a governance agent; Dr. Cringe remains the sole named fiduciary/forensic agent.
+ * Luna is a standalone L2E agent. Dr. Cringe remains the sole named fiduciary/forensic agent.
  */
 
 export const STORAGE_KEY = 'chr-etrs-luna-l2e-v1'
@@ -295,16 +295,16 @@ export const PRESETS: Record<PresetId, { labelHe: string; labelEn: string; state
 }
 
 export const ASSUMPTIONS_HE: string[] = [
-  'לנה היא פרסונת ליווי (alias / skin) בתוך מקלט (Sanctuary) — לא מוצר ממשל נפרד ולא סוכן נאמנות.',
-  'Dr. Cringe הוא הנאמן/פורנזי היחיד בשם ב־CHR-ETRS. לנה לא מחליפה אותו ולא חותמת על חובות fiduciary.',
+  'לנה היא סוכנת L2E עצמאית עם פורטל משלה — לא alias/skin ולא פרסונת ליווי של מקלט (Sanctuary).',
+  'Dr. Cringe הוא הנאמן/פורנזי היחיד בשם ב־CHR-ETRS. לנה לא מחזיקה fiduciary ולא מבצעת forensic.',
   'זהו מודל לדיון ברווחה ארגונית ולמידת-כדי-להרוויח (L2E) — לא אבחנה קלינית, לא ייעוץ רפואי, לא טיפול.',
   'כפיות (Spoons) הן מטאפורה לתקציב אנרגיה יומי בעבודה. ברירת מחדל: 12. הוצאה מול השקעה הן קטגוריות ארגוניות.',
   'קוקייה (Cuckoo) מופיעה כשנותרו ≤2 כפיות: המלצה ארגונית להאט — לא אזהרה רפואית.',
   'HERO = Hope / Efficacy / Resilience / Optimism (הון פסיכולוגי ארגוני). הציון המשוקלל הוא ממוצע פשוט 0–100.',
   'משימות L2E מעניקות Chits בהדגמה מקומית. אין תשלום, אין ביומטריה, אין Slack.',
-  'EverStore הוא תצוגת חנות פנימית במקלט: יתרה מתעדכנת בדפדפן בלבד.',
+  'EverStore הוא תצוגת חנות בפורטל לנה: יתרה מתעדכנת בדפדפן בלבד.',
   'מגן רצף (Streak Shield) הוא אסימון הדגמה אחד שיכול לשמור רצף יומי אחרי «יום שפוספס».',
-  'Glass Box / פרטיות: מצב לנה נשמר ב־localStorage במכשיר זה. אין שליחה לשרת.',
+  'Glass Box / פרטיות: מצב לנה נשמר ב־localStorage במכשיר זה. הפורטל לא שולח נתונים לשרת.',
 ]
 
 export function spoonTotals(log: SpoonLogEntry[]): {

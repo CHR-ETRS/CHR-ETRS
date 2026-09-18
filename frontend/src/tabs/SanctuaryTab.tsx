@@ -87,9 +87,9 @@ export default function SanctuaryTab() {
 
       <section className="glass rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 border border-amber-500/20">
         <div>
-          <p className="text-sm font-semibold text-amber-100">לנה במקלט · למד כדי להרוויח</p>
+          <p className="text-sm font-semibold text-amber-100">לנה · למד כדי להרוויח</p>
           <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
-            פרסונת ליווי (alias / skin) בתוך המקלט — כפיות, HERO, L2E, EverStore. לא סוכן ממשל; Dr. Cringe נשאר
+            סוכנת L2E עצמאית — פורטל משלה (כפיות, HERO, EverStore). לא פרסונה של המקלט. Dr. Cringe נשאר
             הנאמן/פורנזי היחיד בשם.
           </p>
         </div>
@@ -100,7 +100,7 @@ export default function SanctuaryTab() {
           }}
           className="text-xs px-3 py-1.5 rounded-lg border border-amber-500/40 text-amber-100 hover:bg-amber-950/40 shrink-0"
         >
-          פתחי מצב לנה
+          לפורטל לנה
         </button>
       </section>
 

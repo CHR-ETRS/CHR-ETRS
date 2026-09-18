@@ -1,18 +1,18 @@
-# Luna L2E — Sanctuary companion surface (MVP)
+# Luna L2E Portal MVP — product spec
 
 ## Goal
-Employee-side **Learn-to-Earn (L2E)** surface: spoon energy budget, HERO capital, EverStore/Chits, streak shield. Hebrew RTL UI. Works as a tab in the existing Vite app AND as static GitHub Pages (client-side; no backend required for core UX).
+Employee-side CHR-ETRS companion: Learn-to-Earn (L2E), spoon energy budget, HERO capital, EverStore/Chits, streak shield. Hebrew RTL UI. Works as a new tab in the existing Vite app AND as static GitHub Pages (client-side; no backend required for core UX).
 
-## Product lock (architecture Option 1)
-**Luna is a product alias / skin / companion persona inside Sanctuary** (source-of-truth: architecture chapter 4). She is **not** a separate governance product and **not** a named fiduciary.
+## Product lock
+**Luna is a standalone agent in her own right**, with her own L2E Portal surface. She is **not** merely a Sanctuary alias / skin / companion persona.
 
-- Home product: **Sanctuary** (מרחב מקלט).
-- Luna: companion persona for L2E, spoons, HERO, EverStore — a skin of Sanctuary, not a second OS.
+- **Luna** — named L2E agent; owns spoons, HERO, quests, EverStore, streak shield.
+- **Sanctuary** — separate energy/wellbeing space (מחברת 02). Peer, not parent.
 - **Dr. Cringe** remains the **sole named fiduciary / forensic agent**. Luna does not audit, does not hold fiduciary duty, does not replace Cringe.
 
 ## Tab name
-**מקלט · לנה (L2E)** — Hebrew heading: לנה · למד כדי להרוויח  
-Deep link: `#luna` (from Sanctuary: `#welfare`).
+**Luna / L2E** (Hebrew label: לנה · למד כדי להרוויח)  
+Deep link: `#luna`
 
 ## Features (MVP)
 1. **Spoon tray** — daily budget (default 12), expenditure vs investment spoons; simple log of today’s drains/gains; warning when low; Cuckoo-style “slow down” banner when budget ≤ 2 (organizational framing only, not medical).
@@ -21,10 +21,10 @@ Deep link: `#luna` (from Sanctuary: `#welfare`).
 4. **EverStore preview** — spend Chits on 3 sample rewards (ergonomic upgrade, protected deep-work hour, recovery break); balance updates client-side.
 5. **Streak shield** — day streak counter + one “shield” token that can protect a missed day (demo).
 6. **Presets** — Healthy agency / Mid burn / Crisis (load sample spoon/HERO/Chits state).
-7. **Assumptions** panel — Glass Box / privacy; Sanctuary companion lock; Dr. Cringe is the sole named fiduciary; not clinical advice; static-preview banner on Pages.
+7. **Assumptions** panel — Glass Box / privacy; Luna is a standalone L2E agent; Dr. Cringe is the sole named fiduciary/forensic agent; not clinical advice; static-preview banner on Pages.
 
 ## Tech
-- Extend existing `/frontend` React+Vite Hebrew RTL app (same patterns as ChrIndexTab / SanctuaryTab).
+- Extend existing `/frontend` React+Vite Hebrew RTL app (same patterns as ChrIndexTab).
 - Client-side state + localStorage.
 - Graceful if API missing (Pages).
 - Update README HE+EN.
@@ -35,4 +35,4 @@ Deep link: `#luna` (from Sanctuary: `#welfare`).
 - Fiduciary / forensic workflows (those belong to Dr. Cringe).
 
 ## Done when
-- Companion surface usable end-to-end; copy frames Luna inside Sanctuary; build passes; README updated; PR or push to repo.
+- Luna’s own tab usable end-to-end; copy frames her as a standalone L2E agent (not a Sanctuary skin); build passes; README updated; PR or push to repo.
