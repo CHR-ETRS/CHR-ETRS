@@ -4,6 +4,20 @@ Hebrew RTL demo with Sanctuary UI, Capital (מחברת 04) shadow P&amp;L tab, *
 
 אב־טיפוס בעברית (RTL): מקדש רווחה, מאזן צללים, ומחשבון מדד CHR / חוב אושר.
 
+## איך לראות בלי להתקין / How to view
+
+**Public preview (no install):** [https://chr-etrs.github.io/CHR-ETRS/#chrIndex](https://chr-etrs.github.io/CHR-ETRS/#chrIndex)
+
+המחשבון רץ בדפדפן (RTL, עברית) — אין צורך ב־Node, Python או שרת. קריאות API הן נתיבים יחסיים; אם ה־mock לא זמין, מדד CHR / חוב אושר ממשיך לעבוד במלואו.
+
+The CHR Index Calculator is fully client-side. Other tabs that call the mock FastAPI will show a static/offline notice.
+
+If the URL 404s, the repo owner needs **one Settings toggle**:
+
+1. GitHub → **Settings → Pages** → Build and deployment → Source: **GitHub Actions**
+2. Then **Actions → Deploy GitHub Pages → Re-run** (or push to `main`)
+3. If the repo is **private** on GitHub Free, also **Settings → General → Change visibility → Public** so anyone with the link can open it (Pages on a private repo is not a public URL)
+
 ## Structure / מבנה
 
 - `backend/` — FastAPI mock API
@@ -37,7 +51,7 @@ Build check:
 cd frontend && npm install && npm run build
 ```
 
-Open http://localhost:5173 — Sanctuary (מחברת 02) is default; **מחברת 04** for CapitalTab; **מדד CHR / חוב אושר** for the calculator.
+Open http://localhost:5173 — default tab is **מדד CHR / חוב אושר** (`#chrIndex`); **מחברת 02** for Sanctuary; **מחברת 04** for CapitalTab.
 
 Swagger: http://localhost:8000/docs
 

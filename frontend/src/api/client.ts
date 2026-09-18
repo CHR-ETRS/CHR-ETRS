@@ -1,20 +1,32 @@
+/** Relative paths so a static GitHub Pages build can sit in front of an API, or work client-only. */
 const BASE = import.meta.env.VITE_API_URL ?? ''
 
-async function request<T>(path: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: T }> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  })
-  let data: T
+export type ApiResult<T> = { ok: boolean; status: number; data: T }
+
+async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   try {
-    data = await res.json()
+    const res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    })
+    let data: T
+    try {
+      data = await res.json()
+    } catch {
+      data = {} as T
+    }
+    return { ok: res.ok, status: res.status, data }
   } catch {
-    data = {} as T
+    // Offline / static hosting with no backend — callers treat status 0 as unreachable.
+    return { ok: false, status: 0, data: {} as T }
   }
-  return { ok: res.ok, status: res.status, data }
+}
+
+export async function health(): Promise<ApiResult<{ status?: string }>> {
+  return request('/health')
 }
 
 export async function synthesize(records: unknown[], token = 'Bearer demo-token') {

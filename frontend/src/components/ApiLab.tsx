@@ -79,7 +79,7 @@ export default function ApiLab() {
               <div key={r.label} className="rounded-lg bg-slate-900/80 p-2 border border-slate-700">
                 <div className="flex gap-2 mb-1">
                   <span className="text-amber-300">{r.label}</span>
-                  <span className={r.status < 300 ? 'text-emerald-400' : r.status === 423 || r.status === 403 ? 'text-amber-400' : 'text-red-400'}>
+                  <span className={r.status === 0 ? 'text-slate-400' : r.status < 300 ? 'text-emerald-400' : r.status === 423 || r.status === 403 ? 'text-amber-400' : 'text-red-400'}>
                     {r.status}
                   </span>
                 </div>

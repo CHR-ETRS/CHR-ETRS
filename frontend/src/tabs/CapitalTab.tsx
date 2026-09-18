@@ -103,7 +103,11 @@ export default function CapitalTab() {
       capex: 350_000,
     })
     if (!res.ok) {
-      setErr('לא הצלחתי להריץ סימולציה — בדקי שה־API רץ על פורט 8000.')
+      setErr(
+        res.status === 0
+          ? 'תצוגה סטטית: סימולציית המאזן דורשת את ה־API. מחשבון מדד CHR עובד בדפדפן בלי שרת.'
+          : 'לא הצלחתי להריץ סימולציה — בדקי שה־API רץ על פורט 8000.',
+      )
       setBusy(false)
       return
     }
