@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import ApiLab from './components/ApiLab'
 import CapitalTab from './tabs/CapitalTab'
 import ChrIndexTab from './tabs/ChrIndexTab'
+import LunaL2eTab from './tabs/LunaL2eTab'
 import PlaceholderTab from './tabs/PlaceholderTab'
 import SanctuaryTab from './tabs/SanctuaryTab'
 
@@ -11,6 +12,7 @@ type TabId =
   | 'core'
   | 'capital'
   | 'chrIndex'
+  | 'luna'
   | 'journey'
   | 'ops'
   | 'philosophy'
@@ -24,6 +26,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'core', label: 'מחברת 03 - ליבה וארכיטקטורה' },
   { id: 'capital', label: 'מחברת 04 - הון אנושי ופיננסים' },
   { id: 'chrIndex', label: 'מדד CHR / חוב אושר' },
+  { id: 'luna', label: 'לנה · למד כדי להרוויח' },
   { id: 'journey', label: 'מחברת 05 - מסע עובד והתפתחות' },
   { id: 'ops', label: 'מחברת 06 - תפעול ו־Playbooks' },
   { id: 'philosophy', label: 'מחברת 07 - פילוסופיה ואתיקה' },
@@ -32,8 +35,29 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'sources', label: 'מחברת 11 - ספריית מקורות' },
 ]
 
+const TAB_IDS = new Set<string>(TABS.map((t) => t.id))
+const DEFAULT_TAB: TabId = 'welfare'
+
+function tabFromHash(): TabId {
+  const raw = decodeURIComponent(window.location.hash.replace(/^#/, ''))
+  return TAB_IDS.has(raw) ? (raw as TabId) : DEFAULT_TAB
+}
+
 export default function App() {
-  const [tab, setTab] = useState<TabId>('welfare')
+  const [tab, setTab] = useState<TabId>(tabFromHash)
+
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  function selectTab(id: TabId) {
+    setTab(id)
+    if (window.location.hash.replace(/^#/, '') !== id) {
+      history.replaceState(null, '', `#${id}`)
+    }
+  }
 
   return (
     <div dir="rtl" className="min-h-screen bg-slate-950 text-slate-100">
@@ -53,7 +77,7 @@ export default function App() {
               <li key={t.id}>
                 <button
                   type="button"
-                  onClick={() => setTab(t.id)}
+                  onClick={() => selectTab(t.id)}
                   className={
                     'px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-colors ' +
                     (tab === t.id
@@ -76,6 +100,7 @@ export default function App() {
         {tab === 'core' && <PlaceholderTab title="מחברת 03 - ליבה וארכיטקטורה" notebookHint="ארכיטקטורת CHR-ETRS" />}
         {tab === 'capital' && <CapitalTab />}
         {tab === 'chrIndex' && <ChrIndexTab />}
+        {tab === 'luna' && <LunaL2eTab />}
         {tab === 'journey' && <PlaceholderTab title="מחברת 05 - מסע עובד והתפתחות" notebookHint="מסלולי התפתחות" />}
         {tab === 'ops' && <PlaceholderTab title="מחברת 06 - תפעול ו־Playbooks" notebookHint="Playbooks" />}
         {tab === 'philosophy' && <PlaceholderTab title="מחברת 07 - פילוסופיה ואתיקה" notebookHint="אתיקה ופרטיות" />}

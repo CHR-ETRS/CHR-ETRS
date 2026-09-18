@@ -1,14 +1,15 @@
 # CHR-ETRS Sprint 1 Prototype
 
-Hebrew RTL demo with Sanctuary UI, Capital (מחברת 04) shadow P&amp;L tab, **CHR Index / Happiness Debt calculator**, and mock API.
+Hebrew RTL demo with Sanctuary UI, Capital (מחברת 04) shadow P&amp;L tab, **CHR Index / Happiness Debt calculator**, **Luna L2E Portal**, and mock API.
 
-אב־טיפוס בעברית (RTL): מקדש רווחה, מאזן צללים, ומחשבון מדד CHR / חוב אושר.
+אב־טיפוס בעברית (RTL): מקדש רווחה, מאזן צללים, מחשבון מדד CHR / חוב אושר, ופורטל לנה · למד כדי להרוויח.
 
 ## Structure / מבנה
 
 - `backend/` — FastAPI mock API
 - `frontend/` — Vite React + TypeScript + Tailwind (RTL)
 - `CHR-INDEX-CALCULATOR-SPEC.md` — product spec for the calculator MVP
+- `LUNA-L2E-PORTAL-SPEC.md` — product spec for the Luna / Learn-to-Earn portal
 - `chr-etrs-refs/` — formula notes and API brief excerpts
 
 ## How to run / הרצה
@@ -31,13 +32,16 @@ npm install
 npm run dev
 ```
 
-Build check:
+Build check (including GitHub Pages base path):
 
 ```bash
 cd frontend && npm install && npm run build
+VITE_BASE=/CHR-ETRS/ npm run build
 ```
 
-Open http://localhost:5173 — Sanctuary (מחברת 02) is default; **מחברת 04** for CapitalTab; **מדד CHR / חוב אושר** for the calculator.
+Open http://localhost:5173 — Sanctuary (מחברת 02) is default; **מחברת 04** for CapitalTab; **מדד CHR / חוב אושר** for the calculator; **לנה · למד כדי להרוויח** (`#luna`) for Luna / L2E.
+
+After merge to `main`, the static preview is [https://chr-etrs.github.io/CHR-ETRS/](https://chr-etrs.github.io/CHR-ETRS/) — open the **לנה · למד כדי להרוויח** tab, or go directly to [https://chr-etrs.github.io/CHR-ETRS/#luna](https://chr-etrs.github.io/CHR-ETRS/#luna).
 
 Swagger: http://localhost:8000/docs
 
@@ -75,6 +79,24 @@ Aligned with `chr-etrs-refs/finance_formulas.md` (deprivation tax 12%, diluted w
 - High debt severity; masking + Integrity flags
 - Large DT vs RoH=0 → Adjusted EBITDA well below nominal
 
+## לנה · למד כדי להרוויח (Luna / L2E)
+
+Employee-side companion in `frontend/src/tabs/LunaL2eTab.tsx` + state helpers in `frontend/src/lib/lunaL2e.ts`. Fully client-side: **no backend required**. State persists in `localStorage` (`chr-etrs-luna-l2e-v1`). GitHub Pages shows a static-preview banner (`VITE_BASE=/CHR-ETRS/`).
+
+פורטל עובד בצד הלקוח בלבד (גם ב־GitHub Pages). שמירה ב־localStorage. מסגור רווחה ארגונית — **לא ייעוץ קליני/רפואי**.
+
+| Block | What it does / מה יש |
+|--------|------------------------|
+| Spoon tray / מגש כפיות | Daily budget 12; expenditure vs investment vs recovery log; low-budget warning; Cuckoo «slow down» at ≤2 spoons |
+| HERO panel / לוח HERO | Hope · Efficacy · Resilience · Optimism sliders 0–100 + composite + Hebrew nudge |
+| L2E quests | 5 sample quests (meta-skill, deep work, peer help, knowledge share, calendar boundary) → **Chits** |
+| EverStore | Spend Chits on ergonomic upgrade, protected deep-work hour, recovery break |
+| Streak shield / מגן רצף | Day streak + one demo shield token that can protect a missed day |
+| Presets | **סוכנות בריאה** / **שחיקה בינונית** / **משבר / עומס** |
+| Assumptions | Glass Box / privacy (browser-only); not clinical advice |
+
+Out of scope: real biometrics/HRV, Slack, ZK vault, payments.
+
 ## Sprint 1 — Capital tab
 
 - UI: `frontend/src/tabs/CapitalTab.tsx` — מאזן צללים hero, mini-simulator, concepts, VOI button, source library.
@@ -96,6 +118,16 @@ Aligned with `chr-etrs-refs/finance_formulas.md` (deprivation tax 12%, diluted w
 
 CORS for Vite origin. Hebrew UI; English identifiers.
 
+## GitHub Pages / `VITE_BASE`
+
+Project Pages URL: `https://chr-etrs.github.io/CHR-ETRS/` (assets under `/CHR-ETRS/`). `frontend/vite.config.ts` reads `VITE_BASE` at build time; local `npm run dev` stays at `/`.
+
+```bash
+cd frontend && VITE_BASE=/CHR-ETRS/ npm run build
+```
+
+`frontend/public/.nojekyll` is copied into `dist` so Pages does not skip files that start with `_`.
+
 ## Roadmap (next)
 
-Meeting Load · Luna · Dr. Cringe — after this calculator MVP.
+Meeting Load · Dr. Cringe — after Luna L2E MVP.
