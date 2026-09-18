@@ -1,20 +1,33 @@
 const BASE = import.meta.env.VITE_API_URL ?? ''
 
+/** Production static host (GitHub Pages) with no API origin configured. */
+export function isStaticPreview(): boolean {
+  return import.meta.env.PROD && !import.meta.env.VITE_API_URL
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: T }> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
-  })
-  let data: T
   try {
-    data = await res.json()
+    const res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {}),
+      },
+    })
+    let data: T
+    try {
+      data = await res.json()
+    } catch {
+      data = {} as T
+    }
+    return { ok: res.ok, status: res.status, data }
   } catch {
-    data = {} as T
+    return {
+      ok: false,
+      status: 0,
+      data: { detail: 'API unavailable — static preview (no backend).' } as T,
+    }
   }
-  return { ok: res.ok, status: res.status, data }
 }
 
 export async function synthesize(records: unknown[], token = 'Bearer demo-token') {

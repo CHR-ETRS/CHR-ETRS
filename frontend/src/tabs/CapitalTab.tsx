@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { financeSimulate, voi, type FinanceSimulateResult } from '../api/client'
+import { financeSimulate, isStaticPreview, voi, type FinanceSimulateResult } from '../api/client'
 
 const ILS = (n: number, digits = 0) =>
   n.toLocaleString('he-IL', { maximumFractionDigits: digits, minimumFractionDigits: digits })
@@ -103,7 +103,11 @@ export default function CapitalTab() {
       capex: 350_000,
     })
     if (!res.ok) {
-      setErr('לא הצלחתי להריץ סימולציה — בדקי שה־API רץ על פורט 8000.')
+      setErr(
+        isStaticPreview()
+          ? 'תצוגה סטטית — סימולציית המאזן דורשת API מקומי. מחשבון מדד CHR (למעלה בטאב) עובד ללא שרת.'
+          : 'לא הצלחתי להריץ סימולציה — בדקי שה־API רץ על פורט 8000.',
+      )
       setBusy(false)
       return
     }
@@ -112,6 +116,10 @@ export default function CapitalTab() {
   }, [n, salary, turnover, deprivation])
 
   useEffect(() => {
+    if (isStaticPreview()) {
+      setErr('תצוגה סטטית — סימולציית המאזן דורשת API מקומי. מחשבון מדד CHR עובד ללא שרת.')
+      return
+    }
     void runSim()
   }, [runSim])
 
