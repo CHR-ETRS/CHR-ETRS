@@ -183,11 +183,20 @@ export default function SanctuaryTab() {
           {busy ? 'שולח…' : 'בדוק מעגל מגן'}
         </button>
         {cbPanel && (
-          <div className={`rounded-xl p-4 text-sm border ${cbPanel.status === 423 ? 'border-red-500/40 bg-red-950/40' : 'border-emerald-500/40 bg-emerald-950/40'}`}>
+          <div className={`rounded-xl p-4 text-sm border ${cbPanel.status === 0 ? 'border-slate-600 bg-slate-900/60' : cbPanel.status === 423 ? 'border-red-500/40 bg-red-950/40' : 'border-emerald-500/40 bg-emerald-950/40'}`}>
             <p className="font-semibold mb-1">
-              {cbPanel.status === 423 ? '🚫 חסום (423)' : '✅ מאושר'} — HTTP {cbPanel.status}
+              {cbPanel.status === 0
+                ? 'תצוגה סטטית — אין API'
+                : cbPanel.status === 423
+                  ? '🚫 חסום (423)'
+                  : '✅ מאושר'}{' '}
+              — HTTP {cbPanel.status}
             </p>
-            <p className="text-slate-300">{String(cbPanel.body.message ?? '')}</p>
+            <p className="text-slate-300">
+              {cbPanel.status === 0
+                ? 'מעגל המגן דורש את שרת ה־mock. מחשבון מדד CHR עובד במלואו בלי שרת.'
+                : String(cbPanel.body.message ?? '')}
+            </p>
             <p className="text-xs text-slate-500 mt-2 font-mono">
               stamina={String(cbPanel.body.team_stamina)} / threshold={String(cbPanel.body.critical_threshold)} · {String(cbPanel.body.recommendation ?? '')}
             </p>

@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { health } from './api/client'
 import ApiLab from './components/ApiLab'
 import CapitalTab from './tabs/CapitalTab'
 import ChrIndexTab from './tabs/ChrIndexTab'
@@ -32,8 +33,41 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'sources', label: 'מחברת 11 - ספריית מקורות' },
 ]
 
+const TAB_IDS = new Set<string>(TABS.map((t) => t.id))
+const DEFAULT_TAB: TabId = 'chrIndex'
+
+function tabFromHash(): TabId {
+  const raw = decodeURIComponent(window.location.hash.replace(/^#/, ''))
+  return TAB_IDS.has(raw) ? (raw as TabId) : DEFAULT_TAB
+}
+
 export default function App() {
-  const [tab, setTab] = useState<TabId>('welfare')
+  const [tab, setTab] = useState<TabId>(tabFromHash)
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (!window.location.hash) {
+      history.replaceState(null, '', `#${DEFAULT_TAB}`)
+    }
+    const onHash = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  useEffect(() => {
+    const ac = new AbortController()
+    void health().then((res) => {
+      if (!ac.signal.aborted) setApiOnline(res.ok)
+    })
+    return () => ac.abort()
+  }, [])
+
+  function selectTab(id: TabId) {
+    setTab(id)
+    if (window.location.hash.replace(/^#/, '') !== id) {
+      history.replaceState(null, '', `#${id}`)
+    }
+  }
 
   return (
     <div dir="rtl" className="min-h-screen bg-slate-950 text-slate-100">
@@ -44,7 +78,7 @@ export default function App() {
             <p className="text-xs text-slate-500">Sprint 1 Prototype</p>
           </div>
           <span className="text-xs px-2 py-1 rounded-md bg-slate-800 text-slate-400 border border-slate-700">
-            mock · in-memory
+            {apiOnline === false ? 'client-only · מחשבון בדפדפן' : 'mock · in-memory'}
           </span>
         </div>
         <nav className="max-w-6xl mx-auto px-2 pb-2 overflow-x-auto">
@@ -53,7 +87,7 @@ export default function App() {
               <li key={t.id}>
                 <button
                   type="button"
-                  onClick={() => setTab(t.id)}
+                  onClick={() => selectTab(t.id)}
                   className={
                     'px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-colors ' +
                     (tab === t.id
@@ -77,7 +111,7 @@ export default function App() {
         {tab === 'capital' && <CapitalTab />}
         {tab === 'chrIndex' && <ChrIndexTab />}
         {tab === 'journey' && <PlaceholderTab title="מחברת 05 - מסע עובד והתפתחות" notebookHint="מסלולי התפתחות" />}
-        {tab === 'ops' && <PlaceholderTab title="מחברת 06 - תפעול ו־Playbooks" notebookHint="Playbooks" />}
+        {tab === 'ops' && <PlaceholderTab title="מחברת 06 - תפעול ו־Playbooks" notebookHint="תפעול ו־Playbooks" />}
         {tab === 'philosophy' && <PlaceholderTab title="מחברת 07 - פילוסופיה ואתיקה" notebookHint="אתיקה ופרטיות" />}
         {tab === 'market' && <PlaceholderTab title="מחברת 08 - שוק ו־Case Studies" notebookHint="שוק ומקרי בוחן" />}
         {tab === 'health' && <PlaceholderTab title="מחברת 10 - מוצר ובריאות (HealthHarbor)" notebookHint="HealthHarbor" />}
