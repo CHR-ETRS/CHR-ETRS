@@ -23,6 +23,13 @@ function alertFromHrv(hrv: number): AlertState {
 
 const ALERT_HE = { healthy: 'תקין', throttle: 'האטה', brake: 'נעילה' } as const
 
+function cbStatusKind(status: number): 'offline' | 'blocked' | 'approved' | 'error' {
+  if (status === 423) return 'blocked'
+  if (status === 0 || status === 404 || status === 405 || status === 501) return 'offline'
+  if (status >= 200 && status < 300) return 'approved'
+  return 'error'
+}
+
 const MICRO: Record<AlertState, string> = {
   healthy: 'המערכת רגועה. אפשר להמשיך במשימות ובמפגשים בקצב טבעי.',
   throttle: 'זוהתה ירידה באנרגיה. האט/י את הקצב — משימות כבדות נעולות זמנית.',
@@ -183,17 +190,30 @@ export default function SanctuaryTab() {
           {busy ? 'שולח…' : 'בדוק מעגל מגן'}
         </button>
         {cbPanel && (
-          <div className={`rounded-xl p-4 text-sm border ${cbPanel.status === 0 ? 'border-slate-600 bg-slate-900/60' : cbPanel.status === 423 ? 'border-red-500/40 bg-red-950/40' : 'border-emerald-500/40 bg-emerald-950/40'}`}>
+          <div
+            className={
+              'rounded-xl p-4 text-sm border ' +
+              (cbStatusKind(cbPanel.status) === 'offline'
+                ? 'border-slate-600 bg-slate-900/60'
+                : cbStatusKind(cbPanel.status) === 'blocked'
+                  ? 'border-red-500/40 bg-red-950/40'
+                  : cbStatusKind(cbPanel.status) === 'approved'
+                    ? 'border-emerald-500/40 bg-emerald-950/40'
+                    : 'border-amber-500/40 bg-amber-950/40')
+            }
+          >
             <p className="font-semibold mb-1">
-              {cbPanel.status === 0
+              {cbStatusKind(cbPanel.status) === 'offline'
                 ? 'תצוגה סטטית — אין API'
-                : cbPanel.status === 423
+                : cbStatusKind(cbPanel.status) === 'blocked'
                   ? '🚫 חסום (423)'
-                  : '✅ מאושר'}{' '}
+                  : cbStatusKind(cbPanel.status) === 'approved'
+                    ? '✅ מאושר'
+                    : 'שגיאת API'}{' '}
               — HTTP {cbPanel.status}
             </p>
             <p className="text-slate-300">
-              {cbPanel.status === 0
+              {cbStatusKind(cbPanel.status) === 'offline'
                 ? 'מעגל המגן דורש את שרת ה־mock. מחשבון מדד CHR עובד במלואו בלי שרת.'
                 : String(cbPanel.body.message ?? '')}
             </p>
