@@ -23,10 +23,10 @@ type TabId =
 const TABS: { id: TabId; label: string }[] = [
   { id: 'knowledge', label: 'מחברת 01 - ידע ומדיה' },
   { id: 'welfare', label: 'מחברת 02 - רווחה / נפש / חוסן' },
+  { id: 'luna', label: 'מקלט · לנה (L2E)' },
   { id: 'core', label: 'מחברת 03 - ליבה וארכיטקטורה' },
   { id: 'capital', label: 'מחברת 04 - הון אנושי ופיננסים' },
   { id: 'chrIndex', label: 'מדד CHR / חוב אושר' },
-  { id: 'luna', label: 'לנה · למד כדי להרוויח' },
   { id: 'journey', label: 'מחברת 05 - מסע עובד והתפתחות' },
   { id: 'ops', label: 'מחברת 06 - תפעול ו־Playbooks' },
   { id: 'philosophy', label: 'מחברת 07 - פילוסופיה ואתיקה' },
@@ -96,11 +96,11 @@ export default function App() {
       <main className="max-w-6xl mx-auto px-4 py-6 space-y-4">
         <ApiLab />
         {tab === 'welfare' && <SanctuaryTab />}
+        {tab === 'luna' && <LunaL2eTab />}
         {tab === 'knowledge' && <PlaceholderTab title="מחברת 01 - ידע ומדיה" notebookHint="ידע ארגוני, מדיה ותוכן" />}
         {tab === 'core' && <PlaceholderTab title="מחברת 03 - ליבה וארכיטקטורה" notebookHint="ארכיטקטורת CHR-ETRS" />}
         {tab === 'capital' && <CapitalTab />}
         {tab === 'chrIndex' && <ChrIndexTab />}
-        {tab === 'luna' && <LunaL2eTab />}
         {tab === 'journey' && <PlaceholderTab title="מחברת 05 - מסע עובד והתפתחות" notebookHint="מסלולי התפתחות" />}
         {tab === 'ops' && <PlaceholderTab title="מחברת 06 - תפעול ו־Playbooks" notebookHint="Playbooks" />}
         {tab === 'philosophy' && <PlaceholderTab title="מחברת 07 - פילוסופיה ואתיקה" notebookHint="אתיקה ופרטיות" />}

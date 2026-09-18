@@ -78,18 +78,37 @@ export default function LunaL2eTab() {
 
   return (
     <div className="space-y-6">
+      <div className="glass rounded-2xl px-4 py-3 text-sm border border-emerald-500/30 bg-emerald-950/20 text-emerald-100/90 leading-relaxed">
+        <strong>מקלט · לנה.</strong> פרסונת ליווי (alias / skin) בתוך Sanctuary — לא סוכן ממשל נפרד.{' '}
+        Dr. Cringe נשאר הנאמן/פורנזי היחיד בשם. כפיות · HERO · L2E · EverStore הן שכבת ליווי ארגונית (לא ייעוץ
+        קליני).
+      </div>
+
       {pages && (
         <div className="rounded-2xl px-4 py-3 text-sm border border-sky-500/40 bg-sky-950/30 text-sky-100">
-          <strong>תצוגה סטטית · GitHub Pages.</strong> פורטל לנה / L2E רץ בדפדפן בלבד (localStorage) — אין צורך
+          <strong>תצוגה סטטית · GitHub Pages.</strong> מצב לנה במקלט רץ בדפדפן בלבד (localStorage) — אין צורך
           ב־backend.
         </div>
       )}
 
       <header className="glass rounded-2xl p-5 flex flex-wrap items-center justify-between gap-4">
         <div>
+          <p className="text-xs text-slate-500 mb-1">
+            <button
+              type="button"
+              onClick={() => {
+                window.location.hash = 'welfare'
+              }}
+              className="hover:text-amber-200 underline-offset-2 hover:underline"
+            >
+              מקלט (Sanctuary)
+            </button>
+            <span className="px-1.5">·</span>
+            <span>פרסונת ליווי</span>
+          </p>
           <h2 className="text-2xl font-bold text-amber-100">לנה · למד כדי להרוויח</h2>
           <p className="text-slate-400 text-sm mt-1">
-            Luna / L2E · תקציב כפיות · הון HERO · EverStore · מגן רצף · מודל ארגוני (לא ייעוץ קליני)
+            L2E במקלט · כפיות · HERO · EverStore · לא נאמן/פורנזי
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -181,7 +200,7 @@ export default function LunaL2eTab() {
 
       <details className="glass rounded-2xl p-5 group">
         <summary className="cursor-pointer font-semibold text-slate-200 list-none flex items-center justify-between">
-          <span>הנחות · Glass Box · פרטיות</span>
+          <span>הנחות · מקלט · Glass Box</span>
           <span className="text-xs text-slate-500 group-open:hidden">לחצי לפתיחה</span>
         </summary>
         <ul className="mt-3 space-y-2 text-sm text-slate-400 list-disc pr-5 leading-relaxed">

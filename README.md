@@ -1,15 +1,15 @@
 # CHR-ETRS Sprint 1 Prototype
 
-Hebrew RTL demo with Sanctuary UI, Capital (מחברת 04) shadow P&amp;L tab, **CHR Index / Happiness Debt calculator**, **Luna L2E Portal**, and mock API.
+Hebrew RTL demo with Sanctuary UI, Capital (מחברת 04) shadow P&amp;L tab, **CHR Index / Happiness Debt calculator**, **Luna L2E (Sanctuary companion persona)**, and mock API.
 
-אב־טיפוס בעברית (RTL): מקדש רווחה, מאזן צללים, מחשבון מדד CHR / חוב אושר, ופורטל לנה · למד כדי להרוויח.
+אב־טיפוס בעברית (RTL): מקדש רווחה, מאזן צללים, מחשבון מדד CHR / חוב אושר, ולנה במקלט · למד כדי להרוויח.
 
 ## Structure / מבנה
 
 - `backend/` — FastAPI mock API
 - `frontend/` — Vite React + TypeScript + Tailwind (RTL)
 - `CHR-INDEX-CALCULATOR-SPEC.md` — product spec for the calculator MVP
-- `LUNA-L2E-PORTAL-SPEC.md` — product spec for the Luna / Learn-to-Earn portal
+- `LUNA-L2E-PORTAL-SPEC.md` — Luna L2E companion surface (persona inside Sanctuary)
 - `chr-etrs-refs/` — formula notes and API brief excerpts
 
 ## How to run / הרצה
@@ -39,9 +39,9 @@ cd frontend && npm install && npm run build
 VITE_BASE=/CHR-ETRS/ npm run build
 ```
 
-Open http://localhost:5173 — Sanctuary (מחברת 02) is default; **מחברת 04** for CapitalTab; **מדד CHR / חוב אושר** for the calculator; **לנה · למד כדי להרוויח** (`#luna`) for Luna / L2E.
+Open http://localhost:5173 — Sanctuary (מחברת 02) is default; **מקלט · לנה (L2E)** (`#luna`) is Luna’s companion skin inside Sanctuary; **מחברת 04** for CapitalTab; **מדד CHR / חוב אושר** for the calculator.
 
-After merge to `main`, the static preview is [https://chr-etrs.github.io/CHR-ETRS/](https://chr-etrs.github.io/CHR-ETRS/) — open the **לנה · למד כדי להרוויח** tab, or go directly to [https://chr-etrs.github.io/CHR-ETRS/#luna](https://chr-etrs.github.io/CHR-ETRS/#luna).
+After merge to `main`, the static preview is [https://chr-etrs.github.io/CHR-ETRS/](https://chr-etrs.github.io/CHR-ETRS/) — from Sanctuary click **פתחי מצב לנה**, or go directly to [https://chr-etrs.github.io/CHR-ETRS/#luna](https://chr-etrs.github.io/CHR-ETRS/#luna).
 
 Swagger: http://localhost:8000/docs
 
@@ -79,11 +79,15 @@ Aligned with `chr-etrs-refs/finance_formulas.md` (deprivation tax 12%, diluted w
 - High debt severity; masking + Integrity flags
 - Large DT vs RoH=0 → Adjusted EBITDA well below nominal
 
-## לנה · למד כדי להרוויח (Luna / L2E)
+## מקלט · לנה (L2E) — Sanctuary companion persona
 
-Employee-side companion in `frontend/src/tabs/LunaL2eTab.tsx` + state helpers in `frontend/src/lib/lunaL2e.ts`. Fully client-side: **no backend required**. State persists in `localStorage` (`chr-etrs-luna-l2e-v1`). GitHub Pages shows a static-preview banner (`VITE_BASE=/CHR-ETRS/`).
+**Architecture lock:** Luna is an alias / skin / companion persona **inside Sanctuary**, not a standalone governance product. **Dr. Cringe** remains the sole named fiduciary / forensic agent.
 
-פורטל עובד בצד הלקוח בלבד (גם ב־GitHub Pages). שמירה ב־localStorage. מסגור רווחה ארגונית — **לא ייעוץ קליני/רפואי**.
+נעילת ארכיטקטורה: לנה היא פרסונת ליווי בתוך המקלט — לא סוכן ממשל נפרד. Dr. Cringe הוא הנאמן/פורנזי היחיד בשם.
+
+UI: `frontend/src/tabs/LunaL2eTab.tsx` + `frontend/src/lib/lunaL2e.ts`. Entry from Sanctuary (`frontend/src/tabs/SanctuaryTab.tsx`). Fully client-side: **no backend required**. State persists in `localStorage` (`chr-etrs-luna-l2e-v1`). GitHub Pages shows a static-preview banner (`VITE_BASE=/CHR-ETRS/`).
+
+מצב לנה רץ בצד הלקוח בלבד. שמירה ב־localStorage. מסגור רווחה ארגונית — **לא ייעוץ קליני/רפואי**.
 
 | Block | What it does / מה יש |
 |--------|------------------------|
@@ -93,7 +97,7 @@ Employee-side companion in `frontend/src/tabs/LunaL2eTab.tsx` + state helpers in
 | EverStore | Spend Chits on ergonomic upgrade, protected deep-work hour, recovery break |
 | Streak shield / מגן רצף | Day streak + one demo shield token that can protect a missed day |
 | Presets | **סוכנות בריאה** / **שחיקה בינונית** / **משבר / עומס** |
-| Assumptions | Glass Box / privacy (browser-only); not clinical advice |
+| Assumptions | Glass Box / privacy; Luna ⊂ Sanctuary; Dr. Cringe is the sole named fiduciary; not clinical advice |
 
 Out of scope: real biometrics/HRV, Slack, ZK vault, payments.
 
