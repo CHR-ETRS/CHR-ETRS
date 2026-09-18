@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { synthesize, sentiment, voi, circuitBreaker } from '../api/client'
+import { synthesize, sentiment, voi, circuitBreaker, isStaticPreview } from '../api/client'
 
 type Result = { label: string; status: number; body: unknown }
 
@@ -11,6 +11,7 @@ export default function ApiLab() {
   async function runAll() {
     setBusy(true)
     const out: Result[] = []
+    try {
 
     const syn = await synthesize([
       {
@@ -50,8 +51,10 @@ export default function ApiLab() {
     })
     out.push({ label: 'POST /circuit-breaker (force_stamina=55)', status: cbOk.status, body: cbOk.data })
 
-    setResults(out)
-    setBusy(false)
+      setResults(out)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -66,6 +69,12 @@ export default function ApiLab() {
       </button>
       {open && (
         <div className="p-4 border-t border-slate-700/50 space-y-3">
+          {isStaticPreview() && (
+            <p className="text-xs text-slate-400">
+              תצוגה סטטית: אין שרת FastAPI. מחשבון מדד CHR לא צריך API.{' '}
+              <span dir="ltr">Static preview — mock API is not deployed on GitHub Pages.</span>
+            </p>
+          )}
           <button
             type="button"
             disabled={busy}

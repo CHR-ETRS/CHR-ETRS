@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { isStaticPreview } from './api/client'
 import ApiLab from './components/ApiLab'
 import CapitalTab from './tabs/CapitalTab'
 import ChrIndexTab from './tabs/ChrIndexTab'
@@ -32,8 +33,26 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'sources', label: 'מחברת 11 - ספריית מקורות' },
 ]
 
+function tabFromUrl(): TabId | null {
+  const q = new URLSearchParams(window.location.search).get('tab')
+  if (q && TABS.some((t) => t.id === q)) return q as TabId
+  return null
+}
+
+function initialTab(): TabId {
+  return tabFromUrl() ?? (isStaticPreview() ? 'chrIndex' : 'welfare')
+}
+
+function selectTab(id: TabId, setTab: (id: TabId) => void) {
+  setTab(id)
+  const url = new URL(window.location.href)
+  url.searchParams.set('tab', id)
+  window.history.replaceState({}, '', url)
+}
+
 export default function App() {
-  const [tab, setTab] = useState<TabId>('welfare')
+  const [tab, setTab] = useState<TabId>(initialTab)
+  const staticPreview = isStaticPreview()
 
   return (
     <div dir="rtl" className="min-h-screen bg-slate-950 text-slate-100">
@@ -44,7 +63,7 @@ export default function App() {
             <p className="text-xs text-slate-500">Sprint 1 Prototype</p>
           </div>
           <span className="text-xs px-2 py-1 rounded-md bg-slate-800 text-slate-400 border border-slate-700">
-            mock · in-memory
+            {staticPreview ? 'static preview · no API' : 'mock · in-memory'}
           </span>
         </div>
         <nav className="max-w-6xl mx-auto px-2 pb-2 overflow-x-auto">
@@ -53,7 +72,7 @@ export default function App() {
               <li key={t.id}>
                 <button
                   type="button"
-                  onClick={() => setTab(t.id)}
+                  onClick={() => selectTab(t.id, setTab)}
                   className={
                     'px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-colors ' +
                     (tab === t.id
@@ -70,6 +89,18 @@ export default function App() {
       </div>
 
       <main className="max-w-6xl mx-auto px-4 py-6 space-y-4">
+        {staticPreview && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-950/30 px-4 py-3 text-sm text-amber-100/90">
+            <p>
+              תצוגה סטטית — מחשבון <strong>מדד CHR / חוב אושר</strong> רץ בדפדפן בלבד. ה־API המקומי אינו זמין
+              כאן (מעבדה ומאזן צללים דורשים הרצה מקומית).
+            </p>
+            <p className="text-amber-200/70 text-xs mt-1" dir="ltr">
+              Static preview: the CHR Index / Happiness Debt calculator is fully client-side. Mock API
+              endpoints are not hosted on GitHub Pages.
+            </p>
+          </div>
+        )}
         <ApiLab />
         {tab === 'welfare' && <SanctuaryTab />}
         {tab === 'knowledge' && <PlaceholderTab title="מחברת 01 - ידע ומדיה" notebookHint="ידע ארגוני, מדיה ותוכן" />}

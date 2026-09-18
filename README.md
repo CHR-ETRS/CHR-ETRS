@@ -4,6 +4,38 @@ Hebrew RTL demo with Sanctuary UI, Capital (מחברת 04) shadow P&amp;L tab, *
 
 אב־טיפוס בעברית (RTL): מקדש רווחה, מאזן צללים, ומחשבון מדד CHR / חוב אושר.
 
+## Public preview / תצוגה ציבורית (ללא התקנה)
+
+**Live app:** [https://chr-etrs.github.io/CHR-ETRS/](https://chr-etrs.github.io/CHR-ETRS/?tab=chrIndex)
+
+מחשבון מדד CHR / חוב אושר רץ כולו בדפדפן (סטטי). אין צורך ב־`npm`, Python, או סוכן.
+
+The CHR Index / Happiness Debt calculator is fully client-side. Open the HTTPS link in a normal browser — no local setup.
+
+| | |
+|---|---|
+| **Calculator** | [https://chr-etrs.github.io/CHR-ETRS/?tab=chrIndex](https://chr-etrs.github.io/CHR-ETRS/?tab=chrIndex) |
+| **App home** | [https://chr-etrs.github.io/CHR-ETRS/](https://chr-etrs.github.io/CHR-ETRS/) |
+
+GitHub Pages hosts only the static frontend. Mock FastAPI routes (מעבדה / מאזן צללים) are not on this URL; use local run below if you need them.
+
+### If the link 404s — one-time owner toggle / אם הקישור לא נפתח
+
+Repo owner, once:
+
+1. Merge this Pages workflow to `main` (or run **Actions → Deploy GitHub Pages → Run workflow**).
+2. Open **Settings → Pages**.
+3. Under **Build and deployment → Source** choose either:
+   - **GitHub Actions**, or
+   - **Deploy from a branch** → `gh-pages` / `/ (root)`.
+4. This repository is **private**. For *anyone with the URL* (no GitHub login):
+   - **Pages → Visibility → Public** (GitHub Pro), **or**
+   - make the repository public (**Settings → General → Danger zone → Change repository visibility**).
+   On GitHub Free, Pages for a private repo is not published publicly until the repo is public.
+5. Wait a minute, then open the URL above. If the first Actions run failed with a Pages 404, re-run **Deploy GitHub Pages** after step 3.
+
+The `github-pages` environment may ask the owner to **Approve** the first deployment.
+
 ## Structure / מבנה
 
 - `backend/` — FastAPI mock API
@@ -12,6 +44,9 @@ Hebrew RTL demo with Sanctuary UI, Capital (מחברת 04) shadow P&amp;L tab, *
 - `chr-etrs-refs/` — formula notes and API brief excerpts
 
 ## How to run / הרצה
+
+לא צריך להתקין כלום כדי לראות את המחשבון — ראו [תצוגה ציבורית](#public-preview--תצוגה-ציבורית-ללא-התקנה) למעלה.
+To view the calculator without installing, use the [public preview](#public-preview--תצוגה-ציבורית-ללא-התקנה) link above.
 
 ### Backend (port 8000)
 
