@@ -10,6 +10,7 @@ name: Deploy GitHub Pages
 on:
   push:
     branches: ['main']
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -18,8 +19,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -68,6 +69,7 @@ jobs:
         working-directory: frontend
 
       - name: Publish gh-pages branch
+        if: github.event_name != 'pull_request'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -78,12 +80,14 @@ jobs:
           user_email: github-actions[bot]@users.noreply.github.com
 
       - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
         continue-on-error: true
         uses: actions/upload-pages-artifact@v3
         with:
           path: frontend/dist
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:
