@@ -1,5 +1,4 @@
 import { useMemo, useState, type CSSProperties } from 'react'
-import { circuitBreaker } from '../api/client'
 
 type AlertState = 'healthy' | 'throttle' | 'brake'
 
@@ -33,9 +32,6 @@ export default function SanctuaryTab() {
   const [hrv, setHrv] = useState(52)
   const [chits, setChits] = useState(120)
   const [done, setDone] = useState<Record<string, boolean>>({})
-  const [cbPanel, setCbPanel] = useState<{ status: number; body: Record<string, unknown> } | null>(null)
-  const [forceOk, setForceOk] = useState(false)
-  const [busy, setBusy] = useState(false)
 
   const alert = useMemo(() => alertFromHrv(hrv), [hrv])
   const spoons = useMemo(() => hrvToSpoons(hrv), [hrv])
@@ -48,19 +44,6 @@ export default function SanctuaryTab() {
       return { '--orb-light': '#fcd34d', '--orb-mid': '#f59e0b', '--orb-dark': '#78350f', '--orb-glow': 'rgba(245,158,11,0.45)' }
     return { '--orb-light': '#fca5a5', '--orb-mid': '#ef4444', '--orb-dark': '#7f1d1d', '--orb-glow': 'rgba(239,68,68,0.5)' }
   }, [alert])
-
-  async function runCircuitBreaker() {
-    setBusy(true)
-    const res = await circuitBreaker({
-      team_id: 'team-sanctuary',
-      requested_action: 'schedule_planning_meeting',
-      meeting_duration_minutes: 45,
-      participants_count: 5,
-      ...(forceOk ? { force_stamina: 55 } : {}),
-    })
-    setCbPanel({ status: res.status, body: res.data as Record<string, unknown> })
-    setBusy(false)
-  }
 
   function completeQuest(id: string, reward: number) {
     if (throttled || done[id]) return
@@ -164,35 +147,12 @@ export default function SanctuaryTab() {
         </section>
       </div>
 
-      {/* Circuit breaker demo */}
-      <section className="glass rounded-2xl p-5 space-y-3">
-        <h3 className="font-semibold text-slate-200">מעגל מגן (Circuit Breaker)</h3>
+      <section className="glass rounded-2xl p-5 space-y-2">
+        <h3 className="font-semibold text-slate-200">מעגל מגן</h3>
         <p className="text-sm text-slate-400">
-          קורא ל־POST /api/v1/energy/circuit-breaker — כברירת מחדל נחסם (423) עם המלצת Digital Silence.
+          הקצאת משימות ומעגל המגן עברו למסך «קצב חכם» וקוראים ל־POST /api/v1/tasks/assign.
+          המסך הזה נשאר הדגמה מקומית של אורב האנרגיה, בלי קריאות לנתיבים הישנים.
         </p>
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          <input type="checkbox" checked={forceOk} onChange={(e) => setForceOk(e.target.checked)} className="accent-emerald-500" />
-          הדגם נתיב מאושר (force_stamina ≥ 40)
-        </label>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={runCircuitBreaker}
-          className="px-4 py-2 rounded-lg bg-amber-600/90 hover:bg-amber-500 disabled:opacity-50 text-sm font-medium"
-        >
-          {busy ? 'שולח…' : 'בדוק מעגל מגן'}
-        </button>
-        {cbPanel && (
-          <div className={`rounded-xl p-4 text-sm border ${cbPanel.status === 423 ? 'border-red-500/40 bg-red-950/40' : 'border-emerald-500/40 bg-emerald-950/40'}`}>
-            <p className="font-semibold mb-1">
-              {cbPanel.status === 423 ? '🚫 חסום (423)' : '✅ מאושר'} — HTTP {cbPanel.status}
-            </p>
-            <p className="text-slate-300">{String(cbPanel.body.message ?? '')}</p>
-            <p className="text-xs text-slate-500 mt-2 font-mono">
-              stamina={String(cbPanel.body.team_stamina)} / threshold={String(cbPanel.body.critical_threshold)} · {String(cbPanel.body.recommendation ?? '')}
-            </p>
-          </div>
-        )}
       </section>
     </div>
   )

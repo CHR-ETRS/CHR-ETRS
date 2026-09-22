@@ -1,0 +1,793 @@
+openapi: 3.0.3
+info:
+  title: CHR-ETRS API
+  version: 1.1.0
+  description: |
+    Locked MVP OpenAPI for CHR-ETRS — refreshed 2026-09-22 from Gold SoT 1_frkn_u7r_LQWR1pW-bo0mcwVTJwYww5Hh6J8xSCc34 + Excel 06 sheet נקודות API.
+
+    **Primary 7 capabilities (Excel 06):**
+    1. Telemetry LSL — `GET /telemetry/hrv-stream` (+ `POST /telemetry/hrv-sample` ingest)
+    2. `POST /cringe/analyze-sentiment`
+    3. `POST /cringe/trigger-cuckoo-ping`
+    4. `POST /cuckoo/veto` (Sovereign Veto)
+    5. `POST /tasks/assign` — Circuit Breakers; 403 spoons<3 or HRV<40ms; 409 Anti_GET_Exception
+    6. `GET /manager/dashboard` — 403 if Member_Count < 5 (Japanese_Veil_Violation)
+    7. `POST /manager/ledger/record` — WORM SHA-256
+
+    Supporting (kept): spoons-budget GET, privacy-compliance, hris sync, circuit-breaker admin.
+
+    Out of scope: Web3, 3D/VR, supply-chain agents. ERP dichotomous RED/GREEN only.
+servers:
+  - url: https://api.chr-os.com/v1
+    description: CHR-OS production
+security:
+  - bearerAuth: []
+tags:
+  - name: primary
+    description: Excel 06 primary 7 capabilities
+  - name: cringe
+    description: Dr. Cringe ethics engine (HeBERT/DictaBERT)
+  - name: telemetry
+    description: Luna biometric telemetry & SpoonBudget (ZK Private Vault)
+  - name: cuckoo
+    description: Cuckoo Ping / Sovereign Veto (60 min)
+  - name: tasks
+    description: Task assign Circuit Breakers / Anti-GET Smart Pacing
+  - name: manager
+    description: Glass Box dashboard + WORM Manager Ledger
+  - name: hris
+    description: ERP/HRIS sync (supporting)
+  - name: audit
+    description: Zero-Knowledge privacy compliance (supporting)
+paths:
+  /telemetry/hrv-stream:
+    get:
+      tags: [primary, telemetry]
+      operationId: streamHrvTelemetry
+      summary: Telemetry LSL — real-time biometric stream (PRIMARY #1)
+      description: |
+        Excel 06: GET / WebSocket (LSL Protocol) at 1Hz.
+        Prefer WebSocket upgrade for continuous LSL; this GET documents the stream contract.
+        Authorization must be Private Vault JWT. Never expose identifying PII to managers.
+      parameters:
+        - name: device_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: sampling_rate_hz
+          in: query
+          required: false
+          schema:
+            type: number
+            default: 1
+      responses:
+        '200':
+          description: OK — JSON stream payload (or WebSocket frames)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrvStreamFrame'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /telemetry/hrv-sample:
+    post:
+      tags: [primary, telemetry]
+      operationId: ingestHrvSample
+      summary: Ingest single HRVSample into Private Vault (PRIMARY #1 companion)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrvSampleRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrvSampleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /cringe/analyze-sentiment:
+    post:
+      tags: [primary, cringe]
+      operationId: analyzeSentiment
+      summary: Dr. Cringe NLP — analyze-sentiment (PRIMARY #2)
+      description: ROOT_ADMIN / God Mode. Anonymous processing; no linguistic PII retention.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnalyzeSentimentRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyzeSentimentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /cringe/trigger-cuckoo-ping:
+    post:
+      tags: [primary, cringe, cuckoo]
+      operationId: triggerCuckooPing
+      summary: Cuckoo Ping — start 60-minute Sovereign Veto window (PRIMARY #3)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TriggerCuckooPingRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TriggerCuckooPingResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /cuckoo/veto:
+    post:
+      tags: [primary, cuckoo]
+      operationId: sovereignVeto
+      summary: Sovereign Veto — employee veto within 60 min (PRIMARY #4)
+      description: |
+        Authorized only for TargetUserID. Encrypted reason locked in JournalEntry RLS Private Vault.
+        Manager ledger credited anonymously; veto reason never exposed to manager.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SovereignVetoRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SovereignVetoResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /tasks/assign:
+    post:
+      tags: [primary, tasks]
+      operationId: assignTask
+      summary: Task assign with Circuit Breakers / Smart Pacing (PRIMARY #5)
+      description: |
+        Returns 403 when spoons < 3 or HRV < 40ms (circuit breaker).
+        Returns 409 Anti_GET_Exception on graded load increase while at risk (BR-03).
+        Integrates with Jira/Monday Read-Only enforcement on block.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignTaskRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignTaskResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /manager/dashboard:
+    get:
+      tags: [primary, manager]
+      operationId: managerDashboard
+      summary: Glass Box Team Aggregate dashboard (PRIMARY #6)
+      description: Enforces Japanese Veil — 403 Japanese_Veil_Violation if Member_Count < 5.
+      parameters:
+        - name: org_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: department_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManagerDashboardResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /manager/ledger/record:
+    post:
+      tags: [primary, manager]
+      operationId: recordManagerLedger
+      summary: Manager Ledger WORM — immutable SHA-256 record (PRIMARY #7)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LedgerRecordRequest'
+      responses:
+        '201':
+          description: Created — COMMITTED_IMMUTABLE
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LedgerRecordResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /telemetry/spoons-budget/{userId}:
+    get:
+      tags: [telemetry]
+      operationId: getSpoonsBudget
+      summary: Retrieve SpoonBudget energy balance (supporting)
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpoonsBudgetResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /hris/worker-wellness-sync:
+    post:
+      tags: [hris]
+      operationId: workerWellnessSync
+      summary: Sync dichotomous wellness status to Workday / SAP (supporting)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkerWellnessSyncRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkerWellnessSyncResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /audit/privacy-compliance:
+    get:
+      tags: [audit]
+      operationId: privacyComplianceAudit
+      summary: Zero-Knowledge privacy / EU AI Act compliance audit (supporting)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyComplianceResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /cringe/circuit-breaker:
+    post:
+      tags: [cringe]
+      operationId: activateCircuitBreaker
+      summary: Activate biometric Circuit Breaker admin helper (supporting)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CircuitBreakerRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CircuitBreakerResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OAuth 2.0 JWT Bearer token (Private Vault for biometric paths)
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error_code, http_status, message, timestamp]
+      properties:
+        error_code:
+          type: string
+          enum:
+            - Invalid_Telemetry_Format
+            - Invalid_OAuth_Token
+            - Japanese_Veil_Violation
+            - Anti_GET_Exception
+            - Sovereign_Veto_Expired
+            - WORM_Ledger_Write_Failure
+            - Emotion_Recognition_Prohibited
+            - Right_To_Disconnect_Violation
+        http_status:
+          type: integer
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        logic_hash:
+          type: string
+    HrvStreamFrame:
+      type: object
+      properties:
+        sample_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        hrv_baseline:
+          type: number
+        distal_skin_temp:
+          type: number
+        vagal_tone_index:
+          type: number
+    HrvSampleRequest:
+      type: object
+      required: [user_id, sample_timestamp, hrv_baseline_ms]
+      properties:
+        user_id:
+          type: string
+        sample_timestamp:
+          type: string
+          format: date-time
+        hrv_baseline_ms:
+          type: number
+        distal_skin_temp_celsius:
+          type: number
+        vagal_tone_index:
+          type: number
+        cold_stim_recovery_seconds:
+          type: integer
+    HrvSampleResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        sample_id:
+          type: string
+        biometric_alert_triggered:
+          type: boolean
+        threshold_violation:
+          type: string
+          nullable: true
+    AnalyzeSentimentRequest:
+      type: object
+      required: [text_content, source_channel, user_id]
+      properties:
+        text_content:
+          type: string
+        source_channel:
+          type: string
+          enum: [Slack, Teams, Outlook]
+        user_id:
+          type: string
+        org_id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          properties:
+            sender_role:
+              type: string
+            is_after_hours:
+              type: boolean
+    AnalyzeSentimentResponse:
+      type: object
+      properties:
+        confidence_score:
+          type: number
+          description: Must be ≥ 0.85 for enforcement actions
+        detected_patterns:
+          type: array
+          items:
+            type: string
+            enum: [Toxic_Positivity, Masking]
+        masking_penalty_score:
+          type: number
+        recommended_action:
+          type: string
+        logic_hash:
+          type: string
+    TriggerCuckooPingRequest:
+      type: object
+      required: [target_user_id, manager_id, trigger_reason]
+      properties:
+        target_user_id:
+          type: string
+        manager_id:
+          type: string
+        trigger_reason:
+          type: string
+          enum:
+            - Spoon_Bankruptcy
+            - Contract_Fragility
+            - Accelerated_Depreciation
+            - Toxic_Positivity_AfterHours
+            - HRV_Safety_Cut
+        veto_window_minutes:
+          type: integer
+          default: 60
+    TriggerCuckooPingResponse:
+      type: object
+      properties:
+        alert_id:
+          type: string
+        status:
+          type: string
+          example: VETO_WINDOW_ACTIVE
+        expires_at:
+          type: string
+          format: date-time
+        employee_private_ping_sent:
+          type: boolean
+        manager_notified_anonymously:
+          type: boolean
+    SovereignVetoRequest:
+      type: object
+      required: [alert_id, encrypted_reason_note]
+      properties:
+        alert_id:
+          type: string
+        encrypted_reason_note:
+          type: string
+    SovereignVetoResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: VETOED_BY_EMPLOYEE
+        manager_ledger_credited:
+          type: boolean
+        logic_hash:
+          type: string
+    AssignTaskRequest:
+      type: object
+      required: [assignee_id, task_name, complexity_spoon_cost]
+      properties:
+        assignee_id:
+          type: string
+        task_name:
+          type: string
+        complexity_spoon_cost:
+          type: integer
+          minimum: 1
+        is_chunkable:
+          type: boolean
+          default: true
+        attempt_graded_load_increase:
+          type: boolean
+          default: false
+          description: When true under risk thresholds → 409 Anti_GET_Exception
+    AssignTaskResponse:
+      type: object
+      properties:
+        task_id:
+          type: string
+        is_blocked_by_circuit_breaker:
+          type: boolean
+        pacing_status:
+          type: string
+    ManagerDashboardResponse:
+      type: object
+      properties:
+        team_spoon_avg:
+          type: number
+        deprivation_tax_sum:
+          type: number
+        dichotomous_alert_level:
+          type: string
+          enum: [GREEN, RED]
+        member_count:
+          type: integer
+          minimum: 5
+        japanese_veil_applied:
+          type: boolean
+    LedgerRecordRequest:
+      type: object
+      required: [manager_id, action_type, cost_impact, event_description]
+      properties:
+        manager_id:
+          type: string
+        action_type:
+          type: string
+        cost_impact:
+          type: number
+        event_description:
+          type: string
+        system_justification:
+          type: string
+    LedgerRecordResponse:
+      type: object
+      properties:
+        ledger_id:
+          type: string
+        logic_hash_sha256:
+          type: string
+        worm_storage_status:
+          type: string
+          example: COMMITTED_IMMUTABLE
+    CircuitBreakerRequest:
+      type: object
+      required: [target_user_id, circuit_breaker_type]
+      properties:
+        target_user_id:
+          type: string
+        circuit_breaker_type:
+          type: string
+        trigger_metrics:
+          type: object
+          properties:
+            hrv_ms:
+              type: number
+            spoons_remaining:
+              type: integer
+            contract_fragility_units:
+              type: number
+        enforcement_actions:
+          type: array
+          items:
+            type: string
+    CircuitBreakerResponse:
+      type: object
+      properties:
+        circuit_breaker_status:
+          type: string
+        enforced_at:
+          type: string
+          format: date-time
+        golden_spoons_injected:
+          type: integer
+        eudaimonic_immunity_until:
+          type: string
+          format: date-time
+        jira_integration_status:
+          type: string
+        logic_hash:
+          type: string
+    SpoonsBudgetResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        daily_baseline_capacity:
+          type: integer
+        current_spoon_count:
+          type: integer
+        available_capacity_pct:
+          type: number
+        energy_state_indicator:
+          type: string
+        breakdown:
+          type: object
+          properties:
+            sinks_expenditure:
+              type: integer
+            sources_recovery:
+              type: integer
+            golden_spoons_held:
+              type: integer
+        smart_pacing_status:
+          type: string
+    WorkerWellnessSyncRequest:
+      type: object
+      required: [worker_id, org_tenant_id, sync_timestamp, chr_metrics, system_enforcement]
+      properties:
+        worker_id:
+          type: string
+        org_tenant_id:
+          type: string
+        sync_timestamp:
+          type: string
+          format: date-time
+        chr_metrics:
+          type: object
+          properties:
+            spoons_remaining:
+              type: integer
+            spoons_baseline:
+              type: integer
+            capacity_percentage:
+              type: number
+            biometric_debt_hours:
+              type: number
+        system_enforcement:
+          type: object
+          properties:
+            dichotomous_alert_level:
+              type: string
+              enum: [GREEN, RED]
+            circuit_breaker_active:
+              type: boolean
+            halt_task_allocation:
+              type: boolean
+            overtime_approval_blocked:
+              type: boolean
+            manager_visibility:
+              type: string
+    WorkerWellnessSyncResponse:
+      type: object
+      properties:
+        sync_status:
+          type: string
+        erp_reference_id:
+          type: string
+        applied_enforcement:
+          type: string
+        audit_proof_token:
+          type: string
+    PrivacyComplianceResponse:
+      type: object
+      properties:
+        audit_request_id:
+          type: string
+        privacy_compliance:
+          type: object
+          properties:
+            zkp_protocol_status:
+              type: string
+            encryption_standard:
+              type: string
+            zen_gate_shield:
+              type: string
+        regulatory_exposure:
+          type: object
+          properties:
+            eu_ai_act_risk_category:
+              type: string
+            emotion_recognition_blocked:
+              type: boolean
+            biometric_retention_local:
+              type: boolean
+            turnover_penalty_exposure:
+              type: boolean
+  responses:
+    BadRequest:
+      description: Invalid_Telemetry_Format (400)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: Invalid_Telemetry_Format
+            http_status: 400
+            message: Biometric parameters out of valid range (e.g. negative HRV or Spoons > 12).
+            timestamp: '2026-09-22T06:00:00Z'
+    Unauthorized:
+      description: Invalid_OAuth_Token (401)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: Invalid_OAuth_Token
+            http_status: 401
+            message: JWT expired or not authorized.
+            timestamp: '2026-09-22T06:00:00Z'
+    Forbidden:
+      description: Japanese_Veil_Violation (403) — also used for circuit-breaker task deny
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: Japanese_Veil_Violation
+            http_status: 403
+            message: 'Access denied: Target group contains fewer than 5 employees (Rule of 5+ enforcement).'
+            timestamp: '2026-09-22T06:00:00Z'
+            logic_hash: a8f5c112...992
+    Conflict:
+      description: Anti_GET_Exception (409)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: Anti_GET_Exception
+            http_status: 409
+            message: Graded task allocation blocked while Circuit Breaker is active.
+            timestamp: '2026-09-22T06:00:00Z'
+    Unprocessable:
+      description: Sovereign_Veto_Expired (422)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: Sovereign_Veto_Expired
+            http_status: 422
+            message: Sovereign Veto attempted after the 60-minute Cuckoo Ping window expired.
+            timestamp: '2026-09-22T06:00:00Z'
+    InternalError:
+      description: WORM_Ledger_Write_Failure (500)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: WORM_Ledger_Write_Failure
+            http_status: 500
+            message: Failed to write SHA-256 Logic Hash to WORM Manager Ledger.
+            timestamp: '2026-09-22T06:00:00Z'
