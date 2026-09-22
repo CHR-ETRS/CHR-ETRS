@@ -1,11 +1,22 @@
 import { useState } from 'react'
 import ApiLab from './components/ApiLab'
+import AnchorsScreen from './happy/AnchorsScreen'
+import DailyHubScreen from './happy/DailyHubScreen'
+import { DEMO_USERS, type DemoUserId } from './happy/demoUsers'
+import JournalScreen from './happy/JournalScreen'
+import ResilienceScreen from './happy/ResilienceScreen'
+import SmartPacingScreen from './happy/SmartPacingScreen'
 import CapitalTab from './tabs/CapitalTab'
 import ChrIndexTab from './tabs/ChrIndexTab'
 import PlaceholderTab from './tabs/PlaceholderTab'
 import SanctuaryTab from './tabs/SanctuaryTab'
 
 type TabId =
+  | 'anchors'
+  | 'hub'
+  | 'resilience'
+  | 'pacing'
+  | 'journal'
   | 'knowledge'
   | 'welfare'
   | 'core'
@@ -17,6 +28,14 @@ type TabId =
   | 'market'
   | 'health'
   | 'sources'
+
+const HAPPY: { id: TabId; label: string }[] = [
+  { id: 'anchors', label: '1 · עוגנים' },
+  { id: 'hub', label: '2 · מרכז יומי' },
+  { id: 'resilience', label: '3 · מטריצת חוסן' },
+  { id: 'pacing', label: '4 · קצב חכם' },
+  { id: 'journal', label: '5 · יומן שביל' },
+]
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'knowledge', label: 'מחברת 01 - ידע ומדיה' },
@@ -33,7 +52,8 @@ const TABS: { id: TabId; label: string }[] = [
 ]
 
 export default function App() {
-  const [tab, setTab] = useState<TabId>('welfare')
+  const [tab, setTab] = useState<TabId>('anchors')
+  const [userId, setUserId] = useState<DemoUserId>('emp-hope')
 
   return (
     <div dir="rtl" className="min-h-screen bg-slate-950 text-slate-100">
@@ -41,13 +61,42 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-lg font-bold tracking-tight text-amber-100">CHR-ETRS</h1>
-            <p className="text-xs text-slate-500">Sprint 1 Prototype</p>
+            <p className="text-xs text-slate-500">Happy Path · OpenAPI 1.1</p>
           </div>
-          <span className="text-xs px-2 py-1 rounded-md bg-slate-800 text-slate-400 border border-slate-700">
-            mock · in-memory
-          </span>
+          <label className="text-xs text-slate-400 flex items-center gap-2">
+            פרופיל
+            <select
+              value={userId}
+              onChange={(e) => setUserId(e.target.value as DemoUserId)}
+              className="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-slate-200"
+            >
+              {DEMO_USERS.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
-        <nav className="max-w-6xl mx-auto px-2 pb-2 overflow-x-auto">
+        <nav className="max-w-6xl mx-auto px-2 pb-2 overflow-x-auto space-y-1">
+          <ul className="flex gap-1 min-w-max">
+            {HAPPY.map((t) => (
+              <li key={t.id}>
+                <button
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={
+                    'px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-colors ' +
+                    (tab === t.id
+                      ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/40'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent')
+                  }
+                >
+                  {t.label}
+                </button>
+              </li>
+            ))}
+          </ul>
           <ul className="flex gap-1 min-w-max">
             {TABS.map((t) => (
               <li key={t.id}>
@@ -71,6 +120,11 @@ export default function App() {
 
       <main className="max-w-6xl mx-auto px-4 py-6 space-y-4">
         <ApiLab />
+        {tab === 'anchors' && <AnchorsScreen userId={userId} />}
+        {tab === 'hub' && <DailyHubScreen userId={userId} />}
+        {tab === 'resilience' && <ResilienceScreen userId={userId} />}
+        {tab === 'pacing' && <SmartPacingScreen userId={userId} />}
+        {tab === 'journal' && <JournalScreen userId={userId} />}
         {tab === 'welfare' && <SanctuaryTab />}
         {tab === 'knowledge' && <PlaceholderTab title="מחברת 01 - ידע ומדיה" notebookHint="ידע ארגוני, מדיה ותוכן" />}
         {tab === 'core' && <PlaceholderTab title="מחברת 03 - ליבה וארכיטקטורה" notebookHint="ארכיטקטורת CHR-ETRS" />}

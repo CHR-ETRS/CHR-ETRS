@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { financeSimulate, voi, type FinanceSimulateResult } from '../api/client'
+import { financeSimulate, type FinanceSimulateResult } from '../lib/financeSim'
 
 const ILS = (n: number, digits = 0) =>
   n.toLocaleString('he-IL', { maximumFractionDigits: digits, minimumFractionDigits: digits })
@@ -26,7 +26,7 @@ const CONCEPTS = [
   },
   {
     title: 'Rule of 5 — פרטיות',
-    body: 'אין מדדי VOI מתחת ל־5 משיבים. ראי הדגמה במחלקה 102 למטה.',
+    body: 'הפרגוד היפני: דשבורד מנהל נחסם ב־403 כש־Member_Count < 5. הנתיב החי הוא GET /api/v1/manager/dashboard.',
   },
   {
     title: 'שכר שעתי מדולל',
@@ -65,86 +65,31 @@ const SOURCES: { title: string; href: string }[] = [
   },
 ]
 
-type VoiView = {
-  happiness: number
-  eNPS: number
-  burnout: number
-  voi_index: number
-  estimated_savings_ils: number
-  productivity_delta: number
-} | null
-
 export default function CapitalTab() {
   const [n, setN] = useState(500)
   const [salary, setSalary] = useState(25000)
   const [turnover, setTurnover] = useState(0.22)
   const [deprivation, setDeprivation] = useState(0.2)
   const [data, setData] = useState<FinanceSimulateResult | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const [voiBusy, setVoiBusy] = useState(false)
-  const [voiData, setVoiData] = useState<VoiView>(null)
-  const [voiErr, setVoiErr] = useState<string | null>(null)
 
-  const runSim = useCallback(async () => {
-    setBusy(true)
-    setErr(null)
-    // Scale org P&L with headcount vs Cos baseline of 500 so margins stay coherent
+  const runSim = useCallback(() => {
     const scale = n / 500
-    const res = await financeSimulate({
-      num_employees: n,
-      avg_monthly_salary: salary,
-      revenue: 300_000_000 * scale,
-      non_payroll_opex: 105_000_000 * scale,
-      turnover_rate: turnover,
-      deprivation_pct: deprivation,
-      baseline_turnover_rate: turnover,
-      baseline_deprivation_pct: deprivation,
-      capex: 350_000,
-    })
-    if (!res.ok) {
-      setErr('לא הצלחתי להריץ סימולציה — בדקי שה־API רץ על פורט 8000.')
-      setBusy(false)
-      return
-    }
-    setData(res.data)
-    setBusy(false)
+    setData(
+      financeSimulate({
+        num_employees: n,
+        avg_monthly_salary: salary,
+        revenue: 300_000_000 * scale,
+        non_payroll_opex: 105_000_000 * scale,
+        turnover_rate: turnover,
+        deprivation_pct: deprivation,
+        capex: 350_000,
+      }),
+    )
   }, [n, salary, turnover, deprivation])
 
   useEffect(() => {
-    void runSim()
+    runSim()
   }, [runSim])
-
-  async function loadVoi() {
-    setVoiBusy(true)
-    setVoiErr(null)
-    const res = await voi('102')
-    if (!res.ok) {
-      setVoiErr('Rule of 5 או שגיאת רשת — לא ניתן לטעון VOI.')
-      setVoiData(null)
-      setVoiBusy(false)
-      return
-    }
-    const d = res.data as {
-      happiness: number
-      eNPS: number
-      burnout: number
-      financial_impact: {
-        voi_index: number
-        estimated_savings_ils: number
-        productivity_delta: number
-      }
-    }
-    setVoiData({
-      happiness: d.happiness,
-      eNPS: d.eNPS,
-      burnout: d.burnout,
-      voi_index: d.financial_impact.voi_index,
-      estimated_savings_ils: d.financial_impact.estimated_savings_ils,
-      productivity_delta: d.financial_impact.productivity_delta,
-    })
-    setVoiBusy(false)
-  }
 
   function resetDefaults() {
     setN(500)
@@ -181,9 +126,6 @@ export default function CapitalTab() {
       {/* A. Shadow P&L hero */}
       <section className="space-y-4">
         <h3 className="text-sm font-semibold text-slate-300 tracking-wide">מאזן צללים — גיבור P&amp;L</h3>
-        {err && (
-          <p className="text-sm text-red-400 glass rounded-xl px-4 py-3 border border-red-500/30">{err}</p>
-        )}
         {d && (
           <>
             <div className="grid sm:grid-cols-3 gap-3">
@@ -288,7 +230,6 @@ export default function CapitalTab() {
                 תחלופה בסיס {pct(d.turnover_rate * 100, 0)} · קיפוח {pct(d.deprivation_pct * 100, 0)} ·
                 אחרי CHR: תחלופה {pct(d.post_turnover_rate * 100, 0)} · קיפוח {pct(d.post_deprivation_pct * 100, 0)} · שחיקה שיורית{' '}
                 {pct(d.post_burnout_pct * 100, 0)}
-                {busy ? ' · מעדכן…' : ''}
               </p>
             </div>
           </>
@@ -391,31 +332,13 @@ export default function CapitalTab() {
         )}
       </section>
 
-      {/* E. VOI */}
-      <section className="glass rounded-2xl p-5 space-y-3">
-        <h3 className="font-semibold text-slate-200">מדדי VOI</h3>
+      <section className="glass rounded-2xl p-5 space-y-2">
+        <h3 className="font-semibold text-slate-200">פרגוד יפני במקום VOI החי</h3>
         <p className="text-sm text-slate-400">
-          טעני מדדי Value of Intangibles למחלקה 102 (Rule of 5 מאושר).
+          קריאת GET /api/v1/voi הוסרה. אכיפת N ≥ 5 חיה ב־GET /api/v1/manager/dashboard: מחלקה tiny
+          מחזירה 403 Japanese_Veil_Violation, ומחלקת rd-core (8 חברים) מחזירה RED/GREEN בלבד.
+          מסכי המנהל עצמם אינם חלק ממסלול העובד.
         </p>
-        <button
-          type="button"
-          disabled={voiBusy}
-          onClick={() => void loadVoi()}
-          className="px-4 py-2 rounded-lg bg-emerald-600/90 hover:bg-emerald-500 disabled:opacity-50 text-sm font-medium"
-        >
-          {voiBusy ? 'טוענת…' : 'טעני מדדי VOI (מחלקה 102)'}
-        </button>
-        {voiErr && <p className="text-sm text-red-400">{voiErr}</p>}
-        {voiData && (
-          <div className="grid sm:grid-cols-3 lg:grid-cols-6 gap-2">
-            <MiniStat label="אושר" value={voiData.happiness.toFixed(2)} />
-            <MiniStat label="eNPS" value={String(voiData.eNPS)} />
-            <MiniStat label="שחיקה" value={voiData.burnout.toFixed(2)} warn />
-            <MiniStat label="VOI index" value={voiData.voi_index.toFixed(2)} />
-            <MiniStat label="חיסכון משוער" value={`${ILS(voiData.estimated_savings_ils)} ₪`} />
-            <MiniStat label="Δ פרודוקטיביות" value={pct(voiData.productivity_delta * 100, 0)} />
-          </div>
-        )}
       </section>
 
       {/* D. Sources */}

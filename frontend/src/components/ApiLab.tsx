@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { synthesize, sentiment, voi, circuitBreaker } from '../api/client'
+import { analyzeSentiment, assignTask, getSpoonsBudget, managerDashboard } from '../api/client'
 
 type Result = { label: string; status: number; body: unknown }
+
+const ORG = '11111111-1111-4111-8111-111111111111'
 
 export default function ApiLab() {
   const [open, setOpen] = useState(false)
@@ -11,44 +13,29 @@ export default function ApiLab() {
   async function runAll() {
     setBusy(true)
     const out: Result[] = []
+    const spoons = await getSpoonsBudget('emp-hope')
+    out.push({ label: 'GET /telemetry/spoons-budget/emp-hope', status: spoons.status, body: spoons.data })
 
-    const syn = await synthesize([
-      {
-        employee_name: 'דנה כהן',
-        age: 32,
-        gender: 'F',
-        tenure_months: 28,
-        raw_survey_text: 'אני מרגישה עומס אבל יש תמיכה מהצוות',
-        biometric_hrv: 48.5,
-      },
-    ])
-    out.push({ label: 'POST /synthesize', status: syn.status, body: syn.data })
-
-    const sent = await sentiment('syn_user_89170', 'המנהל שולט בכל פרט קטן')
-    out.push({ label: 'POST /sentiment', status: sent.status, body: sent.data })
-
-    const voiOk = await voi('102')
-    out.push({ label: 'GET /voi/102', status: voiOk.status, body: voiOk.data })
-
-    const voiFail = await voi('1')
-    out.push({ label: 'GET /voi/1 (Rule of 5)', status: voiFail.status, body: voiFail.data })
-
-    const cb = await circuitBreaker({
-      team_id: 'team-alpha',
-      requested_action: 'schedule_standup',
-      meeting_duration_minutes: 30,
-      participants_count: 6,
+    const sent = await analyzeSentiment({
+      text_content: 'הכל בסדר, רק חייב עכשיו',
+      source_channel: 'Slack',
+      user_id: 'emp-hope',
     })
-    out.push({ label: 'POST /circuit-breaker', status: cb.status, body: cb.data })
+    out.push({ label: 'POST /cringe/analyze-sentiment', status: sent.status, body: sent.data })
 
-    const cbOk = await circuitBreaker({
-      team_id: 'team-alpha',
-      requested_action: 'schedule_standup',
-      meeting_duration_minutes: 30,
-      participants_count: 6,
-      force_stamina: 55,
+    const task = await assignTask({
+      assignee_id: 'emp-low',
+      task_name: 'עומס',
+      complexity_spoon_cost: 1,
+      attempt_graded_load_increase: true,
     })
-    out.push({ label: 'POST /circuit-breaker (force_stamina=55)', status: cbOk.status, body: cbOk.data })
+    out.push({ label: 'POST /tasks/assign (Anti-GET)', status: task.status, body: task.data })
+
+    const veil = await managerDashboard(ORG, 'tiny')
+    out.push({ label: 'GET /manager/dashboard tiny', status: veil.status, body: veil.data })
+
+    const dash = await managerDashboard(ORG, 'rd-core')
+    out.push({ label: 'GET /manager/dashboard rd-core', status: dash.status, body: dash.data })
 
     setResults(out)
     setBusy(false)
@@ -61,7 +48,7 @@ export default function ApiLab() {
         onClick={() => setOpen((v) => !v)}
         className="w-full px-4 py-2 flex items-center justify-between text-sm text-emerald-300 hover:bg-slate-800/50"
       >
-        <span>🧪 מעבדה — הדגמת API (4 endpoints)</span>
+        <span>מעבדה — נתיבי OpenAPI</span>
         <span>{open ? '▲' : '▼'}</span>
       </button>
       {open && (
@@ -69,19 +56,17 @@ export default function ApiLab() {
           <button
             type="button"
             disabled={busy}
-            onClick={runAll}
+            onClick={() => void runAll()}
             className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-sm font-medium"
           >
-            {busy ? 'רץ…' : 'הרץ את כל ה־endpoints'}
+            {busy ? 'רץ…' : 'הרץ בדיקת עשן'}
           </button>
           <div className="space-y-2 max-h-64 overflow-auto text-xs font-mono">
             {results.map((r) => (
               <div key={r.label} className="rounded-lg bg-slate-900/80 p-2 border border-slate-700">
                 <div className="flex gap-2 mb-1">
                   <span className="text-amber-300">{r.label}</span>
-                  <span className={r.status < 300 ? 'text-emerald-400' : r.status === 423 || r.status === 403 ? 'text-amber-400' : 'text-red-400'}>
-                    {r.status}
-                  </span>
+                  <span className={r.status < 300 ? 'text-emerald-400' : 'text-amber-400'}>{r.status}</span>
                 </div>
                 <pre className="whitespace-pre-wrap text-slate-400">{JSON.stringify(r.body, null, 2)}</pre>
               </div>

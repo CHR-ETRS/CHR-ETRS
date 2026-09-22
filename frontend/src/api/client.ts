@@ -1,139 +1,203 @@
 const BASE = import.meta.env.VITE_API_URL ?? ''
 
-async function request<T>(path: string, init?: RequestInit): Promise<{ ok: boolean; status: number; data: T }> {
+export type ApiResult<T> = { ok: boolean; status: number; data: T }
+
+export type ApiErrorBody = {
+  error_code?: string
+  http_status?: number
+  message?: string
+  timestamp?: string
+  logic_hash?: string
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      Authorization: 'Bearer demo-token',
       ...(init?.headers ?? {}),
     },
   })
   let data: T
   try {
-    data = await res.json()
+    data = (await res.json()) as T
   } catch {
     data = {} as T
   }
   return { ok: res.ok, status: res.status, data }
 }
 
-export async function synthesize(records: unknown[], token = 'Bearer demo-token') {
-  return request('/api/v1/synthesize', {
-    method: 'POST',
-    headers: { Authorization: token },
-    body: JSON.stringify({ department_id: '102', records }),
+export type SpoonsBudget = {
+  user_id: string
+  daily_baseline_capacity: number
+  current_spoon_count: number
+  available_capacity_pct: number
+  energy_state_indicator: string
+  breakdown: {
+    sinks_expenditure: number
+    sources_recovery: number
+    golden_spoons_held: number
+  }
+  smart_pacing_status: string
+}
+
+export type HrvStreamFrame = {
+  sample_id: string
+  timestamp: string
+  hrv_baseline: number
+  distal_skin_temp?: number
+  vagal_tone_index?: number
+}
+
+export type HrvSampleResult = {
+  status: string
+  sample_id: string
+  biometric_alert_triggered: boolean
+  threshold_violation: string | null
+}
+
+export function getSpoonsBudget(userId: string) {
+  return request<SpoonsBudget>(`/api/v1/telemetry/spoons-budget/${encodeURIComponent(userId)}`)
+}
+
+export function getHrvStream(deviceId: string, samplingRateHz = 1) {
+  const q = new URLSearchParams({
+    device_id: deviceId,
+    sampling_rate_hz: String(samplingRateHz),
   })
+  return request<HrvStreamFrame>(`/api/v1/telemetry/hrv-stream?${q}`)
 }
 
-export async function sentiment(synthetic_id: string, text: string) {
-  return request('/api/v1/communication/sentiment', {
-    method: 'POST',
-    body: JSON.stringify({ synthetic_id, text }),
-  })
-}
-
-export async function voi(department_id: string, time_period = 'quarterly') {
-  return request(`/api/v1/voi/${department_id}?time_period=${time_period}`)
-}
-
-export async function circuitBreaker(payload: {
-  team_id: string
-  requested_action: string
-  meeting_duration_minutes: number
-  participants_count: number
-  force_stamina?: number
+export function postHrvSample(body: {
+  user_id: string
+  sample_timestamp: string
+  hrv_baseline_ms: number
+  distal_skin_temp_celsius?: number
+  vagal_tone_index?: number
 }) {
-  return request('/api/v1/energy/circuit-breaker', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export async function energyState(archetype = 'SHAY-09') {
-  return request(`/api/v1/energy/state?archetype=${archetype}`)
-}
-
-export async function biometricsLog(hrv_ms: number, archetype = 'SHAY-09') {
-  return request('/api/v1/biometrics/log', {
-    method: 'POST',
-    body: JSON.stringify({ archetype, hrv_ms }),
-  })
-}
-
-export type FinanceSimulateParams = {
-  num_employees?: number
-  avg_monthly_salary?: number
-  revenue?: number
-  non_payroll_opex?: number
-  turnover_rate?: number
-  deprivation_pct?: number
-  capex?: number
-  baseline_turnover_rate?: number
-  baseline_deprivation_pct?: number
-}
-
-export type FinanceSimulateResult = {
-  mode: string
-  num_employees: number
-  avg_monthly_salary: number
-  revenue: number
-  non_payroll_opex: number
-  payroll: number
-  daily_wage: number
-  turnover_rate: number
-  deprivation_pct: number
-  capex: number
-  ebitda_nominal: number
-  ebitda_nominal_margin_pct: number
-  shadow_pre: {
-    deprivation_tax: number
-    emotional_debt: number
-    burnout_liability: number
-    total: number
-    num_deprived: number
-    num_departures: number
-    num_burned: number
-  }
-  ebitda_pre_chr: number
-  ebitda_pre_chr_margin_pct: number
-  post_turnover_rate: number
-  post_deprivation_pct: number
-  post_burnout_pct: number
-  shadow_post: {
-    deprivation_tax: number
-    emotional_debt: number
-    burnout_liability: number
-    total: number
-    num_deprived: number
-    num_departures: number
-    num_burned: number
-  }
-  ebitda_after_chr: number
-  ebitda_after_chr_margin_pct: number
-  shadow_savings: number
-  roi_pct: number
-  rov: number
-  diluted_wage: {
-    nominal_hourly: number
-    diluted_hourly: number
-    erosion_pct: number
-    hours_nominal: number
-    hours_diluted: number
-  }
-  assumptions: string[]
-}
-
-export async function financeSimulate(params: FinanceSimulateParams = {}) {
-  return request<FinanceSimulateResult>('/api/v1/finance/simulate', {
-    method: 'POST',
-    body: JSON.stringify(params),
-  })
-}
-
-/** Optional server mirror of the client-side CHR Index calculator. */
-export async function chrIndexCalculate(body: Record<string, unknown> = {}) {
-  return request('/api/v1/chr/index', {
+  return request<HrvSampleResult>('/api/v1/telemetry/hrv-sample', {
     method: 'POST',
     body: JSON.stringify(body),
   })
+}
+
+export type Anchor = {
+  anchor_id?: string
+  user_id?: string
+  type_lighting: 'Authority' | 'Soft' | 'Task'
+  territory_schema?: string | null
+  exposure_gate: 'Closed' | 'Filtered' | 'Open'
+  created_at?: string
+}
+
+export type AnchorsPayload = {
+  user_id: string
+  employee_value_asset: {
+    employee_id: string
+    direct_cost_opex: number
+    asset_value_capex: number
+    productivity_alpha_factor: number
+    happiness_debt_liability: number
+  }
+  anchors: Anchor[]
+}
+
+export function getAnchors(userId: string) {
+  return request<AnchorsPayload>(`/api/v1/anchors/${encodeURIComponent(userId)}`)
+}
+
+export function putAnchors(userId: string, anchors: Anchor[]) {
+  return request<AnchorsPayload>(`/api/v1/anchors/${encodeURIComponent(userId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      anchors: anchors.map((a) => ({
+        type_lighting: a.type_lighting,
+        territory_schema: a.territory_schema ?? '',
+        exposure_gate: a.exposure_gate,
+      })),
+    }),
+  })
+}
+
+export type ResilienceMatrix = {
+  avatar_id: string
+  user_id: string
+  role_state: 'HOPE' | 'NESS' | 'SHAY'
+  bone_memory_latency: number
+  contrast_nullification_active: boolean
+  current_spoon_count: number
+  latest_hrv_ms: number | null
+  resilience_axes: {
+    hope: number
+    efficacy: number
+    resilience: number
+    optimism: number
+  }
+}
+
+export function getResilienceMatrix(userId: string) {
+  return request<ResilienceMatrix>(`/api/v1/resilience/matrix/${encodeURIComponent(userId)}`)
+}
+
+export type AssignTaskResult = {
+  task_id?: string
+  is_blocked_by_circuit_breaker?: boolean
+  pacing_status?: string
+} & ApiErrorBody
+
+export function assignTask(body: {
+  assignee_id: string
+  task_name: string
+  complexity_spoon_cost: number
+  is_chunkable?: boolean
+  attempt_graded_load_increase?: boolean
+}) {
+  return request<AssignTaskResult>('/api/v1/tasks/assign', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export type JournalEntry = {
+  entry_id: string
+  user_id: string
+  hallway_mirror_response: string
+  relational_offloading_text: string | null
+  created_at: string
+  sealed: boolean
+}
+
+export function listJournal(userId: string) {
+  return request<{ user_id: string; private_vault: boolean; entries: JournalEntry[] }>(
+    `/api/v1/journal/entries?user_id=${encodeURIComponent(userId)}`,
+  )
+}
+
+export function createJournal(body: {
+  user_id: string
+  hallway_mirror_response: string
+  relational_offloading_text?: string
+}) {
+  return request<JournalEntry>('/api/v1/journal/entries', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function analyzeSentiment(body: {
+  text_content: string
+  source_channel: 'Slack' | 'Teams' | 'Outlook'
+  user_id: string
+  metadata?: { is_after_hours?: boolean; sender_role?: string }
+}) {
+  return request('/api/v1/cringe/analyze-sentiment', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function managerDashboard(orgId: string, departmentId: string) {
+  const q = new URLSearchParams({ org_id: orgId, department_id: departmentId })
+  return request(`/api/v1/manager/dashboard?${q}`)
 }
