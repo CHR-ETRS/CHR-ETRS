@@ -1,0 +1,278 @@
+<!-- CHR-ETRS MVP v1 · README.md · Version: 1.6.16-mvp (2026-10-30) — supersedes 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20) and 1.4.0-mvp (2026-10-06) -->
+# CHR-ETRS MVP v1.6.16 — Code Pack
+
+**SoT / מקור האמת:** [ADR index](https://docs.google.com/document/d/1U-u5844C4J1Y6WWv59wrX3xJwY8seDbHDDbULAdnGRg/edit) + Karin's approved locks of 2026-10-20  
+**Related:** [N-1–N-3 + API v2](https://docs.google.com/document/d/14BGHkebrXyzn9vAlJGB5oGJ9jA9v-AfsRBazmBeJH2Y/edit) · [Catalog N-2](https://docs.google.com/document/d/1w6V2IeVs-K2X7L_fS34nk60yO84qfH6N7280KJ8X948/edit) · [051 v4](https://docs.google.com/document/d/1sowWT4hrEp7gtuZE8GNC3dFJ23_dQpWB2-7mm9XUOwM/edit) · [070 v5](https://docs.google.com/document/d/1FgUAHnVKTJS0Sd9lA41fMm7NoLbPHBkvQeTSNEsSjE8/edit)  
+**NLM / NotebookLM:** archived — **not SoT** / בארכיון — אינו מקור האמת.  
+**Pack version:** `1.6.16-mvp`  
+**Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
+
+> **v1.6.16 (2026-10-30):** ONE consolidated build replacing the planned v1.6.14 and v1.6.15 (never built). Encodes agents-bot-instructions-v3 (single source of truth) and Karin's closed values of 30.10:
+> - **CHR Coins conversion blocked in v1:** `rpc_convert_golden_to_chr` stays defined (v2 readiness) but every call → **HTTP 422 `chr_coins_deferred_to_v2`** ("CHR Coins shelf is deferred to v2; Golden Spoons conversion is disabled in v1") — no balance change, no row. Replaces the v1.6.13 "active on the server" decision.
+> - **Golden Spoons by participation only** (v3 §3.6, Karin 30.10): fixed amounts from **locked `agent_settings` parameters**, never code constants — completed monthly questionnaire incl. PCQ-12 = **10 כפיות** (`golden_spoons_per_questionnaire`), weekly / short questionnaire = **2 כפיות** (`golden_spoons_per_short_questionnaire`; Cantril counts as short). The score/10 reward is removed. TPS-12 / IHS (quarterly) = "לא הוגדר" → 0 with `reward_status = not_defined`.
+> - **`agent_settings`** table + `rpc_get_agent_settings` / `rpc_put_agent_setting` (cfo / vp_hr); open values stay "לא הוגדר" (never invented); `users.app_role` gains **`cfo`**.
+> - **Agent 1 — EverStore budget:** open Golden Spoons liability (cfo / vp_hr only), one daily summary per company-local day only when a 75 / 90 / 100 % threshold is crossed, 30 days to redeem after the end of employment (day 31 → balance 0, WORM `golden_spoons_ledger`), and the **anonymous aggregate EverStore budget summary** `fn_everstore_budget_summary` / `everstore_budget_summary_v` / `rpc_everstore_budget_summary` (vp_hr / cfo; < 5 buyers → "אחר" → merged into the smallest passing category, else company total only; never user_id / pseudonym / person_id / team / timestamps).
+> - **Agent 2 — burnout forecast** (`rpc_get_burnout_trend`, group level only): coverage full / partial ("מגמה חלקית") / none by מדווחים בפועל, 3-month moving average, "סיכון עולה" only after 2 consecutive periods, PCQ-12 drop gated by the score range (coefficient 12.5), no 12-spoons data. **5th signal (Karin 30.10):** voluntary exits + transfer requests of the last 3 months ÷ team employees ≥ **1.5 ×** the organization average AND ≥ **2** events, both in 2 consecutive periods; sensitive — shown only for teams of ≥ **10** employees (all three are agent_settings; replaces the 15 % placeholder).
+> - **Agent 3 — board report** (`rpc_build_board_report`): reconciliation table (GAAP − 4 debt lines − מס קיפוח = CHR Real EBITDA), 4-line Shadow Balance, memo line "יצא עם העוזבים" (leaver Happiness Debt moves there, never deleted; documented remediation reduces it), assurance tiers 0–4, the 15-question BCR check, 12 % / 10 % display switch; **not published without a balanced reconciliation** (422).
+> - **Deprived employee** now needs **two consecutive weeks** (v3 §6.2).
+> - Tests: `tests/test_agents_v1_6_16.sql` (all 18 v3 server tests + A1 / A2 + Karin's three 5th-signal tests + privacy sweep). Migration file renamed to `migrations/migrate_v1_4_to_v1_6_16.sql`.
+> **Remaining open items:** see `ADR_GAPS.md` → *Still open after v1.6.16* (להשלמה).
+>
+> **גרסה v1.6.16 (30.10.2026):** גרסה מאוחדת אחת במקום v1.6.14 ו־v1.6.15 (שלא נבנו), לפי agents-bot-instructions-v3 כמקור אמת יחיד ולפי הערכים שקארין סגרה ב־30.10: המרת Golden Spoons ל־CHR Coins חסומה ב־v1 (422 `chr_coins_deferred_to_v2`); Golden Spoons רק על השתתפות ובסכום קבוע מ־`agent_settings` (שאלון חודשי כולל PCQ-12 = 10 כפיות, שאלון שבועי או קצר = 2 כפיות); סוכן תקציב EverStore, סיכום תקציב מצרפי ואנונימי ל־vp_hr ו־cfo בלבד; סוכן תחזית שחיקה ברמת קבוצה בלבד עם הסימן החמישי (עזיבות רצוניות ובקשות מעבר: פי 1.5 מממוצע הארגון, לפחות 2 אירועים, בשתי תקופות רצופות, ומוצג רק בצוות של 10 עובדים ומעלה); דוח דירקטוריון שלא מתפרסם בלי טבלת התאמה מתאזנת; עובד מקופח רק אחרי שבועיים רצופים. אף פלט של סוכן לא כולל person_id, user_id או כינוי.
+
+> **v1.6.13 (2026-10-25):** Encodes Karin's locked EverStore decisions from 2026-10-25: `shop_item_catalog` expansion (the 8 items are the opening seed catalog `קטלוג פתיחה`, not a closed list; 8 categories `cosmetic`, `time_benefit`, `health_wellbeing`, `learning`, `donation`, `experience`, `gift_card`, `merchandise`; `provider`; `cosmetic_only` true/false; any positive `price_golden_spoons > 0`; `real_money_purchase_allowed=false` and `affects_daily_energy_spoons=false` strictly locked), Golden Spoons non-expiration while active + `rpc_convert_golden_to_chr` active on server in v1 (UI button hidden until v2; **superseded in v1.6.16 — blocked, 422**), time-benefit voucher redemption privacy (`נעילת הפרגוד`: `approved_absence_entry` / `approved_absence_manager_v`), and cleanup of resolved `TODO`s in `openapi.yaml`.
+> **Remaining open items** (details in `ADR_GAPS.md` → *Still open after v1.6.13*):
+> - **O-38** reminder sender job (push / in-app, idempotency, cadence) — stub (TODO להשלמה)
+> - **O-52** drop the deprecated `users.start_date` alias in **v1.7** (planned)
+> - **O-53 (rest)** non-superuser fallback is weaker than the event trigger (`legacy_v1_4` schema move itself confirmed 24.10); managed-host role attributes not verified (TODO להשלמה at go-live)
+> - **O-55** users audited `tz_edge_review` to be looked at at go-live (flag only; TODO להשלמה)
+> - non-backend / v2 / external-adapter items in `ADR_GAPS.md` (`O-22` v2, `O-23` wireframe, `O-26` push/SMS provider adapters, `O-27` prototype border)
+>
+> **גרסה v1.6.13 (25.10.2026):** הוטמעו נעילות החנות (EverStore) של קארין מ־25.10: הרחבת הקטלוג ל־8 קטגוריות עם כל מחיר חיובי בכפיות זהב (8 הפריטים הראשונים הם קטלוג פתיחה בלבד), אי־פקיעת תוקף של כפיות זהב כל עוד העובדת פעילה, השארת `rpc_convert_golden_to_chr` פעיל בשרת ב־v1 (הוחלף ב־v1.6.16: חסום, 422), ופרטיות מימוש שוברי זמן (נעילת הפרגוד — המרה אוטומטית דרך HR ל׳זמן התרעננות / היעדרות מאושרת׳ בלי לחשוף למנהל שהמקור הוא רכישה בחנות).
+
+## EN
+Specs→Code pack from **locked decisions only**. Anything not locked is `TODO` (see `ADR_GAPS.md`) — not invented.
+
+| File | Purpose |
+|------|---------|
+| `ref_country_calendar.sql` | **GENERATED** reference data: country → CLDR weekData firstDay / weekendStart / weekendEnd + main IANA zone (load first) |
+| `tools/gen_ref_country_calendar.py` | Generator of `ref_country_calendar.sql` (standard-library Python) |
+| `schema.sql` | DDL + RLS + grants + triggers + config tables + pseudonymous manager views |
+| `rpc.sql` | All write RPCs (SECURITY DEFINER) |
+| `openapi.yaml` | PostgREST reads + RPC writes + error contract (403 / 400 / 409 / 422 codes) |
+| `ADR_GAPS.md` | Closed in this version + still open + questions for Karin |
+| `migrations/migrate_v1_4_to_v1_6_16.sql`, `migrations/run_migration.sh`, `migrations/preflight_tz.sql`, `migrations/legacy_ddl_guard.sql`, `migrations/legacy_lockdown_fallback.sql` | Upgrade of a v1.4 database (v1.6.16, see below; replaces `migrate_v1_4_to_v1_6_13.sql`) + source timezone preflight + superuser event-trigger guard for the legacy tables, or the non-superuser fallback lockdown |
+| `tests/test_v1_5.sql`, `tests/test_agents_v1_6_16.sql`, `tests/run_tests.sh` | Scratch PostgreSQL 17 validation (fresh DB; the agents tests run on their own fresh DB) |
+| `tests/test_migration.sh`, `tests/catalog_snapshot.sql`, `tests/data_hash.sql`, `tests/fixtures/` | Migration tests on a real-structure v1.4 fixture |
+
+Install target is a **fresh database** (`ref_country_calendar.sql`, then `schema.sql`, then `rpc.sql`; all re-apply cleanly).
+
+### Country calendar reference data (v1.6.6; overrides v1.6.7 / v1.6.9; zone exclusions v1.6.8 / v1.6.9 / v1.6.10)
+- **CLDR:** Unicode CLDR **48** — npm package **`cldr-core` 48.2.0** (unicode-org/cldr-json), `supplemental/weekData.json` (`firstDay`, `weekendStart`, `weekendEnd`). Source: https://github.com/unicode-org/cldr-json · https://www.npmjs.com/package/cldr-core
+- **tz:** IANA tz database **2026c** (Debian `tzdata 2026c-0+deb13u1`), `zone.tab`; main zone = the country's first row. `zone1970.tab` is read only for comparison (its first row is not a country's main zone, e.g. DE → Europe/Zurich).
+- Rules on top of the data (in SQL, not in the table): country not in CLDR → `001`.
+- **Documented overrides** in the generator (`FIRST_DAY_OVERRIDES`, `TZ_OVERRIDES`) and recorded per row in `first_day_source` / `main_timezone_source`: IL week start pinned to Sunday (Karin); **XK → Europe/Belgrade, AN → America/Curacao** (Chief of Drive, O-43 — neither is in zone.tab). The generated file no longer opens its own transaction (the migration includes it).
+- **Zone exclusion list** — generator `ZONE_EXCLUSIONS`, table column `tz_zones_excluded`: zones ignored for multi-zone detection (`tz_zone_count`) and never picked as main zone. Only rulings go in it (Chief of Drive 21.10): **Europe/Busingen** (DE, v1.6.8); **Asia/Famagusta** (CY), **Pacific/Kwajalein** (MH), **Asia/Kuching** (MY), **Asia/Hebron** (PS) (v1.6.9, O-51), **Asia/Samarkand** (UZ — v1.6.10: the capital's Asia/Tashkent is kept). Each excluded zone is checked on every run to have the kept zone's UTC offset every hour 2026–2037 (`verify_exclusions`; generation aborts otherwise). The generator prints the countries whose count changes, the multi-zone list (zone count > 1: **25**) and those needing review (**24**). **UA** is pinned to **Europe/Kyiv** (`TZ_OVERRIDES`; still 2 zones listed). **v1.6.10 pin rule (generic):** a pinned zone (`main_timezone_source` 'override: …') is never needs_review (`fn_country_tz_needs_review`) → UA `confirmed`. Unknown country codes are refused (422 `unknown_country`).
+- Regenerate:
+  ```
+  npm install cldr-core@48.2.0        # in a scratch dir
+  python3 tools/gen_ref_country_calendar.py --cldr <dir>/node_modules/cldr-core --tzdir /usr/share/zoneinfo --out ref_country_calendar.sql
+  ```
+  The generator prints CLDR-vs-ruling and zone.tab-vs-zone1970.tab differences to stderr.
+### Migration v1.4 → v1.6.16 (`migrations/`)
+Upgrades a **v1.4** database (structure of the real v1.4 files: Drive hot-fix `schema.20261013.sql` + v1.4 `rpc.sql`) in **one transaction**: the v1.4 code layer (functions, triggers, policies) is replaced; **users** (manager_id → reports_to, 1.6 columns, pseudonyms; `hire_date` ← v1.4 `start_date` unless it equals the record's creation date (v1.4 `users.created_at`, date in UTC — or in the `--source-tz` zone, v1.6.10) → unknown, audited `start_date_untrusted`; `start_date` becomes the deprecated alias; `team_joined_at` left NULL — no fallback; TPS wait source audited), **spoons history** (rows kept, `day_status` derived, `row_source = legacy_v1_4`), golden spoons, **projects** (`is_core = false` for legacy rows — v1.4 has none) and **company settings** (CLDR / zone.tab backfill, `needs_review`, reminder hold for companies without a country — v1.4 has no country column, so all are held) are migrated; then `ref_country_calendar.sql`, `schema.sql` and `rpc.sql` are applied. Out-of-scope v1.4 tables with an incompatible shape are kept, frozen and **read-only** (grants + triggers, owner included; never dropped), as `legacy_v1_4_*` (ADR_GAPS O-45).
+```
+migrations/run_migration.sh [--source-tz <zone>] dry-run  <db>   # tz preflight, counts, then ROLLBACK; reports guard / fallback mode
+migrations/run_migration.sh [--source-tz <zone>] apply    <db>   # tz preflight → pg_dump -Fc backup → migrate → guard, or fallback
+migrations/run_migration.sh guard    <db>   # (re)install only the legacy protection (guard as superuser, else fallback; idempotent)
+migrations/run_migration.sh rollback <db>   # restore the newest backup (drop + pg_restore --create, database settings included)
+psql -d <db> -v ON_ERROR_STOP=1 [-v dry_run=1] [-v source_tz=<zone>] -f migrations/migrate_v1_4_to_v1_6_16.sql   # without the runner (no guard)
+```
+- **Idempotent:** every step is conditional; a second run changes no table and no catalog object (all counts 0). Re-run after the CHRO sets the held companies' countries to lock the company calendar NOT NULLs.
+- **Rollback:** any error rolls the whole transaction back; after a successful apply, `run_migration.sh rollback` restores the pre-migration backup (there is no in-place down script — see the ROLLBACK SECTION in the SQL file).
+- **Timezone preflight (v1.6.10, Chief of Drive rule 4)** — `migrations/preflight_tz.sql`: reads the source DB zone (`current_setting('TimeZone')`; the runner unsets `PGTZ`). **UTC → passes.** Not UTC → the run **stops before the backup** with a clear message, unless `--source-tz <zone>` (`-v source_tz=<zone>`) is given; the start_date trust rule then compares dates in that zone. Users created within **1 hour of local midnight** (23:00–01:00 in the zone used) are audited **`tz_edge_review`** — flag only, nothing else changes. Enforced while a v1.x `start_date` is still to be merged; an already-migrated DB only notes the zone.
+- **Legacy DDL guard (v1.6.9, Chief of Drive rule 4)** — `migrations/legacy_ddl_guard.sql`: two **event triggers** (`trg_legacy_v1_4_drop_guard` on `sql_drop`, `trg_legacy_v1_4_alter_guard` on `ddl_command_end` for ALTER TABLE) abort any DROP or ALTER of a `legacy_v1_4_*` table — RENAME, SET SCHEMA and `DROP SCHEMA … CASCADE` included — for every role, with `legacy_ddl_blocked` (42501). Objects live in schema `chr_guard`. **PostgreSQL only lets a superuser create event triggers**, so the runner installs it with `GUARD_PGUSER` (default `PGUSER`). **v1.6.10 (O-53): when that role is not a superuser (e.g. managed Supabase) the run does NOT fail** — the runner applies `migrations/legacy_lockdown_fallback.sql` instead: REVOKE ALL on every legacy table from every role (PUBLIC, anon, authenticated, service_role, the app owner, any other grantee), tables + legacy enum moved to schema `legacy_v1_4`, owner → NOLOGIN role `legacy_v1_4_owner`, loud WARNING, audit row `legacy_guard_fallback`. It is weaker than the event trigger (ADR_GAPS O-53: the creating role keeps ADMIN OPTION on the owner role, etc.). Reading frozen rows in fallback mode: `GRANT legacy_v1_4_owner TO <admin> WITH INHERIT TRUE; SELECT … FROM legacy_v1_4.legacy_v1_4_<name>; REVOKE legacy_v1_4_owner FROM <admin>;`.
+  - **Lifting it deliberately** (authorised operator, superuser, one transaction; the guard is active again on COMMIT or ROLLBACK):
+    ```
+    BEGIN;
+    ALTER EVENT TRIGGER trg_legacy_v1_4_drop_guard DISABLE;
+    ALTER EVENT TRIGGER trg_legacy_v1_4_alter_guard DISABLE;
+    -- the approved change on the legacy table
+    ALTER EVENT TRIGGER trg_legacy_v1_4_drop_guard ENABLE;
+    ALTER EVENT TRIGGER trg_legacy_v1_4_alter_guard ENABLE;
+    COMMIT;
+    ```
+    Removing it for good (only with a ruling that ends O-45): `DROP EVENT TRIGGER trg_legacy_v1_4_drop_guard; DROP EVENT TRIGGER trg_legacy_v1_4_alter_guard; DROP SCHEMA chr_guard CASCADE;`. A non-superuser cannot disable it (tested).
+- **On Drive** the files are in `Code/migrations/v1_4_to_v1_6_13/` (renamed from `v1_4_to_v1_6_12`, earlier `v1_4_to_v1_6_11`, earlier `v1_4_to_v1_6_10`, earlier `v1_4_to_v1_6_9`, earlier `v1_4_to_v1_6_8`, `v1_4_to_v1_6_7`; older versions are in its `_ארכיון`; the older `Code/migrations` files are unrelated); in a checkout they sit in `migrations/` next to `schema.sql` (the script includes `../schema.sql` etc.).
+- **Tested** (`tests/test_migration.sh`, run by `run_tests.sh` **twice: `MIG_MODE=super` and `MIG_MODE=nosuper`** — app connection `chr_app_owner`, LOGIN CREATEDB CREATEROLE BYPASSRLS, not superuser): dry run changes nothing; expected counts; catalog equal to a fresh 1.6.13 install; start_date trust rule (trusted / untrusted / near-midnight fixture rows); tz preflight (UTC passes; Asia/Jerusalem source stops without `--source-tz`, before the backup; unknown zone refused; with `--source-tz` it runs, counts and `tz_edge_review` audit checked); fallback (WARNING, owner NOLOGIN, schema `legacy_v1_4`, no privilege for PUBLIC / anon / authenticated / service_role / app owner, SELECT / writes / ALTER / DROP / DROP SCHEMA / DROP TYPE denied, one audit row, re-run idempotent, no event trigger); in super mode: DROP / ALTER / RENAME / SET SCHEMA / DROP SCHEMA CASCADE on legacy tables blocked, other tables unaffected (superuser and non-superuser), documented lift works and the guard is back afterwards; legacy tables refuse INSERT / UPDATE / DELETE / TRUNCATE; hire_date / TPS-source / row_source checks; unknown country keeps the hold; second run idempotent; release → exact match; rollback restores v1.4 catalog + data.
+The SECURITY DEFINER functions assume the owner role bypasses RLS (Supabase `postgres`), as in 1.4.
+
+Do **not** run Supabase tests from this pack until Stage A 27/27 (Karin).
+
+### CHANGELOG
+
+#### 1.6.16-mvp — 2026-10-30 (Karin + Chief of Drive: agents v3, conversion blocked, participation Golden Spoons, anonymous EverStore summary; replaces planned 1.6.14 / 1.6.15)
+- **A1:** `rpc_convert_golden_to_chr` → unconditional 422 `chr_coins_deferred_to_v2` (`fn_raise_unprocessable`-style PT422 + Error Contract DETAIL); defined and granted for v2.
+- **A2:** `fn_everstore_budget_summary(p_from date DEFAULT NULL, p_to date DEFAULT NULL)` (SECURITY DEFINER), `everstore_budget_summary_v`, `rpc_everstore_budget_summary` — vp_hr / cfo only (else 403 `insufficient_privilege`); rows `company_total`, `time_benefit_total`, `item`, `item_small_merged`, `other`, `merged_small_categories`.
+- **Settings:** `agent_settings` (default rows + company overrides; `value_status` set / not_defined; locked keys → 403 `setting_locked`).
+- **Questionnaires:** `questionnaire_definition.reward_type = 'participation'` + `reward_setting_key`; `reward_amount` legacy NULL; `questionnaire_submission.reward_status`; `fn_reward_score_div10` dropped; HR definitions take no amount (400 `questionnaire_reward_from_settings`). Morning shift and signup rewards read `golden_spoons_per_shift` / `golden_spoons_per_onboarding`.
+- **Agents:** Agent 1 (`rpc_get_open_golden_spoons_liability`, `rpc_run_daily_budget_summary`, `rpc_get_daily_budget_summary`, `rpc_expire_departed_golden_spoons`, `rpc_everstore_budget_set`, `rpc_everstore_item_cost_set`), Agent 2 (`rpc_get_burnout_trend`, `rpc_put_team_movements`, `rpc_put_epwi_inputs`), score range (`rpc_margin_of_error`, `rpc_can_compare`), leaver Happiness Debt trigger + `rpc_record_remediation`, Agent 3 (`rpc_put_happiness_debt_split`, `rpc_put_board_reconciliation`, `rpc_put_metric_assurance`, `rpc_put_bcr_check`, `rpc_build_board_report`, `rpc_get_board_report`). New tables (RLS forced, no client grant): `everstore_budget`, `everstore_item_cost`, `agent_daily_summaries`, `golden_spoons_ledger` (WORM), `remediation_records` (WORM), `happiness_debt_events` (WORM), `happiness_debt_ledger`, `team_movements`, `metric_assurance`, `bcr_checks`, `epwi_inputs`, `board_reconciliation`, `board_report` (WORM).
+- **EverStore after exit:** an ex-employee may redeem for 30 days (`exit_redemption_days`); time benefits are refused after exit.
+- **Deprived:** `fn_is_employee_deprived` requires this week AND the previous week.
+- **Roles:** `users.app_role` gains `cfo` (schema upgrade block + migration post step).
+- **Tests:** existing tests changed by design are marked `v1.6.16` in `tests/test_v1_5.sql`; new `tests/test_agents_v1_6_16.sql`.
+
+#### 1.6.13-mvp — 2026-10-25 (Karin + Chief of Drive: EverStore expansion, Golden Spoons policy, נעילת הפרגוד, OpenAPI TODO cleanup)
+- **`shop_item_catalog` expansion:** the 8 items (`theme_*`, `badge_*`) are the **opening seed catalog (`קטלוג פתיחה`)**, not a closed list. Added `category` (`cosmetic`, `time_benefit`, `health_wellbeing`, `learning`, `donation`, `experience`, `gift_card`, `merchandise`), `provider text NULL`, `cosmetic_only boolean` (`true` or `false` allowed for tangible benefits), strictly locked `real_money_purchase_allowed = false` and `affects_daily_energy_spoons = false`, expanded `shop_tier_enum` (`basic`, `advanced`, `premium`, `custom`), and allowed any positive `price_golden_spoons > 0`. Added `rpc_everstore_upsert_item` (CHRO).
+- **Golden Spoons expiration & conversion:** Golden Spoons never expire while the employee is active (`avatar_state.golden_spoons_expires_at` always `NULL`, pinned by `CHECK`); `rpc_convert_golden_to_chr` remains active on the server in v1 (UI conversion button hidden until v2). **Superseded in v1.6.16:** blocked, 422 `chr_coins_deferred_to_v2`.
+- **Time-benefit voucher redemption privacy (`נעילת הפרגוד`):** purchasing a `time_benefit` item in `rpc_everstore_purchase` records the private row in `shop_purchase` (own-rows RLS only; strictly hidden from managers) and automatically creates a standard HR approved absence / refresh time entry (`approved_absence_entry` / `approved_absence_manager_v`: `'זמן התרעננות / היעדרות מאושרת'`) with zero link to EverStore, item code, or Golden Spoons; direct manager coordinates the schedule via `rpc_coordinate_approved_absence`.
+- **Stale `TODO` cleanup:** removed resolved `TODO`s across `openapi.yaml`, `schema.sql`, and `rpc.sql`; added aliases `rpc_submit_morning_checkin` and `rpc_submit_midday_checkin`.
+- Tests: **751 SQL checks** pass (734 previous: 1 updated + 17 new) **+ 111 migration checks (super) + 105 (nosuper)**.
+
+#### 1.6.12-mvp — 2026-10-24 (Karin: O-7, O-25, O-14 · Chief of Drive: O-13, O-19, O-20)
+- **O-7 (PCQ-12 scale):** locked as 1–6 (Luthans original scale, 12 items, all required), converted linearly to 0–100 (`(mean - 1) / 5.0 * 100`, `fn_pcq12_score`, `questionnaire_submission.pcq12_score`).
+- **O-25 (Board / Tier 5 metrics):** `rpc_get_board_macro_metrics` and `rpc_company_averages` allow tier 5 governance roles (`board_chair`, `board_member`, `owner_shareholder`) to read all company-wide organizational averages at the whole-company level only (TPS-12, spoons, workload / EPWI / PEWI, IHS at `N >= 5`; Happiness Debt, 12 % deprivation tax, Shadow Balance, CHR Real EBITDA at `N >= 10`), while blocking any team or individual breakdown (`403`).
+- **O-14 (Offboarding & crypto-shredding retention):** `rpc_request_crypto_shred` (self-request, immediate 0-day wait); `rpc_offboard_employee` revokes access & vault immediately and schedules crypto-shredding for `terminated_at + 30 days` (`pseudonym_key.scheduled_shred_at`, cancellable via `rpc_revert_offboarding` within 30 days); `rpc_run_scheduled_crypto_shred` shreds keys whose 30-day wait has elapsed.
+- **O-13 (Per-company ledger chain):** one chain per company (`org_id`), genesis record (`event_type = 'GENESIS'`) seeded automatically on company creation (`trg_companies_ledger_genesis`), and `fn_ledger_verify_chain` writes an audit alert (`ledger_chain_broken`) while `fn_ledger_chain` blocks writes (`403 ledger_chain_broken`) on a broken chain.
+- **O-19 & O-20 (Manager vault & governance-only provisioning):** `rpc_provision_governance_user` (CHRO provisions tier-5 users with `has_employee_profile = false` by default unless also an employee); manager private vault (`manager_vault_session`, `manager_vault_entry`, `rpc_manager_vault_open/put/entries/close`) enforces direct manager only, office-network + company-device flags, inactivity timeout, and automatic wipe on transfer/dismissal.
+- Tests: **734 SQL checks** pass (695 previous: 2 updated + 39 new) **+ 111 migration checks (super) + 105 (nosuper)**.
+
+#### 1.6.11-mvp — 2026-10-24 (Karin: O-1..O-6, O-8, O-16/Q11, O-18, Q5, C-1, C-2 · Chief of Drive: O-30, O-31, O-53 schema move)
+- **O-8 (TPS-12 / IHS fractional rounding):** confirmed as built (`round(p_score)::int` first, then `fn_round_score_last_digit`, then ÷ 10).
+- **O-6 (IHS):** score from anonymous 1–5 questionnaire answers `((mean - 1) / 4 * 100)` (`fn_ihs_score`); IHS submissions enabled (`403 scoring_not_locked` removed); `questionnaire_submission.ihs_score`; `team_aggregate.ihs_team_avg` + `ihs_respondent_count` at N≥5 respondents.
+- **O-1 (Turnover midpoint):** `turnover_tier_config.midpoint_pct` (`junior` = 40 %, `mid` = 125 %, `senior` = 300 %); `fn_turnover_tier_midpoint_pct`, `fn_turnover_tier_midpoint_factor`; `employee_turnover_cost_range_v.turnover_cost_midpoint`; `team_aggregate.turnover_cost_midpoint_sum`.
+- **O-2 (Turnover tier assignment):** defaults automatically from `org_role.tier` (1 → `junior`, 2–3 → `mid`, 4 → `senior`, 5 / outside → `NULL` excluded unless overridden); CHRO (`vp_hr`) may override per employee (`employee_value_asset.turnover_tier_override`, `fn_effective_turnover_tier`, triggers on `employee_value_asset` and `users`).
+- **O-3 (Deprived employee rule):** deprived in a week when weekly average available spoons < 5 OR weekly `B_t >= 0.65` (`fn_weekly_deprivation_metrics`, `fn_is_employee_deprived`, `fn_sync_employee_deprived`).
+- **O-4 & O-18 (Company tier `avg_annual_salary` & Shadow Balance / CHR Real EBITDA):** `fn_company_tier_avg_salary` uses the company-wide average annual salary of that turnover tier group (never individual or small-team average; handles missing individual salaries cleanly); `rpc_shadow_balance_refresh` at N≥10 actual contributors computes `deprived_count`, 12 % `deprivation_tax_amount`, `happiness_debt_sum` / `happiness_debt_balance`, `shadow_balance_sum`, and `chr_real_ebitda = gaap_reported_ebitda - happiness_debt_balance - deprivation_tax_amount`.
+- **O-5 & Q5 (Morning & midday check-in RPCs + visibility):** `rpc_morning_checkin` (0–10 scales average, half-point scores floored in employee's favor, sets `spoon_budget.reported_at`) & `rpc_midday_checkin` (open 12:00–15:00 employee-local, integer delta −4..+4, clamped 0..12). "Never show the deduction" applies only to check-in survey answer options; task spoon costs (0/1/2) and golden spoon rewards stay visible.
+- **O-16 / Q11 (Currencies in v1):** only Golden Spoons active in v1 (`0.5` daily, `2.0` per shift in `rpc_morning_checkin` via `spoon_budget.shift_golden_awarded`, `10.0` at initial signup in `rpc_signup_profile`); CHR Coins deferred to v2 (CHR shelf rows stay inactive).
+- **C-1, C-2, O-30, O-31, O-53 schema move:** all confirmed.
+- Tests: **695 SQL checks** pass (653 previous: 2 updated + 42 new) **+ 111 migration checks (super) + 105 (nosuper)**.
+
+#### 1.6.10-mvp — 2026-10-21 (Chief of Drive: final cleanup — UA pin final, UZ Tashkent, O-53 fallback, tz preflight) — BACKEND FROZEN
+- **UA pin final (generic):** a pinned zone (`main_timezone_source` 'override: …') is never needs_review — `fn_country_tz_needs_review`, used by the backfill and the release trigger. UA → Kyiv **confirmed**. Multi-zone countries: **25 by zone count, 24 need review**.
+- **UZ:** Asia/Tashkent (capital) kept, **Asia/Samarkand excluded**; same-offset check re-run (identical 2026–2037).
+- **O-53:** no superuser → **fallback** lockdown instead of refusal (see above); `fn_legacy_guard_all` skips tables the caller does not own.
+- **Timezone preflight** + `tz_edge_review` flag (see above); `fn_mig_source_tz`, `fn_tz_edge`; new count `users.tz_edge_review`; report header names the comparison zone. Migration renamed `migrate_v1_4_to_v1_6_10.sql`; backups `<db>_pre_v1_6_10_*`; rollback restores database settings (`pg_restore --create`).
+- Fixture: + 2 users near midnight (u4 UTC edge, u5 Asia/Jerusalem edge); the first 7 users get a fixed `created_at` (was now()).
+- Tests: **653 SQL checks** pass (647 previous: 3 rewritten + 6 new, 2 with new expected values) **+ 111 migration checks (super) + 105 (nosuper)** (v1.6.9: 92). openapi: version only (no shape change).
+
+#### 1.6.9-mvp — 2026-10-21 (Chief of Drive: O-50, migration rule, O-51, legacy DDL guard, NOT VALID OK)
+- **O-50:** `hire_date` is the single source; `users.start_date` is a **deprecated read-only alias** (generated column = hire_date; writes refused, 428C9), no 'today' default, **removal planned for v1.7** (openapi `deprecated: true`). An upgrade merges a plain start_date into an empty hire_date unless it equals the record's creation date (UTC date portion) → unknown, audited `start_date_untrusted`.
+- **Migration** renamed `migrate_v1_4_to_v1_6_9.sql`; v1.4 has `users.created_at` (used by the rule); fixture + 3 users (untrusted / trusted / near-midnight). Runner: superuser pre-check, guard step, `guard` command.
+- **O-51:** zone exclusions CY, MH, MY, PS, UZ (same-offset check in the generator), UA pinned to Europe/Kyiv; multi-zone countries 30 → 25; reference table regenerated.
+- **Legacy DDL guard** (event triggers) — see above. NOT VALID 7-day check after a 1.6.7 upgrade: OK; query + known rows in ADR_GAPS.
+- Tests: **647 SQL checks** pass (631 previous: 3 rewritten + 19 new; fixtures that wrote start_date now write hire_date) **+ 92 migration checks** (66 previous: 12 replaced + 38 new). `run_tests.sh` → 1.6.9; the migration test must run as a superuser.
+
+#### 1.6.8-mvp — 2026-10-21 (Karin: O-41 bridge, O-49 · Chief of Drive: PEWI, unknown country, DE zones, O-45–O-48)
+- **O-41 (replaces the 1.6.7 long week):** last old week stays 7 days, then a **1–6-day bridge** (no week, no report → **422 `bridge_period`**, no reminder), then 7-day weeks. Audited with the bridge dates. Examples (change on Wed 2026-10-21): Sun→Mon → last old week 10-18…10-24, bridge Sun 10-25, new week from Mon 10-26; Mon→Sun → last old week 10-19…10-25, bridge 10-26…10-31, new week from Sun 11-01. Strict 7-day report check restored (`chk_workload_week_7_days`).
+- **O-49:** TPS 30-day wait = team-join date → `hire_date` (new, nullable) → exempt; insert-day / start_date fallback removed; source audited per user (`tps_wait_source`).
+- **Chief of Drive:** PEWI time-based EPWI resolved; 403 (`rpc_project_workload`) vs null + suppressed (`rpc_project_pewi`) both kept; unknown country → 422 `unknown_country` (hold kept); DE single-zone via the zone exclusion list (only DE changes); `legacy_v1_4_*` read-only; `spoon_budget.row_source` marks migrated v1.4 days.
+- **Migration** renamed `migrate_v1_4_to_v1_6_8.sql` (runner updated); dry run / idempotence / rollback re-checked.
+- Tests: **631 SQL checks** pass (607 previous: 17 of them rewritten or renamed + 41 new) **+ 66 migration checks** (49 previous: 6 replaced + 23 new). `run_tests.sh` → 1.6.8.
+
+#### 1.6.7-mvp — 2026-10-20 (Karin: O-36, O-41, PEWI, migration · Chief of Drive: O-43, O-44)
+- **O-36 resolved:** only the CHRO (`vp_hr`) changes company settings; no system-admin role. Refusal tests kept.
+- **O-41:** week-start change takes effect at the next week boundary (`company_week_start_history`, append-only, `effective_from`); never blocked, reports never recalculated, each report resolved by the rule in force on its work_date, every change audited. `effective_from` = first new start day ≥ current week start + 7 → final old week 8–13 days (e.g. Sun→Mon on Wed 2026-10-21 → Mon 2026-10-26, final week 8 days; Mon→Sun → Sun 2026-11-01, 13 days). Needs Karin's confirmation (ADR_GAPS).
+- **O-43:** multi-zone backfill → first zone.tab zone + `timezone_status = needs_review` (CHRO: `rpc_company_timezone_confirm`, audited); XK / AN zone overrides; no-country companies: reminders on hold until a country is set (`p_country` on `rpc_company_settings_update` or any update), audited both ways. O-44 CLDR values and zone.tab approved.
+- **PEWI** = mean EPWI_time of the reporting project members (company week); `rpc_project_pewi` → null + `suppressed` below 5 reporters (no 403), audited; `rpc_project_workload.pewi` filled.
+- **Migration v1.4 → v1.6.7** (`migrations/`, above).
+- Tests: **607 SQL checks** pass (556 previous, 3 of them updated + 51 new: 8 PEWI, 23 week-start transition, 20 timezone / hold) **+ 49 migration checks**. `run_tests.sh` → 1.6.7 (runs `tests/test_migration.sh`).
+
+#### 1.6.6-mvp — 2026-10-20 (Chief of Drive rulings: O-37, O-39, O-40, O-42)
+- **O-37:** default week start = CLDR 48 weekData `firstDay` (generated `ref_country_calendar`); IL pinned Sunday; unknown country → 001 (Monday); override unchanged. IL Sun, US Sun, DE Mon.
+- **O-39:** upgrade backfill of legacy companies — last workday = day before the CLDR weekend (IL Thu, DE Fri), timezone = first `zone.tab` zone (IL Asia/Jerusalem, DE Europe/Berlin, US America/New_York — multi-zone flagged); each value audited `company_calendar_autofill`.
+- **O-40:** `work_date` within employee-local today − 14 … today + 1, else **422 `work_date_out_of_range`** (SQLSTATE PT422).
+- O-42 resolved as built; O-36 / O-41 stay open (Karin).
+- Tests: **556 checks** pass (523 previous, 8 of them updated + 33 new). `run_tests.sh` → 1.6.6 (loads the reference file first).
+
+#### 1.6.5-mvp — 2026-10-20 (Karin: company week, reminder, tiers, migration)
+- **Company calendar:** `companies.country` (ISO alpha-2, required) → default `week_start_dow` (IL Sunday, others Monday; override allowed); `last_workday_dow` + `timezone` required, no default. Week = 7 days.
+- **Weekly report** keyed by `week_start_date` (DATE, never ISO week); unique (employee, week_start_date); week from `work_date` (shift start date; night shifts count toward their start day). New RPC param `p_work_date`; outputs / params renamed `week_start` → `week_start_date`.
+- **Reminder:** company last workday at `reminder_time` (default 14:00, locked), company-local; `rpc_company_settings` / `rpc_company_settings_update` (CHRO only — TODO who); sender job stub. `workload_reminder_setting` removed.
+- **Tiers 2 ↔ 3 swapped** (labels only). **Migration:** legacy projects → `is_core = false` (`fn_migrate_project_is_core`); new projects still require is_core.
+- Tests: **523 checks** pass (476 previous, 12 of them updated + 47 new). `run_tests.sh` → 1.6.5.
+
+#### 1.6.4-mvp — 2026-10-20 (Karin's decisions: B_t, Q3–Q8)
+- **B_t = 0.41·S + 0.37·O + 0.22·D** (linear; sigmoid removed). S / D = (Likert 1–5 − 1)/4; O = min(overtime h / 10, 1). Bands low < 0.35 · medium · high ≥ 0.65. Missing input → NULL; invalid → 400. Employee-only.
+- **Q3:** L(P > 5) = 0.75. **Q5:** stress scale = integer Likert 1–5 (`pressure` → `stress_1to5`, + `productivity_drop_1to5`). **Q6:** weekly report, separate from spoons, duplicate rejected (409); reminder = `workload_reminder_setting` (Thursday, end of day — example).
+- **Q4:** `project.is_core` NOT NULL, no default; `rpc_project_create` (is_core required), `rpc_project_set_core` (PM of the project only); member-level `is_core` removed.
+- **Q7:** co-signer = CHRO only; `rpc_emergency_misuse_close` removed (close = safety manager).
+- **Q8:** role → tier mapping (label only).
+- Tests: **476 checks** pass (401 previous, 9 of them updated + 75 new). `run_tests.sh` → 1.6.4.
+
+#### 1.6.3-mvp — 2026-10-20 (workload module + Karin's locks of 20.10, Q5, Q6)
+- **Workload module** (research doc §4.2 / §6.2 + locked infographic formulas): `workload_self_report` (weekly, WORM, own rows only) + `rpc_submit_workload_self_report`; personal `rpc_my_workload_indices` (EPWI_time, EPWI_cognitive, B_t — employee only); PM `rpc_project_workload` (PEWI NULL / AIDB / TRR NULL until v2 / M_SPOF) at N≥5 respondents, audited; `context_switch_loss_config` (0/20/40/60/75 %); pure formula + band functions; `project_spof_item` (no employee columns); v2 stub `rpc_workload_integration_sync`. **Removed** `rpc_project_load` (v1.6.2 NULL index + spoon burnout flag).
+- **Soft WIP limit:** `project_member.is_core`, trigger `trg_project_member_wip`, `wip_alert` (count only), `rpc_project_assign_member` — never blocks.
+- **Cuckoo** N≥10 over a rolling 30-day reporter window (`fn_cuckoo_window`, `fn_cuckoo_recent_reporters`).
+- **Safety & emergency manager** outside the tiers (tier NULL), outside the reporting cascade, access only to open emergency / distress events.
+- **Distress delivery:** push AND SMS rows queued together at dispatch (`distress_alert_delivery`, provider stubs, `rpc_distress_delivery_job`); 60 s cancel window unchanged.
+- **Q5 emergency misuse:** close → notify → talk (`rpc_emergency_misuse_close`, `rpc_emergency_misuse_talk`); after a 2nd MISUSE → `PENDING_COSIGN` + `rpc_emergency_cosign`.
+- **Q6 CHRO reason:** required, any labour-law reason; CHECK `chk_audit_chro_reason`.
+- Tests: `tests/test_v1_5.sql` — **401 checks** on PostgreSQL 17 (all pass; the 13 B3 checks were rewritten for the new RPC). `run_tests.sh` → 1.6.3.
+
+#### 1.6.2-mvp — 2026-10-20 (two fixes)
+- **Emergency types named (Karin's lock of 13.10):** `emergency_type_enum` = `health_or_life_danger` (danger to an employee's health or life), `work_stopping_disaster` (a fault or disaster that stops work: fire, flood, systems down), `war_or_security` (war or a security situation). Placeholders `type_1..type_3` removed.
+- **Project load index:** the invented formula is removed; `rpc_project_load.load_index` is kept and returns NULL (TODO להשלמה — Karin defined the idea, perceived load vs. hours capacity, but no formula). The N≥5 contributor gate stays. `burnout_alert` stays: average reported spoons < 3 is Karin's locked red team alert rule (#4).
+- The Cuckoo 30-day contributor window and the role-to-tier mapping are listed as questions for Karin (not decided).
+- Tests: `tests/test_v1_5.sql` — **279 checks** on PostgreSQL 17 (all pass). `tests/run_tests.sh` unchanged (stays 1.6.1-mvp).
+
+#### 1.6.1-mvp — 2026-10-20 (Karin's locks #1, #3 + main v1.6 scope B1–B6)
+- **#1 (O-10, resolved):** at ≤3 spoons ALL tasks are blocked, Farming included (`fn_cb_check_task`; tests `lock #1: at ≤3 ALL tasks blocked — Farming / — Fighting`).
+- **#3 (O-11, resolved):** every threshold counts ACTUAL contributors, never team size — N = distinct employees whose data feeds that aggregate in that period. `team_aggregate.contributor_count` (+ `salary_contributor_count`) and `shadow_balance_aggregate.contributor_count` replace `member_count`; `fn_team_member_count` / `fn_require_team_threshold` removed; new `fn_team_aggregate_contributors`, `fn_team_activity_contributors`. Scopes: regular 5, project 5, Cuckoo / Shadow Balance / emergency 10, board 20 (`privacy_threshold_config`, locked by CHECK). Membership / offboarding no longer decides N.
+- **B1 role tree:** `org_role` (tiers 1–5, 14 seeded roles), `users.reports_to` (solid, renamed from `manager_id`), optional `users.dotted_line_to`, `users.org_role_code`; `fn_solid_subtree` (recursive, solid line only); cycle / cross-company guard (400 `reporting_line_invalid`).
+- **B2 access:** `rpc_subtree_summary`, `rpc_direct_reports_pseudonyms`, `rpc_company_averages`, `rpc_chro_named_view` (reason required, 400 `reason_required`); WORM `access_audit_log` written on every view.
+- **B3 project manager:** `project`, `project_member`, `rpc_project_load` (load index + burnout alert only, N≥5 actual contributors, audited).
+- **B4 board:** `rpc_board_macro_trends` (quarter / year, company or division, closed periods only, N≥20, no drill-down).
+- **B5 emergency:** `emergency_event`, `emergency_safe_report`, `rpc_emergency_declare / _end / _roster / _report_safe / _team_status / _hr_review` (safety & emergency manager only; 3 types; HR review; misuse rule).
+- **B6 distress button:** `distress_event`, `distress_silent_log`, `notification`, `distress_analytics_v`; `rpc_distress_press / _cancel / _dispatch_job / _safety_inbox / _close`.
+- New users columns `phone`, `last_location` (home / office / site).
+- Tests: `tests/test_v1_5.sql` — 276 checks on PostgreSQL 17 (all pass), OpenAPI valid, salary-literal grep clean.
+
+#### 1.6.0-mvp — 2026-10-20 (Karin's locks #2, #4–#9)
+- **Red team alert (#4):** kept (team average spoons < 3), team-level trend only. Counted only from employees who actually reported spoons today (new `spoon_budget.reported_at`); fewer than 5 reporters → no average, no alert (`team_aggregate.spoon_reporter_count`, CHECK `chk_spoon_alert_respondents`). New `rpc_team_spoon_alert` (manager; 403 `aggregation_privacy_threshold` below 5 reporters; returns level / average / reporter count only).
+- **Shop access (#6):** shop and golden→CHR open to every user with an employee profile (`users.has_employee_profile`, `fn_has_employee_profile`) — managers at every tier, CEO, VPs. Governance-only roles (`board_chair`, `board_member`, `owner_shareholder`) without a profile, and ex-employees → 403 `anti_get_blocked`.
+- **Crypto-shredding (#7):** only (1) self-request — `rpc_crypto_shred_pseudonym_key()` for the caller's own key; (2) automatic on offboarding — `users.employment_ended_at` (new) set by `rpc_offboard_employee` (service_role) → trigger `trg_users_offboarding_shred`. HR / managers / CEO → 403 `crypto_shred_forbidden`.
+- **Pseudonyms (#8):** system-assigned at insert (random colour + animal, `fn_generate_pseudonym`), unique per company (`uq_users_company_pseudonym`), never from name / id, immutable (403 `pseudonym_immutable`). `rpc_set_display_pseudonym` removed.
+- **TPS-12 30-day rule (#5):** counts from `users.team_joined_at` (new) — = start date for a new hire; reset to the transfer time on an internal team change (trigger `trg_users_team_joined`).
+- **TPS rounding (#2):** unchanged — fractional score rounded to a whole number, then the last-digit rule. Approved by Chief of Drive; awaiting Karin's explicit confirmation.
+- Tests: `tests/test_v1_5.sql` (150 checks, incl. 4 vs 5 reporters, manager vs board-only shop, shred paths, pseudonym immutability, hire 29 vs 30 days, transfer reset).
+
+#### 1.5.0-mvp — 2026-10-20
+- **Turnover cost by tier** (`turnover_tier_config`: junior 30–50 %, mid 100–150 %, senior 200–400 % of annual salary, pinned by CHECK). `employee_value_asset.turnover_tier`. Range results only: `employee_turnover_cost_range_v` and team `turnover_cost_min_sum` / `turnover_cost_max_sum`. **Removed** `role_cost_config`, the 1.5× default, the 0.5–2.0 multiplier and `rpc_set_role_cost_multiplier`. TODO: point in range; what decides the tier.
+- **Deprivation tax** = `deprived_count × avg_annual_salary × 0.12` (team figure in `rpc_team_aggregate_refresh`; citation kept). New nullable `employee_value_asset.is_deprived`, set only by the system path `rpc_set_deprivation_flag` (service_role). TODO: criteria.
+- **Privacy thresholds** (`privacy_threshold_config`): regular team data N≥5; Cuckoo, Shadow Balance and emergency N≥10. Both → 403 `aggregation_privacy_threshold`. New `shadow_balance_aggregate` + `rpc_shadow_balance_refresh` (N≥10). Emergency scope ready; entity TODO.
+- **Cuckoo**: 60-**second** veto window (fix from Drive `schema.20261013.sql`). Employee sees the alert first; managers can no longer read `cuckoo_alert` (old rule `auth.uid() = manager_id OR …` replaced by target-only RLS). The direct manager reads `cuckoo_alert_manager_v` (alert_id, target_pseudonym, delivered_at) only after 60 s without veto. New `users.display_pseudonym`, `users.manager_id`, `fn_cuckoo_raise` (service_role), `rpc_cuckoo_commit_expired_job`, `rpc_set_display_pseudonym` (removed in 1.6). `logic_hash` = SHA-256 of the alert payload.
+- **Spoons / Circuit Breaker**: 12 hard max; Fighting blocked at 4–5 remaining; ≤3 → go home, no tasks (403 `circuit_breaker_active`). New WORM `early_leave_log` (only 'יציאה מוקדמת מאושרת' + time; full workday; no sick-day deduction; no reason column), auto-logged by `rpc_assign_task`, plus `rpc_log_go_home` and the manager feed `early_leave_manager_v` (pseudonym only). **Removed** the `<3 / <14 %` rule (`fn_cb_check_spoons`, `available_capacity_pct`, `energy_state`); new GENERATED `spoon_budget.day_status`. CB never locks questionnaires or the shop. Check-in scoring: TODO (not approved).
+- **PSC-12 → TPS-12** everywhere: `team_aggregate.tps_team_avg` (+ `tps_respondent_count`), `questionnaire_submission.tps_12_score`.
+- **Generic questionnaires**: `questionnaire_definition` (code, frequency, reward_type fixed | score_div10 — v1.6.16: participation only + reward_setting_key, reward_amount, …) and WORM `questionnaire_submission` (UNIQUE per user/questionnaire/period in the employee's timezone; 403 `questionnaire_immutable`). Seeds PCQ-12 (monthly, 10), Cantril (monthly, 2.5), IHS (quarterly, score/10), TPS-12 (quarterly, score/10). TPS-12 score `(sum−12)/48×100`, items 1/3/5/11 reversed, all 12 required, 30-day new-employee rule. Last-digit rounding (86→9, 83→8.5, 81→8). HR CHECKs for future questionnaires (daily..monthly, 0.5–2.5). `rpc_submit_questionnaire`, `rpc_upsert_questionnaire_definition`; `rpc_pcq12_claim_monthly_reward(p_answers)` kept as a compatibility wrapper (the zero-arg 1.4 version and `pcq12_monthly_reward` are gone).
+- **Currencies**: `avatar_state.golden_spoons numeric(10,1)`; `rpc_convert_golden_to_chr` (1 golden = 50 CHR, one-way, idempotent) + WORM log `golden_chr_conversion`; no reverse path. Dutch tier removed from `shop_tier_enum` (v2); `is_event` column removed. CHR Coins shelf + earn amounts: TODO (CHR shelf rows must stay inactive).
+- **Ledger**: SHA-256 hash chain (`previous_hash`, `current_hash = sha256(previous_hash || canonical_payload)`, computed by trigger under an advisory lock), `subject_pseudonym` (HMAC with a per-employee key), `pseudonym_key` + `rpc_crypto_shred_pseudonym_key`, `fn_ledger_verify_chain`; WORM 403 `ledger_immutable`. New `rpc_ledger_append` signature (no client hashes). TODO: chain scope, shred policy.
+- **HRV**: `hrv_sample` kept, marked **v2 only / unused in v1**, no client grant.
+- Removed every occurrence of the rejected fixed salary literal (code, comments, docs).
+
+#### 1.4.0-mvp — 2026-10-06
+- Q-027 / Q-016 v3 deprivation tax 0.12 with a per-role multiplier (superseded by tiers in 1.5). No hardcoded salary amount; no 13–14 %.
+- RPCs: `rpc_upsert_employee_value_asset`, `rpc_set_role_cost_multiplier` (removed in 1.5).
+
+#### 1.3.0-mvp — 2026-10-06
+- **N-4 revised:** `users.timezone` NOT NULL with **no** DEFAULT. Signup requires valid IANA; missing → 400 `timezone_required`; invalid → 400 `invalid_timezone`. Optional `country_code`.
+
+#### 1.2.0-mvp — 2026-10-06
+- N-4 (superseded by v1.3): had DEFAULT `Asia/Jerusalem` — removed in v1.3.
+
+#### 1.1.0-mvp — 2026-10-06
+- N-1 local-midnight spoon reset; N-2 EverStore catalog (8 items @ 10/20 golden spoons); N-3 PCQ-12 monthly reward; all writes `POST /rpc/rpc_*`; 403 business codes.
+
+#### 1.0.0-mvp — 2026-10-05
+- Initial Specs→Code pack.
+
+## HE
+חבילת קוד Specs→Code מתוך **החלטות נעולות בלבד**. כל מה שלא נעול מסומן `TODO` ב־`ADR_GAPS.md` — בלי להמציא.
+
+| קובץ | תפקיד |
+|------|--------|
+| `schema.sql` | DDL + RLS + הרשאות + טריגרים + טבלאות תצורה + תצוגות מנהל עם כינוי בלבד |
+| `rpc.sql` | כל כתיבות ה־RPC |
+| `openapi.yaml` | קריאות PostgREST + כתיבות RPC + חוזה שגיאות |
+| `ADR_GAPS.md` | מה נסגר בגרסה זו, מה פתוח, ושאלות לקארין |
+| `migrations/` | שדרוג מסד v1.4 ל־v1.6.16 (בדיקת אזור זמן מקדימה, הרצת ניסיון, החלה עם גיבוי, שחזור) + נעילת DROP/ALTER על טבלאות legacy (טריגר אירועים עם superuser, ובלעדיו — נעילה חלופית) |
+| `tests/` | בדיקות על PostgreSQL 17 נקי (כולל `test_agents_v1_6_16.sql` — 18 בדיקות v3) |
+
+עיקרי 1.6.16 (30.10): המרה ל־CHR Coins חסומה ב־v1 (422); Golden Spoons רק על השתתפות מ־`agent_settings` (10 כפיות לשאלון חודשי כולל PCQ-12, 2 כפיות לשאלון שבועי או קצר); שלושת הסוכנים לפי v3 (תקציב EverStore, תחזית שחיקה ברמת קבוצה עם הסימן החמישי, דוח דירקטוריון עם טבלת התאמה); סיכום תקציב EverStore מצרפי ואנונימי; עובד מקופח אחרי שבועיים רצופים; תפקיד `cfo`.
+
+עיקרי 1.6.13 (נעילות החנות של קארין מ־25.10): 8 הפריטים (`theme_*`, `badge_*`) הם קטלוג פתיחה בלבד ולא רשימה סגורה; נוסף שדה `category` עם 8 קטגוריות (`cosmetic`, `time_benefit`, `health_wellbeing`, `learning`, `donation`, `experience`, `gift_card`, `merchandise`), שדה `provider`, תמיכה ב־`cosmetic_only = false` להטבות ממשיות (תוך נעילה קשיחה של `real_money_purchase_allowed = false` ו־`affects_daily_energy_spoons = false`), וכל מחיר חיובי בכפיות זהב (`price_golden_spoons > 0`); כפיות זהב אינן פגות תוקף כל עוד העובדת פעילה בארגון, ו־`rpc_convert_golden_to_chr` נשאר פעיל בשרת ב־v1 (כשהכפתור מוסתר ב־UI עד v2); בנעילת הפרגוד — רכישת שובר זמן (`time_benefit`) מומרת אוטומטית דרך HR לרשומת היעדרות מאושרת סטנדרטית (`זמן התרעננות / היעדרות מאושרת`) כך שהמנהל הישיר מתאם מועד בלי לדעת שהמקור הוא רכישה בחנות, בעוד היסטוריית הרכישות (`shop_purchase`) מוסתרת לחלוטין ממנהלים.
+עיקרי 1.6.12: סולם PCQ-12 ננעל כ־1–6 (12 פריטים חובה, המרה לינארית ל־0–100: (ממוצע − 1)/5×100); תפקידי ממשל מדרגה 5 (יו"ר דירקטוריון, חברי דירקטוריון, בעלי מניות) רואים את כל הממוצעים הארגוניים ברמת החברה כולה בלבד (TPS-12, כפיות, עומס/EPWI/PEWI, IHS ב־N≥5; חוב אושר, מס קיפוח ו־CHR Real EBITDA ב־N≥10) ולעולם לא פילוח צוותי או אישי; במחיקה קריפטוגרפית — בקשה עצמית של העובדת מתבצעת מיד (0 ימי המתנה), ואילו סיום העסקה אוטומטי מנתק גישה וכספת מיד ומתזמן מחיקה קריפטוגרפית ל־30 יום ממועד הסיום (ניתן לביטול תוך 30 יום אם הסיום בוטל); שרשרת היומן מוגדרת לכל חברה עם רשומת בראשית (GENESIS) אוטומטית וחסימת כתיבה + התראת ביקורת במקרה של שרשרת שבורה; ה־CHRO מקים משתמשי ממשל עם has_employee_profile=false כברירת מחדל, ונאכפים כללי כספת המנהל הישיר (רשת משרדית + מחשב חברה + ניתוק בחוסר פעילות + מחיקה אוטומטית בהעברה או סיום העסקה).
+עיקרי 1.6.11: ציון IHS מחושב מתשובות השאלון בסולם 1–5 ((ממוצע − 1)/4×100, סף N≥5); עיגול ציונים שבריים ב־TPS/IHS אושר כפי שנבנה; עלות תחלופה נקודתית = אמצע הטווח של הדרגה (40% / 125% / 300%), והדרגה נגזרת אוטומטית מדרגת התפקיד (עם אפשרות דריסה ל־CHRO); עובדת מוגדרת מקופחת בשבוע שבו ממוצע הכפיות שלה < 5 או ציון השחיקה השבועי B_t ≥ 0.65; השכר הממוצע לחוב האושר ומס הקיפוח הוא ממוצע השכר החברתי של אותה קבוצת דרגת תחלופה (לעולם לא ממוצע צוות קטן או שכר אישי), וחישוב מאזן הצללים המלא ו־CHR Real EBITDA = GAAP EBITDA − happiness_debt_balance − 12% deprivation tax מופעל ב־N≥10; נוספו RPCs לצ׳ק-אין בוקר (עיגול חצאי נקודות לטובת העובדת + 2 כפיות זהב למשמרת) וצ׳ק-אין צהריים (12:00–15:00 בזמן מקומי, שינוי ישיר −4..+4 עד תקרה 12); ב־v1 פעילות רק כפיות זהב (0.5 יומי, 2 למשמרת, 10 בהרשמה) ומטבעות CHR נדחו ל־v2; אושרו C-1, C-2, O-30 ו־O-31.
+עיקרי 1.6.10: אוקראינה מוצמדת ל־Europe/Kyiv ומאושרת (הצמדה גוברת על בדיקת ריבוי אזורים — כלל כללי); באוזבקיסטן נשמר Asia/Tashkent (הבירה) ו־Samarkand מוחרג; 24 מדינות דורשות בדיקת אזור זמן (25 עם יותר מאזור אחד); בלי superuser ההעברה לא נכשלת — הטבלאות הישנות ננעלות בהסרת כל ההרשאות והעברת הבעלות לתפקיד NOLOGIN, עם אזהרה ותיעוד; לפני ההעברה נבדק אזור הזמן של מסד המקור — אם אינו UTC ההרצה נעצרת אלא אם נמסר ‎--source-tz, ומשתמשים שנוצרו בטווח שעה מחצות מסומנים לבדיקה בלבד.
+עיקרי 1.6.9: תאריך הקליטה (hire_date) הוא המקור היחיד; start_date נשאר לגרסה אחת ככינוי לקריאה בלבד (יוסר ב־v1.7) ובלי ברירת מחדל 'היום'; בהעברה מ־v1.4, start_date ששווה לתאריך יצירת הרשומה (לפי UTC) נחשב לא ידוע — העובד פטור מהמתנת TPS והמקרה מתועד; קפריסין, איי מרשל, מלזיה, פלסטין ואוזבקיסטן נחשבות אזור זמן אחד, ואוקראינה מוצמדת ל־Europe/Kyiv; מחיקה ושינוי מבנה של טבלאות legacy חסומים בטריגר אירועים.
+
+עיקרי 1.6.8: שינוי יום תחילת שבוע — השבוע הישן האחרון נשאר 7 ימים, אחריו תקופת גישור של 1–6 ימים בלי דיווח (422 bridge_period) ובלי תזכורת; המתנת 30 הימים ל־TPS נספרת מההצטרפות לצוות, אחרת מתאריך הקליטה (hire_date), ובלי שניהם — פטורה; קוד מדינה לא מוכר נדחה (422) וההשהיה נשמרת; גרמניה נחשבת אזור זמן אחד (Busingen מוחרג); טבלאות legacy_v1_4 לקריאה בלבד.
+
+עיקרי 1.6.7: רק ה־CHRO משנה הגדרות חברה; שינוי יום תחילת שבוע נכנס לתוקף בגבול השבוע הבא (השבוע האחרון לפי הכלל הישן 8–13 ימים, טעון אישור קארין); אזור זמן של מדינה מרובת אזורים מסומן לבדיקה; חברה בלי מדינה — תזכורות מושהות עד שנקבעת מדינה; PEWI = ממוצע EPWI של המדווחים בפרויקט, מוסתר מתחת ל־5; סקריפט מיגרציה מ־v1.4.
+
+עיקרי 1.6: התראת צוות אדומה רק כשלפחות 5 עובדים דיווחו כפיות; החנות פתוחה לכל מי שיש לו ממשק עובד (כולל מנהלים); מחיקה קריפטוגרפית רק לבקשת העובדת או אוטומטית בסיום העסקה; כינוי אקראי שהמערכת מקצה ואי אפשר לשנות; כלל 30 הימים של TPS-12 נספר מההצטרפות לצוות הנוכחי.
+
+עיקרי 1.5: עלות עזיבה לפי דרגה (טווח בלבד); מס קיפוח = מספר המקופחים × שכר ממוצע × 0.12; סף 5 לנתוני צוות רגילים ו־10 לקוקיה, למאזן הצל ולמצב חירום; קוקיה — 60 שניות וטו, המנהל רואה כינוי בלבד; כפיות — 12 מקסימום, משימות Fighting חסומות ב־4–5, ב־3 ומטה הביתה עם הרישום 'יציאה מוקדמת מאושרת' בלבד; TPS-12 במקום PSC-12; טבלת שאלונים כללית; כפיות זהב שבריות והמרה חד־כיוונית 1:50; שרשרת SHA-256 ביומן המנהל.
+
+NLM בארכיון — **אינו SoT**.
