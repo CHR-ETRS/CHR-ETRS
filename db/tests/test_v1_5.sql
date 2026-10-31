@@ -1,6 +1,6 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.16 · tests/test_v1_5.sql (filename kept per Drive rule) — scratch PostgreSQL 17 validation
--- Version: 1.6.16-mvp (2026-10-30) — supersedes the 1.6.13-mvp (2026-10-25), 1.6.12-mvp, 1.6.11-mvp, 1.6.10-mvp, 1.6.9-mvp, 1.6.8-mvp and 1.6.7-mvp versions of this file
+-- CHR-ETRS MVP v1.6.17 · tests/test_v1_5.sql (filename kept per Drive rule) — scratch PostgreSQL 17 validation
+-- Version: 1.6.17-mvp (2026-10-31) — supersedes the 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25), 1.6.12-mvp, 1.6.11-mvp, 1.6.10-mvp, 1.6.9-mvp, 1.6.8-mvp and 1.6.7-mvp versions of this file
 -- v1.6.10: UZ keeps Asia/Tashkent (Samarkand excluded); a pinned zone (UA → Kyiv) is never needs_review;
 --   fn_start_date_untrusted / fn_tz_edge follow chr.mig_source_tz (UTC when unset).
 -- v1.6.9: users.start_date is a generated read-only alias (O-50) → fixtures write hire_date instead.
@@ -12,7 +12,9 @@
 --     Cantril / short 2, TPS-12 / IHS quarterly "לא הוגדר" → 0 + reward_status not_defined); score/10 removed;
 --   * rpc_convert_golden_to_chr → 422 chr_coins_deferred_to_v2 on every call (no balance change, no row);
 --   * deprived employee needs TWO consecutive weeks (previous-week fixtures added).
--- The agents tests live in tests/test_agents_v1_6_16.sql.
+-- v1.6.17 (Karin 31.10): tests changed BY DESIGN and marked "v1.6.17": Cantril is MONTHLY → 10 (was short 2);
+--   TPS-12 / IHS quarterly participation = 10 (was "לא הוגדר" → 0).
+-- The agents tests live in tests/test_agents_v1_6_16.sql (filename kept; content v1.6.17).
 -- =============================================================================
 \set QUIET on
 SET client_min_messages = warning;
@@ -339,9 +341,9 @@ SELECT t_as(t_emp('D9', 1));
 SET ROLE authenticated;
 SELECT t_assert('rpc_log_go_home idempotent at 3', (SELECT entry_text = 'יציאה מוקדמת מאושרת' FROM rpc_log_go_home()));
 -- CB does not lock questionnaires: submit Cantril at 3 spoons
-SELECT t_assert('questionnaire allowed at 3 spoons (CB does not lock) — Cantril participation 2.0 (v1.6.16: short questionnaire setting)',
-  (SELECT reward_golden_spoons = 2.0 AND reward_status = 'set' FROM rpc_submit_questionnaire('Cantril', '{7}')));
-SELECT t_assert('golden spoons balance = 2.0 (one decimal kept)', (SELECT golden_spoons = 2.0 FROM avatar_state));
+SELECT t_assert('questionnaire allowed at 3 spoons (CB does not lock) — Cantril participation 10.0 (v1.6.17: Cantril is monthly)',
+  (SELECT reward_golden_spoons = 10.0 AND reward_status = 'set' FROM rpc_submit_questionnaire('Cantril', '{7}')));
+SELECT t_assert('golden spoons balance = 10.0 (one decimal kept; v1.6.17 Cantril monthly)', (SELECT golden_spoons = 10.0 FROM avatar_state));
 RESET ROLE;
 SELECT t_as(t_emp('D9', 2));
 SET ROLE authenticated;
@@ -361,23 +363,23 @@ SELECT t_assert('TPS reversed items 1,3,5,11 (1s there, 5s elsewhere) → 100',
 SELECT t_assert('TPS all 5 → (44−12)/48×100 = 66.67', fn_tps12_score('{5,5,5,5,5,5,5,5,5,5,5,5}', '{1,3,5,11}') = 66.67);
 SELECT t_assert('TPS 11 answers → NULL', fn_tps12_score('{5,5,5,5,5,5,5,5,5,5,5}', '{1,3,5,11}') IS NULL);
 SELECT t_assert('TPS bands', fn_tps_band(51.9) = 'low' AND fn_tps_band(52) = 'medium' AND fn_tps_band(60) = 'medium' AND fn_tps_band(60.1) = 'good');
-SELECT t_assert('v1.6.16: seeds PCQ-12/Cantril/IHS/TPS-12 — participation rewards keyed to agent_settings',
+SELECT t_assert('v1.6.17: seeds PCQ-12/Cantril/IHS/TPS-12 — participation rewards keyed to agent_settings (Cantril monthly)',
   (SELECT string_agg(code || ':' || frequency || ':' || reward_type || ':' || reward_setting_key || ':' || COALESCE(reward_amount::text, '-'), ',' ORDER BY code)
      FROM questionnaire_definition)
-  = 'Cantril:monthly:participation:golden_spoons_per_short_questionnaire:-,IHS:quarterly:participation:golden_spoons_per_quarterly_questionnaire:-,'
+  = 'Cantril:monthly:participation:golden_spoons_per_questionnaire:-,IHS:quarterly:participation:golden_spoons_per_quarterly_questionnaire:-,'
     'PCQ-12:monthly:participation:golden_spoons_per_questionnaire:-,TPS-12:quarterly:participation:golden_spoons_per_quarterly_questionnaire:-');
 SELECT t_expect_err('locked catalogue cannot drift (PCQ 12)', $$UPDATE questionnaire_definition SET reward_amount = 12 WHERE code = 'PCQ-12'$$, '23514');
 
 SELECT t_as(t_emp('D9', 3));
 SET ROLE authenticated;
-SELECT t_assert('v1.6.16: TPS submit all 5 → score 66.67; quarterly amount לא הוגדר → reward 0, reward_status not_defined',
-  (SELECT tps_12_score = 66.67 AND reward_golden_spoons = 0 AND reward_status = 'not_defined'
+SELECT t_assert('v1.6.17: TPS submit all 5 → score 66.67; quarterly participation 10 (Karin 31.10), reward_status set',
+  (SELECT tps_12_score = 66.67 AND reward_golden_spoons = 10 AND reward_status = 'set'
      FROM rpc_submit_questionnaire('TPS-12', '{5,5,5,5,5,5,5,5,5,5,5,5}')));
 SELECT t_expect_err('TPS once per quarter', $$SELECT rpc_submit_questionnaire('TPS-12', '{3,3,3,3,3,3,3,3,3,3,3,3}')$$, 'questionnaire_already_submitted');
 SELECT t_assert('PCQ-12 via compat wrapper → +10',
   (SELECT reward_golden_spoons = 10 FROM rpc_pcq12_claim_monthly_reward('{1,2,3,4,5,6,1,2,3,4,5,6}')));
 SELECT t_expect_err('PCQ-12 once per month', $$SELECT rpc_pcq12_claim_monthly_reward('{1,2,3,4,5,6,1,2,3,4,5,6}')$$, 'questionnaire_already_submitted');
-SELECT t_assert('v1.6.16: balance 0 + 10 = 10.0', (SELECT golden_spoons = 10.0 FROM avatar_state));
+SELECT t_assert('v1.6.17: balance 0 + 10 (TPS-12) + 10 (PCQ-12) = 20.0', (SELECT golden_spoons = 20.0 FROM avatar_state));
 SELECT t_expect_err('IHS answer 80 out of 1–5 range → 400 (O-6: 1–5 questionnaire scale)', $$SELECT rpc_submit_questionnaire('IHS', '{80}')$$, 'questionnaire_invalid_answers');
 SELECT t_expect_err('employee cannot update own answers (no grant)', $$UPDATE questionnaire_submission SET answers = '{1}'$$, '42501');
 RESET ROLE;
@@ -417,7 +419,7 @@ SELECT t_assert('tps_team_avg column exists, psc12 gone',
 
 -- ============ 8. Golden → CHR 1:50 ============
 -- v1.6.16 (Karin 30.10): the conversion is DEFINED (v2 readiness) but BLOCKED in v1 — every call → 422.
-SELECT t_as(t_emp('D9', 3));   -- has 10.0 golden
+SELECT t_as(t_emp('D9', 3));   -- has 20.0 golden (v1.6.17: TPS-12 10 + PCQ-12 10)
 SET ROLE authenticated;
 SELECT t_expect_http('v1.6.16: convert 0.5 golden → 422 chr_coins_deferred_to_v2', $$SELECT rpc_convert_golden_to_chr(0.5, 'k1')$$, 'chr_coins_deferred_to_v2', 422);
 SELECT t_expect_http('v1.6.16: convert 2 golden → 422 (same key again → 422, deterministic)', $$SELECT rpc_convert_golden_to_chr(2, 'k1')$$, 'chr_coins_deferred_to_v2', 422);
@@ -426,8 +428,8 @@ SELECT t_expect_http('v1.6.16: negative amount → 422', $$SELECT rpc_convert_go
 SELECT t_expect_http('v1.6.16: 0.05 golden → 422', $$SELECT rpc_convert_golden_to_chr(0.05, 'k5')$$, 'chr_coins_deferred_to_v2', 422);
 SELECT t_expect_err('v1.6.16: conversion error SQLSTATE is PT422 (PostgREST HTTP 422)', $$SELECT rpc_convert_golden_to_chr(1, 'k7')$$, 'PT422');
 SELECT t_expect_err('no CHR→golden RPC exists', $$SELECT rpc_convert_chr_to_golden(50, 'k6')$$, '42883');
-SELECT t_assert('v1.6.16: no balance change after blocked conversions (golden 10.0, CHR 0)',
-  (SELECT golden_spoons = 10.0 AND chr_coins = 0 FROM avatar_state));
+SELECT t_assert('v1.6.16: no balance change after blocked conversions (golden 20.0, CHR 0)',
+  (SELECT golden_spoons = 20.0 AND chr_coins = 0 FROM avatar_state));
 RESET ROLE;
 SELECT t_assert('v1.6.16: no golden_chr_conversion row was written', NOT EXISTS (SELECT 1 FROM golden_chr_conversion));
 SELECT t_assert('v1.6.16: rpc_convert_golden_to_chr stays defined + granted (v2 readiness)',
@@ -578,7 +580,7 @@ SELECT t_assert('new hire: no team_joined_at default (O-49) — the wait starts 
 SELECT t_as('00000000-0000-0000-0000-0000000d0029');
 SET ROLE authenticated;
 SELECT t_expect_err('new hire at 29 days → TPS not eligible', $$SELECT rpc_submit_questionnaire('TPS-12', '{3,3,3,3,3,3,3,3,3,3,3,3}')$$, 'questionnaire_not_eligible');
-SELECT t_assert('new hire at 29 days may still answer Cantril (v1.6.16: 2.0)', (SELECT reward_golden_spoons = 2.0 FROM rpc_submit_questionnaire('Cantril', '{5}')));
+SELECT t_assert('new hire at 29 days may still answer Cantril (v1.6.17: monthly 10.0)', (SELECT reward_golden_spoons = 10.0 FROM rpc_submit_questionnaire('Cantril', '{5}')));
 RESET ROLE;
 SELECT t_as('00000000-0000-0000-0000-0000000d0030');
 SET ROLE authenticated;
@@ -2157,10 +2159,25 @@ SELECT t_assert('O50 upgrade merge: audit start_date_untrusted (user, start_date
 ROLLBACK;
 
 -- ============ v1.6.6 O40. work_date range: today − 14 … today + 1 (employee-local) → else 422 ============
+-- v1.6.17 run-date fix: the CHRO week-start change (R) above is scheduled from the run date, so on a Saturday
+-- run today + 1 is the 1-day bridge before the new week → 422 bridge_period is then the correct answer.
+CREATE TEMP TABLE t_o40 AS
+  SELECT EXISTS (SELECT 1 FROM fn_company_bridge_at('00000000-0000-0000-0000-0000000000c3',
+                                                     (SELECT d + 1 FROM t_today WHERE email = 'rng1@c3'))) AS bridge_next;
+GRANT SELECT ON t_o40 TO authenticated;
 SELECT t_as(t_x('rng1@c3'));
 SET ROLE authenticated;
-SELECT t_assert('O40 boundary today + 1 accepted',
-  (SELECT report_id IS NOT NULL FROM rpc_submit_workload_self_report(40, 40, 0, 1, 1, 1, (SELECT d + 1 FROM t_today WHERE email = 'rng1@c3'))));
+DO $$
+BEGIN
+  IF (SELECT bridge_next FROM t_o40) THEN
+    PERFORM t_expect_http('O40 boundary today + 1 is a bridge day on this run date → 422 bridge_period',
+      format($q$SELECT * FROM rpc_submit_workload_self_report(40, 40, 0, 1, 1, 1, %L)$q$, (SELECT d + 1 FROM t_today WHERE email = 'rng1@c3')),
+      'bridge_period', 422);
+  ELSE
+    PERFORM t_assert('O40 boundary today + 1 accepted',
+      (SELECT report_id IS NOT NULL FROM rpc_submit_workload_self_report(40, 40, 0, 1, 1, 1, (SELECT d + 1 FROM t_today WHERE email = 'rng1@c3'))));
+  END IF;
+END $$;
 SELECT t_assert('O40 boundary today − 14 accepted',
   (SELECT report_id IS NOT NULL FROM rpc_submit_workload_self_report(40, 40, 0, 1, 1, 1, (SELECT d - 14 FROM t_today WHERE email = 'rng1@c3'))));
 RESET ROLE;
@@ -2203,8 +2220,8 @@ SET ROLE authenticated;
 SELECT t_expect_err('v1.6.11 O-6: IHS rejects answer < 1 (0)', $$SELECT rpc_submit_questionnaire('IHS', '{0,3,3}')$$, 'questionnaire_invalid_answers');
 SELECT t_expect_err('v1.6.11 O-6: IHS rejects answer > 5 (6)', $$SELECT rpc_submit_questionnaire('IHS', '{3,6,3}')$$, 'questionnaire_invalid_answers');
 SELECT t_expect_err('v1.6.11 O-6: IHS rejects NULL answer', $$SELECT rpc_submit_questionnaire('IHS', '{3,NULL,3}')$$, 'questionnaire_invalid_answers');
-SELECT t_assert('v1.6.16: IHS submission — {4,4,5} → score 83.33, ihs_score 83.33; reward = quarterly participation (לא הוגדר → 0)',
-  (SELECT score = 83.33 AND ihs_score = 83.33 AND tps_12_score IS NULL AND reward_golden_spoons = 0 AND reward_status = 'not_defined'
+SELECT t_assert('v1.6.17: IHS submission — {4,4,5} → score 83.33, ihs_score 83.33; reward = quarterly participation 10 (Karin 31.10)',
+  (SELECT score = 83.33 AND ihs_score = 83.33 AND tps_12_score IS NULL AND reward_golden_spoons = 10 AND reward_status = 'set'
      FROM rpc_submit_questionnaire('IHS', '{4,4,5}')));
 SELECT t_expect_err('v1.6.11 O-6: IHS once per quarter → 409 questionnaire_already_submitted',
   $$SELECT rpc_submit_questionnaire('IHS', '{3,3,3}')$$, 'questionnaire_already_submitted');

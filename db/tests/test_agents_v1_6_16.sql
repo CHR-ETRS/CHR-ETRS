@@ -1,11 +1,14 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.16 · tests/test_agents_v1_6_16.sql — agents (agents-bot-instructions-v3) on PostgreSQL 17
--- Version: 1.6.16-mvp (2026-10-30). NEW file. Run on a FRESH database after the pack:
+-- CHR-ETRS MVP v1.6.17 · tests/test_agents_v1_6_16.sql — agents (agents-bot-instructions-v3) on PostgreSQL 17
+-- Version: 1.6.17-mvp (2026-10-31) — supersedes the 1.6.16-mvp file of the same name (filename kept so the Drive
+-- id history stays in one place). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_agents_v1_6_16.sql
 -- Covers: the 18 server tests of v3 §6.3 (tagged "v3-T<n>"), A1 (conversion blocked), A2 (anonymous EverStore
 -- budget summary), Karin 30.10 closed values (participation Golden Spoons 10 / 2; 5th signal 1.5× / 2 events /
 -- 10 employees), the settings API, two company timezones and the privacy sweep (no person_id / user_id /
 -- pseudonym in any agent output). Every check prints "PASS <name>"; any failure aborts.
+-- v1.6.17 (Karin 31.10): Cantril monthly → 10; TPS-12 / IHS → 10 (adjustable setting); J-15 time benefits
+-- refused after exit (section 4b); A-8 reversed offboarding returns the memo-line debt to the team (section 9b).
 -- Fixed dates (2026) keep the expectations independent of the run date.
 -- =============================================================================
 \set QUIET on
@@ -130,6 +133,18 @@ BEGIN
   PERFORM t_mk(t_u('cC'), 'empC1', 'OPS');
 END $$;
 
+-- v1.6.17: company D (Asia/Jerusalem) for the questionnaire amounts, J-15 and A-8 — team TEAMD, two leavers.
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone) VALUES
+  (t_u('cD'), 'Agents D', 'IL', 0, 4, 'Asia/Jerusalem');
+DO $$
+DECLARE i int;
+BEGIN
+  PERFORM t_mk(t_u('cD'), 'hrD', 'Mgmt', 'vp_hr', 'vp');
+  FOR i IN 1..3 LOOP PERFORM t_mk(t_u('cD'), 'd' || i, 'TEAMD'); END LOOP;
+  PERFORM t_mk(t_u('cD'), 'retD', 'TEAMD');
+  PERFORM t_mk(t_u('cD'), 'otherD', 'TEAMD');
+END $$;
+
 -- EverStore catalog items of the 8 categories (the pack seeds cosmetics only; the CHRO adds the rest).
 INSERT INTO shop_item_catalog (item_id, display_name, name_he, category, provider, tier, price_coins, cosmetic_only) VALUES
   ('charity_trees', 'Plant trees', 'נטיעת עצים', 'donation', 'GreenEarth', 'basic', 5.0, false),
@@ -154,12 +169,18 @@ SELECT t_assert('settings: the 15% placeholder movement_rise_pct and the two mar
   NOT EXISTS (SELECT 1 FROM agent_settings WHERE setting_key IN ('movement_rise_pct', 'margin_budget_points_pcq', 'margin_budget_points_ihs')));
 SELECT t_assert('settings: one range coefficient 12.5 (v3 §4.3)',
   (SELECT value_numeric = 12.5 FROM agent_settings WHERE company_id IS NULL AND setting_key = 'score_range_coefficient'));
-SELECT t_assert('settings: open values stay "לא הוגדר" (company_timezone, daily_summary_time, liability_method, spoon_cost_ils, turnover baselines, quarterly / check-in Golden Spoons)',
-  (SELECT count(*) = 9 AND bool_and(value_numeric IS NULL AND value_text IS NULL) FROM agent_settings
+SELECT t_assert('settings: open values stay "לא הוגדר" (company_timezone, daily_summary_time, liability_method, spoon_cost_ils, turnover baselines, check-in Golden Spoons)',
+  (SELECT count(*) = 8 AND bool_and(value_numeric IS NULL AND value_text IS NULL) FROM agent_settings
     WHERE company_id IS NULL AND value_status = 'not_defined'
       AND setting_key IN ('company_timezone', 'daily_summary_time', 'liability_method', 'spoon_cost_ils',
                           'turnover_baseline_junior', 'turnover_baseline_mid', 'turnover_baseline_senior',
-                          'golden_spoons_per_quarterly_questionnaire', 'golden_spoons_per_checkin')));
+                          'golden_spoons_per_checkin')));
+SELECT t_assert('v1.6.17 A-5: TPS-12 / IHS participation = agent_settings golden_spoons_per_quarterly_questionnaire 10, set and adjustable (not locked)',
+  (SELECT value_numeric = 10 AND value_status = 'set' AND NOT is_locked FROM agent_settings
+    WHERE company_id IS NULL AND setting_key = 'golden_spoons_per_quarterly_questionnaire'));
+SELECT t_assert('v1.6.17 J-3: Cantril is keyed to the monthly setting (10), TPS-12 / IHS to the quarterly setting',
+  (SELECT string_agg(code || '=' || reward_setting_key, ',' ORDER BY code) FROM questionnaire_definition WHERE is_locked)
+  = 'Cantril=golden_spoons_per_questionnaire,IHS=golden_spoons_per_quarterly_questionnaire,PCQ-12=golden_spoons_per_questionnaire,TPS-12=golden_spoons_per_quarterly_questionnaire');
 SELECT t_assert('settings: agent_settings closed to clients (RLS forced, no grant)',
   NOT has_table_privilege('authenticated', 'agent_settings', 'SELECT')
   AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'agent_settings'::regclass));
@@ -177,6 +198,9 @@ SELECT t_expect_http('settings: unknown key → 400', $$SELECT * FROM rpc_put_ag
 SELECT t_expect_http('settings: bad time → 400', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'daily_summary_time', NULL, '25:00')$$, 'invalid_setting_value', 400);
 SELECT t_expect_http('settings: bad timezone → 400', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'company_timezone', NULL, 'Mars/Base')$$, 'invalid_setting_value', 400);
 SELECT t_expect_http('settings: bad liability method → 400', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'liability_method', NULL, 'guess')$$, 'invalid_setting_value', 400);
+SELECT t_assert('v1.6.17 A-5: the quarterly amount is adjustable — cfo overrides it for the company (12) and resets it to the default (10)',
+  (SELECT value_numeric = 12 AND scope = 'company' FROM rpc_put_agent_setting(t_u('cA'), 'golden_spoons_per_quarterly_questionnaire', 12))
+  AND (SELECT value_numeric = 10 AND scope = 'default' FROM rpc_put_agent_setting(t_u('cA'), 'golden_spoons_per_quarterly_questionnaire')));
 SELECT t_assert('settings: cfo sets a company override (rise_pct 20) and resets it to the default',
   (SELECT value_numeric = 20 AND scope = 'company' FROM rpc_put_agent_setting(t_u('cA'), 'rise_pct', 20))
   AND (SELECT value_numeric = 15 AND scope = 'default' FROM rpc_put_agent_setting(t_u('cA'), 'rise_pct')));
@@ -206,12 +230,12 @@ SELECT t_assert('A1: the 422 sentence is the HINT ("CHR Coins shelf is deferred 
 SELECT t_as(t_u('empB1'));
 SET ROLE authenticated;
 SELECT t_assert('v3-T12: PCQ-12 lowest answers → 10 Golden Spoons', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('PCQ-12', '{1,1,1,1,1,1,1,1,1,1,1,1}')));
-SELECT t_assert('v3-T12: Cantril answer 0 → 2 Golden Spoons', (SELECT reward_golden_spoons = 2 FROM rpc_submit_questionnaire('Cantril', '{0}')));
+SELECT t_assert('v3-T12 / v1.6.17 J-3: Cantril (monthly) answer 0 → 10 Golden Spoons', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('Cantril', '{0}')));
 RESET ROLE;
 SELECT t_as(t_u('empB2'));
 SET ROLE authenticated;
 SELECT t_assert('v3-T12: PCQ-12 highest answers → the same 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('PCQ-12', '{6,6,6,6,6,6,6,6,6,6,6,6}')));
-SELECT t_assert('v3-T12: Cantril answer 10 → the same 2', (SELECT reward_golden_spoons = 2 FROM rpc_submit_questionnaire('Cantril', '{10}')));
+SELECT t_assert('v3-T12 / v1.6.17 J-3: Cantril answer 10 → the same 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('Cantril', '{10}')));
 RESET ROLE;
 SELECT t_assert('v3-T12: different answers, different scores, same reward (2 PCQ-12 + 2 Cantril submissions)',
   (SELECT count(DISTINCT pcq12_score) = 2 AND count(DISTINCT reward_golden_spoons) = 1
@@ -224,6 +248,30 @@ SELECT t_assert('v3-T12: no RPC computes Golden Spoons from a score (fn_reward_s
   AND pg_get_functiondef('fn_questionnaire_reward(questionnaire_definition, uuid)'::regprocedure) ~ 'fn_agent_setting_num'
   AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                    WHERE n.nspname = 'public' AND p.prosrc ~* 'reward[a-z_]*\s*:?=\s*[a-z_.]*score'));
+SELECT t_as(t_u('d1'));
+SET ROLE authenticated;
+SELECT t_assert('v1.6.17 A-5: TPS-12 lowest answers → 10 Golden Spoons (participation, reward_status set)',
+  (SELECT reward_golden_spoons = 10 AND reward_status = 'set' FROM rpc_submit_questionnaire('TPS-12', '{1,1,1,1,1,1,1,1,1,1,1,1}')));
+SELECT t_assert('v1.6.17 A-5: IHS lowest answers → 10 Golden Spoons', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('IHS', '{1,1,1,1,1,1,1,1,1}')));
+RESET ROLE;
+SELECT t_as(t_u('d2'));
+SET ROLE authenticated;
+SELECT t_assert('v1.6.17 A-5: TPS-12 highest answers → the same 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('TPS-12', '{5,5,5,5,5,5,5,5,5,5,5,5}')));
+SELECT t_assert('v1.6.17 A-5: IHS highest answers → the same 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('IHS', '{5,5,5,5,5,5,5,5,5}')));
+SELECT t_assert('v1.6.17 A-5: …credited to the wallet (0 + 10 + 10 = 20)', (SELECT golden_spoons = 20 FROM avatar_state));
+RESET ROLE;
+-- The amount is read from the setting at submit time, never a constant: a company override changes it.
+INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, value_status, source_note)
+VALUES (t_u('cD'), 'golden_spoons_per_quarterly_questionnaire', 'numeric', 7, 'set', 'test override');
+SELECT t_as(t_u('d3'));
+SET ROLE authenticated;
+SELECT t_assert('v1.6.17 A-5: a company override of the quarterly setting (7) is what TPS-12 pays — no code constant',
+  (SELECT reward_golden_spoons = 7 FROM rpc_submit_questionnaire('TPS-12', '{3,3,3,3,3,3,3,3,3,3,3,3}')));
+RESET ROLE;
+DELETE FROM agent_settings WHERE company_id = t_u('cD') AND setting_key = 'golden_spoons_per_quarterly_questionnaire';
+SELECT t_assert('v1.6.17: same-answers check — TPS-12 / IHS pay the same amount for different scores (d1 vs d2)',
+  (SELECT count(DISTINCT score) = 2 AND count(DISTINCT reward_golden_spoons) = 1 FROM questionnaire_submission
+    WHERE questionnaire_code = 'TPS-12' AND user_id IN (t_u('d1'), t_u('d2'))));
 SELECT t_assert('v3-T12: questionnaire_definition rewards are participation-only (no per-questionnaire amount)',
   NOT EXISTS (SELECT 1 FROM questionnaire_definition WHERE reward_type <> 'participation' OR reward_amount IS NOT NULL));
 
@@ -232,14 +280,14 @@ SELECT t_as(t_u('cfoB'));
 SET ROLE authenticated;
 INSERT INTO t_outputs SELECT 'liability_not_defined', rpc_get_open_golden_spoons_liability(t_u('cB'));
 SELECT t_assert('v3-T6: cfo sees open Golden Spoons; ILS estimate "לא הוגדר" while liability_method is not set',
-  (SELECT (j->>'open_golden_spoons')::numeric = 32 + 42 + 40 + 30 + 30 AND j->'ils_estimate' = 'null'::jsonb
+  (SELECT (j->>'open_golden_spoons')::numeric = 40 + 50 + 40 + 30 + 30 AND j->'ils_estimate' = 'null'::jsonb
           AND j->>'ils_status' = 'not_defined' AND j->>'display_he' = 'לא הוגדר'
      FROM (SELECT rpc_get_open_golden_spoons_liability(t_u('cB')) j) x));
 SELECT setting_key FROM rpc_put_agent_setting(t_u('cB'), 'liability_method', NULL, 'fixed_cost');
 SELECT setting_key FROM rpc_put_agent_setting(t_u('cB'), 'spoon_cost_ils', 2.5);
 INSERT INTO t_outputs SELECT 'liability_fixed', rpc_get_open_golden_spoons_liability(t_u('cB'));
-SELECT t_assert('v3-T6: fixed_cost method → ILS = open × spoon_cost_ils (174 × 2.5 = 435)',
-  (SELECT (j->>'ils_estimate')::numeric = 435 FROM (SELECT rpc_get_open_golden_spoons_liability(t_u('cB')) j) x));
+SELECT t_assert('v3-T6: fixed_cost method → ILS = open × spoon_cost_ils (190 × 2.5 = 475; v1.6.17 Cantril 10)',
+  (SELECT (j->>'ils_estimate')::numeric = 475 FROM (SELECT rpc_get_open_golden_spoons_liability(t_u('cB')) j) x));
 RESET ROLE;
 SELECT t_as(t_u('empB1'));
 SET ROLE authenticated;
@@ -276,8 +324,8 @@ SELECT t_assert('v3-T7: re-run expires nothing (idempotent)', rpc_expire_departe
 SELECT t_expect_err('v3-T7: golden_spoons_ledger is WORM', $$UPDATE golden_spoons_ledger SET amount = 1$$, 'ledger_immutable');
 SELECT t_as(t_u('cfoB'));
 SET ROLE authenticated;
-SELECT t_assert('v3-T7: the expired balance left the open liability (174 − 40 = 134)',
-  (SELECT (rpc_get_open_golden_spoons_liability(t_u('cB'))->>'open_golden_spoons')::numeric = 134));
+SELECT t_assert('v3-T7: the expired balance left the open liability (190 − 40 = 150)',
+  (SELECT (rpc_get_open_golden_spoons_liability(t_u('cB'))->>'open_golden_spoons')::numeric = 150));
 SELECT t_expect_err('v3-T7: the expiry job is service-only (no EXECUTE for clients → 42501)', $$SELECT rpc_expire_departed_golden_spoons()$$, '42501');
 RESET ROLE;
 -- 30-day window for purchases (decision 4): depB left 5 days ago, depOld 40 days ago.
@@ -293,6 +341,39 @@ SELECT t_as(t_u('depOld'));
 SET ROLE authenticated;
 SELECT t_expect_http('exit window: after 30 days → 403', $$SELECT rpc_everstore_purchase('theme_basement_office', 'old-1')$$, 'anti_get_blocked', 403);
 RESET ROLE;
+
+-- ============ 4b. v1.6.17 J-15 (confirmed by Karin 31.10) · no time benefits after employment ends ============
+SELECT t_as(t_u('depB'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-15: inside the 30-day window a time benefit with a chosen day is still refused → 403',
+  $$SELECT rpc_everstore_purchase('voucher_refresh_day', 'dep-3', CURRENT_DATE + 3)$$, 'anti_get_blocked', 403);
+SELECT t_expect_http('J-15: the go-home (early leave) RPC is refused after exit → 403', $$SELECT rpc_log_go_home()$$, 'anti_get_blocked', 403);
+RESET ROLE;
+SELECT t_assert('J-15: …the refused time benefit cost nothing and left no trace (balance 20, one purchase = the product, no absence row)',
+  (SELECT golden_spoons = 20 FROM avatar_state WHERE user_id = t_u('depB'))
+  AND (SELECT count(*) = 1 AND min(category) = 'cosmetic' FROM shop_purchase WHERE user_id = t_u('depB'))
+  AND NOT EXISTS (SELECT 1 FROM approved_absence_entry WHERE user_id = t_u('depB')));
+SELECT t_expect_http('J-15: DB guard — no early leave row for an ex-employee on any path (fn_log_early_leave)',
+  $$SELECT fn_log_early_leave(t_u('depB'))$$, 'anti_get_blocked', 403);
+SELECT t_expect_http('J-15: DB guard — no approved absence / day off row for an ex-employee (direct insert)',
+  $$INSERT INTO approved_absence_entry (user_id, company_id, requested_date, entry_type, entry_text, schedule_status)
+    VALUES (t_u('depB'), t_u('cB'), CURRENT_DATE + 1, 'approved_absence', 'זמן התרעננות / היעדרות מאושרת', 'pending_coordination')$$,
+  'anti_get_blocked', 403);
+SELECT t_assert('J-15: no early_leave_log / approved_absence_entry row exists for any ex-employee',
+  NOT EXISTS (SELECT 1 FROM early_leave_log l JOIN users u ON u.user_id = l.user_id WHERE u.employment_ended_at IS NOT NULL)
+  AND NOT EXISTS (SELECT 1 FROM approved_absence_entry a JOIN users u ON u.user_id = a.user_id WHERE u.employment_ended_at IS NOT NULL));
+SELECT t_assert('J-15: guard triggers installed on both time-benefit tables',
+  (SELECT count(*) = 2 FROM pg_trigger WHERE tgname IN ('trg_early_leave_after_exit', 'trg_approved_absence_after_exit') AND NOT tgisinternal));
+-- Control: an ACTIVE employee still gets the time benefit (bought with Golden Spoons) and an early leave.
+INSERT INTO avatar_state (user_id, golden_spoons) VALUES (t_u('d3'), 40) ON CONFLICT (user_id) DO UPDATE SET golden_spoons = 40;
+SELECT t_as(t_u('d3'));
+SET ROLE authenticated;
+SELECT t_assert('J-15 control: an active employee redeems the time benefit (40 → 5) → standard approved absence row',
+  (SELECT golden_spoons = 5 FROM rpc_everstore_purchase('voucher_refresh_day', 'd3-1', CURRENT_DATE + 2)));
+RESET ROLE;
+SELECT t_assert('J-15 control: …the approved absence exists for the active employee, and an early leave can be logged',
+  EXISTS (SELECT 1 FROM approved_absence_entry WHERE user_id = t_u('d3'))
+  AND (SELECT log_id IS NOT NULL FROM fn_log_early_leave(t_u('d3'))));
 
 -- ============ 5. A2 / v3-T8 · anonymous aggregate EverStore budget summary ============
 DO $$
@@ -618,6 +699,87 @@ SELECT t_assert('remediation: memo line = 30,000; remediation_records keeps who 
 SELECT t_expect_err('happiness_debt_events is WORM', $$DELETE FROM happiness_debt_events$$, 'ledger_immutable');
 SELECT t_expect_err('remediation_records is WORM', $$UPDATE remediation_records SET reduction_amount = 1$$, 'ledger_immutable');
 
+-- ============ 9b. v1.6.17 A-8 · reversed offboarding returns the memo-line debt to the team ============
+-- retD (8,000) and otherD (5,000) leave TEAMD 3 days before the run (inside the 30-day reversal window).
+INSERT INTO employee_value_asset (user_id, company_id, annual_salary) VALUES (t_u('retD'), t_u('cD'), 100000), (t_u('otherD'), t_u('cD'), 90000);
+UPDATE employee_value_asset SET happiness_debt_liability = 8000 WHERE user_id = t_u('retD');
+UPDATE employee_value_asset SET happiness_debt_liability = 5000 WHERE user_id = t_u('otherD');
+UPDATE users SET employment_ended_at = clock_timestamp() - interval '3 days' WHERE user_id IN (t_u('retD'), t_u('otherD'));
+CREATE TEMP TABLE t_a8 AS SELECT fn_agent_month_start(t_u('cD'), clock_timestamp()) AS rev_month, DATE '2100-01-01' AS far;
+SELECT t_assert('A-8: two leaver_transfer events for TEAMD (8,000 + 5,000) → memo line "יצא עם העוזבים" 13,000',
+  (SELECT count(*) = 2 AND sum(amount) = 13000 AND bool_and(group_id = 'TEAMD') FROM happiness_debt_events
+    WHERE company_id = t_u('cD') AND event_type = 'leaver_transfer')
+  AND fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 13000);
+SELECT t_assert('A-8: each transfer has one internal link row (closed table: RLS forced, no client grant)',
+  (SELECT count(*) = 2 FROM happiness_debt_leaver_link l JOIN happiness_debt_events e USING (event_id) WHERE e.company_id = t_u('cD'))
+  AND NOT has_table_privilege('authenticated', 'happiness_debt_leaver_link', 'SELECT')
+  AND NOT has_table_privilege('anon', 'happiness_debt_leaver_link', 'SELECT')
+  AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'happiness_debt_leaver_link'::regclass));
+SELECT t_as(t_u('hrD'));
+SET ROLE authenticated;
+SELECT t_assert('A-8: the CHRO reverses retD''s offboarding (marked by mistake) inside the 30 days',
+  (SELECT employment_ended_at IS NULL FROM rpc_revert_offboarding(t_u('retD'))));
+RESET ROLE;
+SELECT t_assert('A-8: a documented leaver_reversal event is recorded — TEAMD, 8,000, this company month, linked to retD''s original leaver_transfer',
+  (SELECT count(*) = 1 AND sum(r.amount) = 8000 AND min(r.group_id) = 'TEAMD' AND min(r.period_month) = (SELECT rev_month FROM t_a8)
+          AND bool_and(t.event_type = 'leaver_transfer' AND t.amount = r.amount
+                       AND EXISTS (SELECT 1 FROM happiness_debt_leaver_link l WHERE l.event_id = t.event_id AND l.user_id = t_u('retD')))
+     FROM happiness_debt_events r JOIN happiness_debt_events t ON t.event_id = r.reverses_event_id
+    WHERE r.company_id = t_u('cD') AND r.event_type = 'leaver_reversal'));
+SELECT t_assert('A-8: the memo line decreases by the returned debt (13,000 → 5,000 = otherD only)',
+  fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 5000);
+SELECT t_assert('A-8: the debt is back in the team — retD is an active TEAMD member again with the 8,000 Happiness Debt unchanged, and TEAMD''s net memo share is 5,000',
+  (SELECT employment_ended_at IS NULL AND department = 'TEAMD' FROM users WHERE user_id = t_u('retD'))
+  AND (SELECT happiness_debt_liability = 8000 FROM employee_value_asset WHERE user_id = t_u('retD'))
+  AND (SELECT sum(CASE WHEN event_type = 'leaver_transfer' THEN amount ELSE -amount END) = 5000
+         FROM happiness_debt_events WHERE company_id = t_u('cD') AND group_id = 'TEAMD'));
+SELECT t_assert('A-8: history kept — both original transfers and the exported_on_exit ledger rows are still there (WORM)',
+  (SELECT count(*) = 2 FROM happiness_debt_events WHERE company_id = t_u('cD') AND event_type = 'leaver_transfer')
+  AND (SELECT count(*) = 2 FROM happiness_debt_ledger WHERE company_id = t_u('cD') AND exported_on_exit));
+-- Idempotency
+INSERT INTO t_outputs SELECT 'a8_second_call', fn_reverse_leaver_transfer(t_u('retD'));
+SELECT t_assert('A-8 idempotent: calling the reversal again changes nothing (status nothing_to_reverse, still 1 reversal, memo 5,000)',
+  (SELECT j->>'status' = 'nothing_to_reverse' FROM t_outputs WHERE label = 'a8_second_call')
+  AND (SELECT count(*) = 1 FROM happiness_debt_events WHERE company_id = t_u('cD') AND event_type = 'leaver_reversal')
+  AND fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 5000);
+SELECT t_as(t_u('hrD'));
+SET ROLE authenticated;
+SELECT t_expect_http('A-8 idempotent: a second rpc_revert_offboarding is refused (already active) → 403', $$SELECT rpc_revert_offboarding(t_u('retD'))$$, 'anti_get_blocked', 403);
+RESET ROLE;
+SELECT t_expect_err('A-8 idempotent: a second reversal of the same transfer is impossible (unique index)',
+  $$INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, reverses_event_id)
+    SELECT company_id, group_id, period_month, 'leaver_reversal', amount, reverses_event_id FROM happiness_debt_events
+     WHERE company_id = t_u('cD') AND event_type = 'leaver_reversal'$$, '23505');
+SELECT t_expect_err('A-8: a reversal must point at a transfer (reverses_event_id required)',
+  $$INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount)
+    VALUES (t_u('cD'), 'TEAMD', (SELECT rev_month FROM t_a8), 'leaver_reversal', 1)$$, '23514');
+INSERT INTO t_outputs SELECT 'a8_still_offboarded', fn_reverse_leaver_transfer(t_u('otherD'));
+SELECT t_assert('A-8: an employee who is still offboarded is not reversed (status still_offboarded, memo 5,000)',
+  (SELECT j->>'status' = 'still_offboarded' FROM t_outputs WHERE label = 'a8_still_offboarded')
+  AND fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 5000);
+-- Leave again → a NEW transfer; return again through the HR system (direct call) → only the new transfer is reversed.
+UPDATE users SET employment_ended_at = clock_timestamp() - interval '1 day' WHERE user_id = t_u('retD');
+SELECT t_assert('A-8: leaving again writes a new transfer (memo 13,000)', fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 13000);
+ALTER TABLE users DISABLE TRIGGER trg_users_leaver_debt_reversal;   -- test only: call the reversal directly to capture its output
+UPDATE users SET employment_ended_at = NULL WHERE user_id = t_u('retD');
+ALTER TABLE users ENABLE TRIGGER trg_users_leaver_debt_reversal;
+INSERT INTO t_outputs SELECT 'a8_reversed', fn_reverse_leaver_transfer(t_u('retD'));
+SELECT t_assert('A-8: the reversal output is an id-free summary (status reversed, team TEAMD, 8,000, memo after 5,000, label "יצא עם העוזבים")',
+  (SELECT j->>'status' = 'reversed' AND j->>'team' = 'TEAMD' AND (j->>'amount')::numeric = 8000
+          AND (j->>'memo_after')::numeric = 5000 AND j->>'label_he' = 'יצא עם העוזבים' AND t_ids_free(j)
+     FROM t_outputs WHERE label = 'a8_reversed'));
+SELECT t_assert('A-8: each of retD''s two transfers is reversed exactly once (2 reversals, 2 distinct targets)',
+  (SELECT count(*) = 2 AND count(DISTINCT reverses_event_id) = 2 FROM happiness_debt_events
+    WHERE company_id = t_u('cD') AND event_type = 'leaver_reversal'));
+SELECT t_assert('A-8 privacy: happiness_debt_events has no person / user / employee / pseudonym column; no A-8 output holds an identifier',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'happiness_debt_events' AND column_name ~* '(person|user|employee|pseudonym)')
+  AND (SELECT bool_and(t_ids_free(j)) FROM t_outputs WHERE label LIKE 'a8_%')
+  AND (SELECT bool_and(t_ids_free(to_jsonb(e))) FROM happiness_debt_events e WHERE e.company_id = t_u('cD')));
+SELECT (fn_crypto_shred_pseudonym_key(t_u('otherD'))).shredded_at IS NOT NULL AS otherd_shredded;
+SELECT t_assert('A-8 privacy: crypto-shredding an employee removes the internal leaver link (no reversal possible after that)',
+  NOT EXISTS (SELECT 1 FROM happiness_debt_leaver_link WHERE user_id = t_u('otherD'))
+  AND fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 5000);
+
 -- ============ 10. Agent 3 · board report (v3-T14, T15, T16, T18) ============
 INSERT INTO shadow_balance_aggregate (org_id, department, contributor_count, deprived_count, deprivation_tax_amount,
                                       happiness_debt_sum, shadow_balance_sum, calculated_at) VALUES
@@ -727,7 +889,8 @@ SELECT t_assert('v3-T5: every agent table has RLS forced and no client grant',
                    AND NOT has_table_privilege('authenticated', c.oid, 'SELECT') AND NOT has_table_privilege('anon', c.oid, 'SELECT'))
      FROM pg_class c WHERE c.relname IN ('agent_settings', 'everstore_budget', 'everstore_item_cost', 'agent_daily_summaries',
                                          'golden_spoons_ledger', 'remediation_records', 'happiness_debt_events', 'happiness_debt_ledger',
-                                         'team_movements', 'metric_assurance', 'bcr_checks', 'epwi_inputs', 'board_reconciliation', 'board_report')));
+                                         'team_movements', 'metric_assurance', 'bcr_checks', 'epwi_inputs', 'board_reconciliation', 'board_report',
+                                         'happiness_debt_leaver_link')));
 
 -- ============ 12. classify_deprived — two consecutive weeks (v3 §6.2) ============
 SELECT t_assert('classify_deprived: fn_is_employee_deprived requires this week AND the previous week (week_start − 7)',

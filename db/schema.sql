@@ -1,10 +1,21 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.16 · schema.sql
--- Version: 1.6.16-mvp (2026-10-30 IL) — supersedes 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- CHR-ETRS MVP v1.6.17 · schema.sql
+-- Version: 1.6.17-mvp (2026-10-31 IL) — supersedes 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
 -- Requires ref_country_calendar.sql (GENERATED from CLDR + IANA tz by tools/gen_ref_country_calendar.py)
 --   to be loaded BEFORE this file.
+-- New in 1.6.17 (Karin 31.10 via Chief of Drive — fix round closing A-5, A-8, J-3, J-15):
+--   * A-5: TPS-12 and IHS pay a fixed 10 Golden Spoons for participation — agent_settings
+--     golden_spoons_per_quarterly_questionnaire = 10 (adjustable: not locked, a company may override it).
+--   * J-3 reversed: Cantril is a MONTHLY questionnaire → golden_spoons_per_questionnaire (10), not the short 2.
+--   * J-15 confirmed: after employment ends no time benefit (early leave, approved absence / day off) can be
+--     recorded — guard trigger on early_leave_log and approved_absence_entry; EverStore products only in the
+--     30-day window.
+--   * A-8: reversing an offboarding returns the leaver's Happiness Debt from the memo line "יצא עם העוזבים"
+--     to the team: happiness_debt_events 'leaver_reversal' linked to the original leaver_transfer
+--     (reverses_event_id, once per transfer). The event ↔ employee link is kept in the CLOSED internal table
+--     happiness_debt_leaver_link (never returned), so happiness_debt_events itself stays person-free.
 -- New in 1.6.16 (Karin 30.10 + Chief of Drive 30.10; agents-bot-instructions-v3 = source of truth, v3 wins):
 --   * CHR Coins: rpc_convert_golden_to_chr stays DEFINED (v2 readiness) but every v1 call raises 422
 --     chr_coins_deferred_to_v2 (rpc.sql) — no balance change, no golden_chr_conversion row.
@@ -1352,9 +1363,9 @@ CREATE INDEX IF NOT EXISTS idx_approved_absence_user ON approved_absence_entry (
 -- agent_settings[reward_setting_key] (never a code constant). reward_amount is legacy and always NULL.
 -- Locked catalogue (is_locked = true), pinned by CHECK:
 --   PCQ-12  monthly    golden_spoons_per_questionnaire            (Karin 30.10: 10 כפיות)
---   Cantril monthly    golden_spoons_per_short_questionnaire      (Karin 30.10: 2 כפיות — 1 item = short; judgment call)
---   IHS     quarterly  golden_spoons_per_quarterly_questionnaire  (לא הוגדר)
---   TPS-12  quarterly  golden_spoons_per_quarterly_questionnaire  (לא הוגדר); score = (sum − 12) / 48 × 100;
+--   Cantril monthly    golden_spoons_per_questionnaire            (Karin 31.10: monthly → 10 כפיות; replaces J-3's 2)
+--   IHS     quarterly  golden_spoons_per_quarterly_questionnaire  (Karin 31.10: 10 כפיות, adjustable)
+--   TPS-12  quarterly  golden_spoons_per_quarterly_questionnaire  (Karin 31.10: 10 כפיות, adjustable); score = (sum − 12) / 48 × 100;
 --           items 1,3,5,11 reversed (6 − x); all 12 required; new employee only after 30 days.
 -- HR-defined future questionnaires (is_locked = false): frequency daily..monthly; monthly →
 -- golden_spoons_per_questionnaire, daily / weekly → golden_spoons_per_short_questionnaire.
@@ -1390,7 +1401,7 @@ CREATE TABLE IF NOT EXISTS questionnaire_definition (
       NOT is_locked
       OR (code = 'PCQ-12'  AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire'
           AND item_count = 12 AND answer_min = 1 AND answer_max = 6 AND all_required AND scoring_method = 'pcq12')
-      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_short_questionnaire')
+      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire')
       OR (code = 'IHS'     AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
           AND answer_min = 1 AND answer_max = 5 AND all_required AND scoring_method = 'ihs')
       OR (code = 'TPS-12'  AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
@@ -1422,7 +1433,6 @@ BEGIN
     UPDATE questionnaire_definition
        SET reward_type = 'participation', reward_amount = NULL,
            reward_setting_key = CASE
-             WHEN code = 'Cantril' THEN 'golden_spoons_per_short_questionnaire'
              WHEN frequency IN ('quarterly', 'half_yearly', 'yearly') THEN 'golden_spoons_per_quarterly_questionnaire'
              WHEN frequency = 'monthly' THEN 'golden_spoons_per_questionnaire'
              ELSE 'golden_spoons_per_short_questionnaire' END;
@@ -1439,7 +1449,7 @@ BEGIN
       NOT is_locked
       OR (code = 'PCQ-12'  AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire'
           AND item_count = 12 AND answer_min = 1 AND answer_max = 6 AND all_required AND scoring_method = 'pcq12')
-      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_short_questionnaire')
+      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire')
       OR (code = 'IHS'     AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
           AND answer_min = 1 AND answer_max = 5 AND all_required AND scoring_method = 'ihs')
       OR (code = 'TPS-12'  AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
@@ -1454,6 +1464,30 @@ BEGIN
   END IF;
 END $$;
 
+-- v1.6.17 upgrade (Karin 31.10, J-3 reversed): a v1.6.16 database keyed Cantril to the short setting (2).
+-- Re-key it to the monthly setting (10) and re-pin the locked catalogue. No-op on a fresh / current database.
+-- Runs BEFORE the seed INSERT: its CHECK is evaluated before ON CONFLICT DO NOTHING.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM questionnaire_definition
+              WHERE code = 'Cantril' AND reward_setting_key <> 'golden_spoons_per_questionnaire') THEN
+    ALTER TABLE questionnaire_definition DROP CONSTRAINT IF EXISTS chk_locked_catalogue;
+    UPDATE questionnaire_definition SET reward_setting_key = 'golden_spoons_per_questionnaire', updated_at = clock_timestamp()
+     WHERE code = 'Cantril';
+    ALTER TABLE questionnaire_definition ADD CONSTRAINT chk_locked_catalogue CHECK (
+      NOT is_locked
+      OR (code = 'PCQ-12'  AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire'
+          AND item_count = 12 AND answer_min = 1 AND answer_max = 6 AND all_required AND scoring_method = 'pcq12')
+      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire')
+      OR (code = 'IHS'     AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
+          AND answer_min = 1 AND answer_max = 5 AND all_required AND scoring_method = 'ihs')
+      OR (code = 'TPS-12'  AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
+          AND item_count = 12 AND answer_min = 1 AND answer_max = 5
+          AND reversed_items = '{1,3,5,11}' AND all_required AND min_tenure_days = 30
+          AND scoring_method = 'tps12'));
+  END IF;
+END $$;
+
 INSERT INTO questionnaire_definition (
   code, name_en, name_he, frequency, reward_type, reward_amount, reward_setting_key, item_count,
   answer_min, answer_max, reversed_items, all_required, min_tenure_days, scoring_method, is_locked
@@ -1462,7 +1496,7 @@ INSERT INTO questionnaire_definition (
   -- v1.6.16 (Karin 30.10): participation reward = agent_settings.golden_spoons_per_questionnaire (10)
   ('PCQ-12',  'PCQ-12', 'PCQ-12', 'monthly', 'participation', NULL, 'golden_spoons_per_questionnaire', 12, 1, 6, '{}', true, 0, 'pcq12', true),
   ('Cantril', 'Cantril ladder — life satisfaction', 'סולם Cantril — שביעות רצון מהחיים',
-              'monthly', 'participation', NULL, 'golden_spoons_per_short_questionnaire', 1, 0, 10, '{}', true, 0, 'none', true),
+              'monthly', 'participation', NULL, 'golden_spoons_per_questionnaire', 1, 0, 10, '{}', true, 0, 'none', true),
   -- v1.6.11 (Karin 24.10, O-6): IHS score = (mean − 1) / 4 × 100 from 1–5 answers (score is NOT a reward input any more)
   ('IHS',     'IHS — Interdependent Happiness Scale', 'IHS — מדד האושר הבין-תלוי',
               'quarterly', 'participation', NULL, 'golden_spoons_per_quarterly_questionnaire', 9, 1, 5, '{}', true, 0, 'ihs', true),
@@ -3939,9 +3973,9 @@ INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, 
   (NULL, 'turnover_baseline_junior',    'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (junior) — לא הוגדר'),
   (NULL, 'turnover_baseline_mid',       'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (mid) — לא הוגדר'),
   (NULL, 'turnover_baseline_senior',    'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (senior) — לא הוגדר'),
-  (NULL, 'golden_spoons_per_questionnaire',           'numeric', 10,  NULL, 'set',         true,  'Karin 30.10: monthly questionnaire incl. PCQ-12 = 10 כפיות (participation only)'),
-  (NULL, 'golden_spoons_per_short_questionnaire',     'numeric', 2,   NULL, 'set',         true,  'Karin 30.10: weekly / short questionnaire = 2 כפיות (participation only)'),
-  (NULL, 'golden_spoons_per_quarterly_questionnaire', 'numeric', NULL, NULL, 'not_defined', false, 'TPS-12 / IHS (quarterly) — not covered by Karin 30.10 — לא הוגדר'),
+  (NULL, 'golden_spoons_per_questionnaire',           'numeric', 10,  NULL, 'set',         true,  'Karin 30.10 / 31.10: monthly questionnaire incl. PCQ-12 and Cantril = 10 כפיות (participation only)'),
+  (NULL, 'golden_spoons_per_short_questionnaire',     'numeric', 2,   NULL, 'set',         true,  'Karin 30.10: weekly / short questionnaire = 2 כפיות (participation only; Cantril is monthly — Karin 31.10)'),
+  (NULL, 'golden_spoons_per_quarterly_questionnaire', 'numeric', 10,  NULL, 'set',         false, 'Karin 31.10: TPS-12 / IHS = 10 כפיות per participation, same as a monthly questionnaire; adjustable (company override allowed)'),
   (NULL, 'golden_spoons_per_checkin',     'numeric', NULL, NULL, 'not_defined', false, 'v3 §6.1: midday check-in participation — לא הוגדר'),
   (NULL, 'golden_spoons_per_shift',       'numeric', 2.0,  NULL, 'set',         false, 'O-16 / Q11 (Karin 24.10): 2 per shift (morning shift-start check-in)'),
   (NULL, 'golden_spoons_per_onboarding',  'numeric', 10.0, NULL, 'set',         false, 'O-16 / Q11 (Karin 24.10): 10 at signup'),
@@ -4018,19 +4052,52 @@ CREATE TRIGGER trg_remediation_records_worm
     FOR EACH ROW EXECUTE FUNCTION fn_worm_immutable('ledger_immutable');
 
 -- happiness_debt_events — every Happiness Debt movement (v3 §5.3, NO person_id). leaver_transfer moves a
--- leaver's share to the memo line "יצא עם העוזבים" (never deleted); remediation reduces it against a record.
+-- leaver's share to the memo line "יצא עם העוזבים" (never deleted); remediation reduces it against a record;
+-- v1.6.17 (A-8) leaver_reversal returns a transfer to its team when the offboarding is reversed — it points at
+-- the original leaver_transfer (reverses_event_id) and exists at most once per transfer.
 CREATE TABLE IF NOT EXISTS happiness_debt_events (
     event_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     company_id      uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
     group_id        varchar(255) NOT NULL,
     period_month    date NOT NULL CHECK (extract(day FROM period_month) = 1),
-    event_type      text NOT NULL CHECK (event_type IN ('leaver_transfer', 'remediation')),
+    event_type      text NOT NULL CONSTRAINT happiness_debt_events_event_type_check
+                    CHECK (event_type IN ('leaver_transfer', 'remediation', 'leaver_reversal')),
     amount          numeric(14, 2) NOT NULL CHECK (amount > 0),
     remediation_id  uuid REFERENCES remediation_records(remediation_id),
+    reverses_event_id uuid CONSTRAINT happiness_debt_events_reverses_event_id_fkey REFERENCES happiness_debt_events(event_id),
     created_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
-    CONSTRAINT chk_hde_remediation_link CHECK ((event_type = 'remediation') = (remediation_id IS NOT NULL))
+    CONSTRAINT chk_hde_remediation_link CHECK ((event_type = 'remediation') = (remediation_id IS NOT NULL)),
+    CONSTRAINT chk_hde_reversal_link CHECK ((event_type = 'leaver_reversal') = (reverses_event_id IS NOT NULL))
 );
+-- v1.6.17 upgrade of a v1.6.16 table (adds the reversal type and link; no-op when already present).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                  AND table_name = 'happiness_debt_events' AND column_name = 'reverses_event_id') THEN
+    ALTER TABLE happiness_debt_events DROP CONSTRAINT IF EXISTS happiness_debt_events_event_type_check;
+    ALTER TABLE happiness_debt_events ADD CONSTRAINT happiness_debt_events_event_type_check
+      CHECK (event_type IN ('leaver_transfer', 'remediation', 'leaver_reversal'));
+    ALTER TABLE happiness_debt_events ADD COLUMN reverses_event_id uuid
+      CONSTRAINT happiness_debt_events_reverses_event_id_fkey REFERENCES happiness_debt_events(event_id);
+    ALTER TABLE happiness_debt_events ADD CONSTRAINT chk_hde_reversal_link
+      CHECK ((event_type = 'leaver_reversal') = (reverses_event_id IS NOT NULL));
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_hde_company_period ON happiness_debt_events (company_id, period_month);
+-- One reversal per leaver_transfer (idempotency backstop).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_hde_one_reversal ON happiness_debt_events (reverses_event_id)
+    WHERE event_type = 'leaver_reversal';
+
+-- happiness_debt_leaver_link — v1.6.17 (A-8) INTERNAL link from a leaver_transfer event to the employee who
+-- left, needed only to find the transfer to reverse when the offboarding is reversed. Closed to clients
+-- (RLS forced, no grants), never returned by any RPC, removed when the employee's pseudonym key is
+-- crypto-shredded (a reversal is impossible after that). happiness_debt_events itself holds no person column.
+CREATE TABLE IF NOT EXISTS happiness_debt_leaver_link (
+    event_id    uuid PRIMARY KEY REFERENCES happiness_debt_events(event_id) ON DELETE CASCADE,
+    user_id     uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    created_at  timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_hdll_user ON happiness_debt_leaver_link (user_id);
 DROP TRIGGER IF EXISTS trg_happiness_debt_events_worm ON happiness_debt_events;
 CREATE TRIGGER trg_happiness_debt_events_worm
     BEFORE UPDATE OR DELETE ON happiness_debt_events
@@ -4129,7 +4196,7 @@ BEGIN
   FOREACH t IN ARRAY ARRAY['agent_settings', 'everstore_budget', 'everstore_item_cost', 'agent_daily_summaries',
                            'golden_spoons_ledger', 'remediation_records', 'happiness_debt_events',
                            'happiness_debt_ledger', 'team_movements', 'metric_assurance', 'bcr_checks',
-                           'epwi_inputs', 'board_reconciliation', 'board_report'] LOOP
+                           'epwi_inputs', 'board_reconciliation', 'board_report', 'happiness_debt_leaver_link'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
     EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC, anon, authenticated', t);

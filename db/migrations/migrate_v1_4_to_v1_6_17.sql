@@ -1,12 +1,15 @@
 -- =============================================================================
--- CHR-ETRS MVP · migrations/migrate_v1_4_to_v1_6_16.sql
--- Version: 1.6.16-mvp (2026-10-30) — supersedes migrate_v1_4_to_v1_6_13.sql (1.6.13-mvp, 2026-10-25).
+-- CHR-ETRS MVP · migrations/migrate_v1_4_to_v1_6_17.sql
+-- Version: 1.6.17-mvp (2026-10-31) — supersedes migrate_v1_4_to_v1_6_16.sql (1.6.16-mvp, 2026-10-30) and
+--          migrate_v1_4_to_v1_6_13.sql (1.6.13-mvp, 2026-10-25).
+-- v1.6.17: same steps; the pack it installs is v1.6.17 (Cantril monthly 10, TPS-12 / IHS 10, J-15 guard,
+--          A-8 leaver_reversal + happiness_debt_leaver_link). File name and backup prefix change only.
 -- v1.6.16: same steps; the pack it installs is v1.6.16 (agents section, agent_settings, conversion blocked,
 --          participation rewards); the users.app_role list gains 'cfo'.
 --          (1.6.9-mvp, 2026-10-21), migrate_v1_4_to_v1_6_8.sql (1.6.8-mvp, 2026-10-21) and
 --          migrate_v1_4_to_v1_6_7.sql (1.6.7-mvp, 2026-10-20).
 --   Upgrades a v1.4 database (real v1.4 structure: Drive schema.20261013.sql + v1.4 rpc.sql, see
---   tests/fixtures/) to the v1.6.16 pack in ONE transaction.
+--   tests/fixtures/) to the v1.6.17 pack in ONE transaction.
 -- New in 1.6.10 (Chief of Drive 21.10):
 --   * timezone preflight (migrations/preflight_tz.sql): the source DB zone (SHOW timezone) must be UTC,
 --     else the run STOPS unless -v source_tz=<zone> (runner --source-tz <zone>) is given; the trust rule
@@ -28,8 +31,8 @@
 --   write grants, schema fn_legacy_guard_all).
 --
 -- Usage (psql, run from the pack root or anywhere — paths are relative to this file):
---   apply   : psql -d <db> -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_16.sql
---   dry run : psql -d <db> -v ON_ERROR_STOP=1 -v dry_run=1 -f migrations/migrate_v1_4_to_v1_6_16.sql
+--   apply   : psql -d <db> -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_17.sql
+--   dry run : psql -d <db> -v ON_ERROR_STOP=1 -v dry_run=1 -f migrations/migrate_v1_4_to_v1_6_17.sql
 --             (prints the counts, then ROLLBACK — nothing is changed)
 --   non-UTC source zone: add -v source_tz=<zone>   (runner: --source-tz <zone>)
 --   runner  : migrations/run_migration.sh [--source-tz <zone>] {dry-run|apply|guard|rollback} <db>
@@ -39,7 +42,7 @@
 -- (country / CLDR backfill, needs_review flags, reminder hold) — reusing the pack's backfill functions.
 -- Idempotent: every step is conditional; a second run changes nothing (counts all 0).
 -- On a v1.4 database the whole v1.4 code layer (public functions, triggers, RLS policies) is dropped
--- first and recreated by the v1.6.16 schema + rpc (step 1).
+-- first and recreated by the v1.6.17 schema + rpc (step 1).
 --
 -- What happens to v1.4 tables whose 1.6.x structure is incompatible and that are OUT of scope
 -- (team_aggregate, employee_value_asset, manager_ledger, cuckoo_alert, shop_item_catalog,
@@ -52,7 +55,7 @@
 --   1. Any error → the whole migration rolls back automatically (single transaction, ON_ERROR_STOP).
 --   2. Dry run → always ROLLBACK.
 --   3. After a successful apply: restore the pre-migration backup. run_migration.sh apply writes
---      migrations/backups/<db>_pre_v1_6_16_<timestamp>.dump (pg_dump -Fc) BEFORE migrating, and
+--      migrations/backups/<db>_pre_v1_6_17_<timestamp>.dump (pg_dump -Fc) BEFORE migrating, and
 --      run_migration.sh rollback <db> restores the newest one (drop + recreate + pg_restore).
 --      Manually: dropdb <db> && createdb <db> && pg_restore -d <db> <dump>.
 --   There is no in-place "down" script: the upgrade renames / reshapes tables and replaces every
@@ -265,7 +268,7 @@ END $$;
 SELECT pg_temp.mig_add('project.legacy_set_non_core', (SELECT n FROM mig_before WHERE k = 'project_legacy'));
 
 -- ---------------------------------------------------------------------------
--- 2. The v1.6.16 pack (idempotent): CLDR / tz reference, schema, RPCs. The schema runs the
+-- 2. The v1.6.17 pack (idempotent): CLDR / tz reference, schema, RPCs. The schema runs the
 --    project is_core migration, the company calendar backfill (holds / needs_review), the start_date →
 --    hire_date merge (O-50), the TPS wait-source audit backfill and the legacy read-only guard.
 -- ---------------------------------------------------------------------------
@@ -347,7 +350,7 @@ SELECT pg_temp.mig_add('companies.timezone_needs_review',
 -- 4. Report + commit (or roll back for a dry run).
 -- ---------------------------------------------------------------------------
 SELECT fn_mig_source_tz() AS mig_tz \gset
-\echo 'CHR-ETRS migration v1.4 → v1.6.16 — counts of THIS run — v1.x dates compared in:' :mig_tz
+\echo 'CHR-ETRS migration v1.4 → v1.6.17 — counts of THIS run — v1.x dates compared in:' :mig_tz
 SELECT step, n FROM mig_report ORDER BY step;
 \if :dry_run
 \echo 'DRY RUN — rolling back, nothing changed.'

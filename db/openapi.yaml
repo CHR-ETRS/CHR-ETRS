@@ -1,29 +1,29 @@
-# CHR-ETRS MVP v1.6.16 · openapi.yaml
-# Version: 1.6.16-mvp (2026-10-30 IL) — supersedes 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
+# CHR-ETRS MVP v1.6.17 · openapi.yaml
+# Version: 1.6.17-mvp (2026-10-31 IL) — supersedes 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
-  version: 1.6.16-mvp
-  description: "PostgREST reads + RPC writes. Version 1.6.16-mvp (2026-10-30) — supersedes 1.6.13-mvp (2026-10-25;\
-    \ 1.6.14 / 1.6.15 were planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21),\
-    \ 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp\
-    \ (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20),\
-    \ 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20, morning) and 1.4.0-mvp (2026-10-06).\nSoT = ADR index + Karin's\
-    \ approved locks of 2026-10-20. NLM archived — not SoT.\n\n**Timezone (N-4 revised):** NOT NULL, no DEFAULT;\
-    \ signup requires valid IANA; missing → 400 `timezone_required`;\ninvalid update → 400 `invalid_timezone`. Periods\
-    \ (questionnaires, spoons) use the employee's timezone.\n\n**Turnover cost (locked):** % of annual salary by\
-    \ tier — junior 30–50, mid 100–150, senior 200–400.\nResults include min/max ranges + midpoint point estimate\
-    \ (junior 40%, mid 125%, senior 300%; O-1). Tier defaults automatically from org_role.tier with CHRO override\
-    \ (O-2).\n\n**Deprivation Tax (locked):** system-computed only.\n`deprivation_tax_amount = deprived_count ×\
-    \ avg_annual_salary × 0.12`.\nSources: Oswald et al. JLE 2015 doi:10.1086/681096; Bellet/De Neve/Ward MS 2024\
-    \ doi:10.1287/mnsc.2023.4766.\nNo fixed currency amount. No 13–14%. Deprived in a week = weekly avg available\
-    \ spoons < 5 OR weekly B_t >= 0.65 (O-3). avg_annual_salary = company-wide average annual salary of that turnover\
-    \ tier group (O-4).\n\n**Privacy thresholds (lock #3, O-11):** N = distinct employees whose data ACTUALLY feeds\
-    \ the aggregate in that period —\nnever team size or membership. Regular N≥5; Cuckoo, Shadow Balance and emergency\
-    \ N≥10; project manager N≥5; board N≥20.\nBelow → 403 `aggregation_privacy_threshold`.\n\n**Spoons:** 12 = hard\
-    \ daily max. 4–5 remaining → Fighting tasks blocked (403 `circuit_breaker_active`).\n≤3 → employee goes home;\
-    \ logged only as 'יציאה מוקדמת מאושרת' + time; counts as a full workday, no sick day.\nThe Circuit Breaker never\
-    \ locks questionnaires or the shop. Morning check-in (`/rpc/rpc_morning_checkin` / `/rpc/rpc_submit_morning_checkin`):\
+  version: 1.6.17-mvp
+  description: "PostgREST reads + RPC writes. Version 1.6.17-mvp (2026-10-31) — supersedes 1.6.16-mvp (2026-10-30),\
+    \ 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24),\
+    \ 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp\
+    \ (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20),\
+    \ 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20, morning) and 1.4.0-mvp (2026-10-06).\n\
+    SoT = ADR index + Karin's approved locks of 2026-10-20. NLM archived — not SoT.\n\n**Timezone (N-4 revised):**\
+    \ NOT NULL, no DEFAULT; signup requires valid IANA; missing → 400 `timezone_required`;\ninvalid update → 400\
+    \ `invalid_timezone`. Periods (questionnaires, spoons) use the employee's timezone.\n\n**Turnover cost (locked):**\
+    \ % of annual salary by tier — junior 30–50, mid 100–150, senior 200–400.\nResults include min/max ranges +\
+    \ midpoint point estimate (junior 40%, mid 125%, senior 300%; O-1). Tier defaults automatically from org_role.tier\
+    \ with CHRO override (O-2).\n\n**Deprivation Tax (locked):** system-computed only.\n`deprivation_tax_amount\
+    \ = deprived_count × avg_annual_salary × 0.12`.\nSources: Oswald et al. JLE 2015 doi:10.1086/681096; Bellet/De\
+    \ Neve/Ward MS 2024 doi:10.1287/mnsc.2023.4766.\nNo fixed currency amount. No 13–14%. Deprived in a week = weekly\
+    \ avg available spoons < 5 OR weekly B_t >= 0.65 (O-3). avg_annual_salary = company-wide average annual salary\
+    \ of that turnover tier group (O-4).\n\n**Privacy thresholds (lock #3, O-11):** N = distinct employees whose\
+    \ data ACTUALLY feeds the aggregate in that period —\nnever team size or membership. Regular N≥5; Cuckoo, Shadow\
+    \ Balance and emergency N≥10; project manager N≥5; board N≥20.\nBelow → 403 `aggregation_privacy_threshold`.\n\
+    \n**Spoons:** 12 = hard daily max. 4–5 remaining → Fighting tasks blocked (403 `circuit_breaker_active`).\n\
+    ≤3 → employee goes home; logged only as 'יציאה מוקדמת מאושרת' + time; counts as a full workday, no sick day.\n\
+    The Circuit Breaker never locks questionnaires or the shop. Morning check-in (`/rpc/rpc_morning_checkin` / `/rpc/rpc_submit_morning_checkin`):\
     \ simple average of 0–10 scales with half-points floored in the employee's favor, setting `reported_at`. Midday\
     \ check-in (`/rpc/rpc_midday_checkin` / `/rpc/rpc_submit_midday_checkin`): open 12:00–15:00 employee-local time,\
     \ integer delta −4..+4 clamped to 0..12 (O-5).\n\n**Cuckoo:** employee first; 60-second veto window; then the\
@@ -123,14 +123,25 @@ info:
     \ releases them (audited).\n  XK → Europe/Belgrade and AN → America/Curacao are documented overrides in the\
     \ reference table.\n- PEWI: `/rpc/rpc_project_pewi` — mean EPWI of the project's members who reported in the\
     \ company week; below 5\n  actual reporters → `pewi: null, suppressed: true` (no 403). Every view audited; no\
-    \ individual values.\n\n**New in 1.6.16-mvp (2026-10-30, Karin + Chief of Drive — agents, agents-bot-instructions-v3\
-    \ is the single source of truth):**\n- Conversion blocked: `/rpc/rpc_convert_golden_to_chr` → 422 `chr_coins_deferred_to_v2`\
-    \ (\"CHR Coins shelf is deferred to v2; Golden Spoons conversion is disabled in v1\").\n- Golden Spoons by participation\
-    \ only (v3 §3.6, Karin 30.10): amounts are locked `agent_settings` parameters, never code constants — `golden_spoons_per_questionnaire`\
-    \ 10 (monthly incl. PCQ-12), `golden_spoons_per_short_questionnaire` 2 (weekly / short incl. Cantril), `golden_spoons_per_quarterly_questionnaire`\
-    \ (TPS-12 / IHS) \"לא הוגדר\" → 0 with `reward_status = not_defined`. The score/10 reward is removed.\n- `agent_settings`\
-    \ (GET / PUT `/rpc/rpc_get_agent_settings`, `/rpc/rpc_put_agent_setting`; v3 alias `/agents/settings`) — cfo\
-    \ / vp_hr; open values show \"לא הוגדר\" and are never invented.\n- Agent 1 (EverStore budget): `/rpc/rpc_get_open_golden_spoons_liability`\
+    \ individual values.\n\n**New in 1.6.17-mvp (2026-10-31, Karin via Chief of Drive — fix round):**\n- Questionnaire\
+    \ participation amounts: Cantril is MONTHLY → `golden_spoons_per_questionnaire` 10 (was the short 2); TPS-12\
+    \ and IHS → `golden_spoons_per_quarterly_questionnaire` 10 (was \"לא הוגדר\" → 0), an adjustable setting (not\
+    \ locked: cfo / vp_hr may override it per company with `/rpc/rpc_put_agent_setting`).\n- No time benefits after\
+    \ employment ends: `/rpc/rpc_everstore_purchase` refuses a `time_benefit` item and `/rpc/rpc_log_go_home` refuses\
+    \ an early leave for an ex-employee (403 `anti_get_blocked`); a DB guard blocks every early-leave / approved-absence\
+    \ row for an ex-employee. During the 30-day window only EverStore products can be redeemed.\n- Reversed offboarding\
+    \ (`/rpc/rpc_revert_offboarding`, or the HR system clearing the end date): the leaver's Happiness Debt returns\
+    \ from the memo line \"יצא עם העוזבים\" to the team — a documented `leaver_reversal` event linked to the original\
+    \ `leaver_transfer` (once per transfer, idempotent). No person identifier in any agent output.\n\n**New in 1.6.16-mvp\
+    \ (2026-10-30, Karin + Chief of Drive — agents, agents-bot-instructions-v3 is the single source of truth):**\n\
+    - Conversion blocked: `/rpc/rpc_convert_golden_to_chr` → 422 `chr_coins_deferred_to_v2` (\"CHR Coins shelf is\
+    \ deferred to v2; Golden Spoons conversion is disabled in v1\").\n- Golden Spoons by participation only (v3\
+    \ §3.6, Karin 30.10): amounts are locked `agent_settings` parameters, never code constants — `golden_spoons_per_questionnaire`\
+    \ 10 (monthly incl. PCQ-12), `golden_spoons_per_short_questionnaire` 2 (weekly / short; Cantril moved to monthly\
+    \ 10 in 1.6.17), `golden_spoons_per_quarterly_questionnaire` (TPS-12 / IHS) \"לא הוגדר\" → 0 with `reward_status\
+    \ = not_defined` (superseded in 1.6.17: 10). The score/10 reward is removed.\n- `agent_settings` (GET / PUT\
+    \ `/rpc/rpc_get_agent_settings`, `/rpc/rpc_put_agent_setting`; v3 alias `/agents/settings`) — cfo / vp_hr; open\
+    \ values show \"לא הוגדר\" and are never invented.\n- Agent 1 (EverStore budget): `/rpc/rpc_get_open_golden_spoons_liability`\
     \ (cfo / vp_hr only; v3 `/agents/budget/liability`), `/rpc/rpc_run_daily_budget_summary` + `/rpc/rpc_get_daily_budget_summary`\
     \ (one summary per company-local day, only when a threshold is crossed; v3 `/agents/budget/daily-summary?date=`),\
     \ `/rpc/rpc_expire_departed_golden_spoons` (service job, day 31 after the end of employment), and the anonymous\
@@ -739,7 +750,10 @@ paths:
         (has_employee_profile = true, including managers buying for themselves) can purchase; pure management/governance
         accounts without an employee profile receive 403 anti_get_blocked. Time-benefit privacy (נעילת הפרגוד):
         purchasing a time_benefit item automatically creates a standard HR approved absence / refresh time entry
-        (זמן התרעננות / היעדרות מאושרת) with zero link to EverStore.'
+        (זמן התרעננות / היעדרות מאושרת) with zero link to EverStore. v1.6.17 (J-15, Karin 31.10): after employment
+        ends no time benefit — a departed employee may redeem only EverStore products (non-time_benefit categories)
+        during the 30-day window; a time_benefit item → 403 anti_get_blocked, with no charge and no approved-absence
+        row.'
       requestBody:
         required: true
         content:
@@ -1370,11 +1384,12 @@ paths:
       description: 'Answers are immutable after submission (WORM → 403 questionnaire_immutable). Not locked by the
         Circuit Breaker.
 
-        Rewards (v1.6.16, v3 §3.6 + Karin 30.10): participation only, the same amount whatever the answers — read
-        from agent_settings via questionnaire_definition.reward_setting_key: PCQ-12 and other monthly questionnaires
-        golden_spoons_per_questionnaire (10); Cantril, daily and weekly (short) golden_spoons_per_short_questionnaire
-        (2); IHS / TPS-12 (quarterly) golden_spoons_per_quarterly_questionnaire = "לא הוגדר" → reward 0 and reward_status
-        not_defined. No Golden Spoons are ever computed from a score.
+        Rewards (v1.6.17, v3 §3.6 + Karin 30.10 / 31.10): participation only, the same amount whatever the answers
+        — read from agent_settings via questionnaire_definition.reward_setting_key: PCQ-12, Cantril and other monthly
+        questionnaires golden_spoons_per_questionnaire (10); daily and weekly (short) golden_spoons_per_short_questionnaire
+        (2); IHS / TPS-12 (quarterly) golden_spoons_per_quarterly_questionnaire (10, adjustable per company). A
+        setting that is "לא הוגדר" pays 0 with reward_status not_defined. No Golden Spoons are ever computed from
+        a score.
 
         TPS-12: score = (sum−12)/48×100; items 1, 3, 5, 11 reversed (6−x); all 12 answers 1–5 required; new employees
         only after 30 days (from the team-join date, else the hire date; with neither: exempt — v1.6.8, O-49).
@@ -2800,7 +2815,11 @@ paths:
       summary: Revert termination within the 30-day retention window and cancel scheduled crypto-shredding (O-14)
       description: 'O-14 (Karin 24.10): callable by CHRO (vp_hr) or service_role within 30 days of termination before
         the pseudonym key is shredded. Clears employment_ended_at and scheduled_shred_at. If 30 days have elapsed
-        or the key is already shredded → 403 offboarding_shred_already_executed.'
+        or the key is already shredded → 403 offboarding_shred_already_executed. v1.6.17 (A-8, Karin 31.10): the
+        latest leaver_transfer of this employee is reversed — a leaver_reversal event (same team and amount, period
+        = company month of the reversal, linked to the original transfer) returns the Happiness Debt from the memo
+        line "יצא עם העוזבים" to the team. Once per transfer: a second call → 403 anti_get_blocked and no second
+        reversal.'
       requestBody:
         required: true
         content:
@@ -3924,8 +3943,8 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Supabase JWT. app_role = privilege class (employee|manager|vp_hr=CHRO|legal_ethics|owner_shareholder|board_*|cfo — v1.6.16 agents finance viewer);
-        org_role_code = position in the role tree.
+      description: Supabase JWT. app_role = privilege class (employee|manager|vp_hr=CHRO|legal_ethics|owner_shareholder|board_*|cfo
+        — v1.6.16 agents finance viewer); org_role_code = position in the role tree.
   parameters:
     select:
       name: select

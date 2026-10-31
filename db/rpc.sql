@@ -1,6 +1,6 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.16 · rpc.sql
--- Version: 1.6.16-mvp (2026-10-30 IL) — supersedes 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- CHR-ETRS MVP v1.6.17 · rpc.sql
+-- Version: 1.6.17-mvp (2026-10-31 IL) — supersedes 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -8,6 +8,15 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- New in 1.6.17 (Karin 31.10 via Chief of Drive — fix round):
+--   * A-5 / J-3: TPS-12, IHS and Cantril each pay 10 Golden Spoons for participation (settings, see schema.sql);
+--     fn_questionnaire_reward is unchanged (it reads agent_settings, never a code constant).
+--   * J-15: fn_block_time_benefit_after_exit — no early leave / approved absence row for an employee whose
+--     employment ended (trigger on early_leave_log and approved_absence_entry); rpc_everstore_purchase refuses a
+--     time_benefit item after exit; EverStore products stay redeemable in the 30-day window.
+--   * A-8: fn_reverse_leaver_transfer + trigger trg_users_leaver_debt_reversal — reversing an offboarding writes a
+--     'leaver_reversal' event linked to the original leaver_transfer; the memo line "יצא עם העוזבים" decreases and
+--     the debt returns to the team. Idempotent (once per transfer). No person identifier in any output.
 -- New in 1.6.16 (Karin 30.10 + Chief of Drive 30.10; agents-bot-instructions-v3 wins over earlier decisions):
 --   * rpc_convert_golden_to_chr: DEFINED for v2 readiness, BLOCKED in v1 — every call raises HTTP 422
 --     chr_coins_deferred_to_v2 (SQLSTATE PT422) before any read or write (no balance change, no row).
@@ -1024,6 +1033,8 @@ BEGIN
          scheduled_shred_at = NULL,
          shredded_at        = COALESCE(pseudonym_key.shredded_at, clock_timestamp())
   RETURNING * INTO v_row;
+  -- v1.6.17 (A-8): the internal event ↔ employee link is only needed for a reversal, impossible after shredding.
+  DELETE FROM happiness_debt_leaver_link l WHERE l.user_id = p_user_id;
   RETURN v_row;
 END;
 $$;
@@ -1254,6 +1265,44 @@ GRANT EXECUTE ON FUNCTION rpc_run_scheduled_crypto_shred() TO service_role;
 --     (approved_absence_entry: 'זמן התרעננות / היעדרות מאושרת') with ZERO link to EverStore,
 --     item_id, or Golden Spoons, while shop_purchase stays strictly hidden from managers.
 -- ---------------------------------------------------------------------------
+-- v1.6.17 (J-15): true when the user's employment has ended (users.employment_ended_at set).
+CREATE OR REPLACE FUNCTION fn_employment_ended(p_user_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE((SELECT u.employment_ended_at IS NOT NULL FROM users u WHERE u.user_id = p_user_id), false)
+$$;
+REVOKE ALL ON FUNCTION fn_employment_ended(uuid) FROM PUBLIC;
+
+-- v1.6.17 (J-15, Karin 31.10): BEFORE INSERT guard — no time benefit (early leave, approved absence / day off)
+-- may be recorded for an employee whose employment ended, whatever path writes it → 403 anti_get_blocked.
+CREATE OR REPLACE FUNCTION fn_block_time_benefit_after_exit()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF fn_employment_ended(NEW.user_id) THEN
+    PERFORM fn_raise_business('anti_get_blocked');
+  END IF;
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_block_time_benefit_after_exit() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_early_leave_after_exit ON early_leave_log;
+CREATE TRIGGER trg_early_leave_after_exit
+    BEFORE INSERT ON early_leave_log
+    FOR EACH ROW EXECUTE FUNCTION fn_block_time_benefit_after_exit();
+DROP TRIGGER IF EXISTS trg_approved_absence_after_exit ON approved_absence_entry;
+CREATE TRIGGER trg_approved_absence_after_exit
+    BEFORE INSERT ON approved_absence_entry
+    FOR EACH ROW EXECUTE FUNCTION fn_block_time_benefit_after_exit();
+
 DROP FUNCTION IF EXISTS rpc_everstore_purchase(varchar, varchar);
 CREATE OR REPLACE FUNCTION rpc_everstore_purchase(
   p_item_id         varchar,
@@ -1304,8 +1353,9 @@ BEGIN
     -- O-16: CHR Coins shelf deferred to v2 → refused in v1
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
-  IF v_departed AND v_item.category = 'time_benefit' THEN
-    -- v1.6.16 judgment: an approved absence cannot be scheduled after employment ended
+  IF v_item.category = 'time_benefit' AND fn_employment_ended(v_uid) THEN
+    -- v1.6.17 J-15 (confirmed by Karin 31.10): no time benefit after employment ends — only EverStore
+    -- products during the 30-day window (the DB guard fn_block_time_benefit_after_exit backs this up)
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
 
@@ -5540,12 +5590,16 @@ AS $$
 DECLARE
   v_amount numeric;
   v_month  date;
+  v_event  uuid;
 BEGIN
   SELECT e.happiness_debt_liability INTO v_amount FROM employee_value_asset e WHERE e.user_id = NEW.user_id;
   IF COALESCE(v_amount, 0) > 0 AND NEW.company_id IS NOT NULL THEN
     v_month := fn_agent_month_start(NEW.company_id, NEW.employment_ended_at);
     INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount)
-    VALUES (NEW.company_id, NEW.department, v_month, 'leaver_transfer', v_amount);
+    VALUES (NEW.company_id, NEW.department, v_month, 'leaver_transfer', v_amount)
+    RETURNING event_id INTO v_event;
+    -- v1.6.17 (A-8): internal, closed link so a reversed offboarding can find this transfer
+    INSERT INTO happiness_debt_leaver_link (event_id, user_id) VALUES (v_event, NEW.user_id);
     INSERT INTO happiness_debt_ledger (company_id, group_id, period_month, obligation_class, amount, exported_on_exit)
     VALUES (NEW.company_id, NEW.department, v_month, NULL, v_amount, true);
   END IF;
@@ -5558,6 +5612,73 @@ CREATE TRIGGER trg_users_leaver_debt_transfer
     AFTER UPDATE OF employment_ended_at ON users
     FOR EACH ROW WHEN (OLD.employment_ended_at IS NULL AND NEW.employment_ended_at IS NOT NULL)
     EXECUTE FUNCTION fn_users_leaver_debt_transfer();
+
+-- v1.6.17 (A-8, Karin 31.10): an offboarding was reversed (marked by mistake or the employee returned) → the
+-- latest not-yet-reversed leaver_transfer of this employee goes back to its team: a 'leaver_reversal' event
+-- (same team, same amount, period = company month of the reversal; reverses_event_id = the transfer). The
+-- memo line "יצא עם העוזבים" decreases by that amount; the original transfer stays (WORM, history intact).
+-- Idempotent: a transfer is reversed at most once (unique index); a second call changes nothing.
+-- Returns an id-free summary (no person_id / user_id / pseudonym). Only while the employment is active again.
+CREATE OR REPLACE FUNCTION fn_reverse_leaver_transfer(p_user_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_t     happiness_debt_events;
+  v_month date;
+  v_rev   uuid;
+BEGIN
+  IF fn_employment_ended(p_user_id) THEN
+    RETURN jsonb_build_object('status', 'still_offboarded');
+  END IF;
+  SELECT e.* INTO v_t
+    FROM happiness_debt_leaver_link l
+    JOIN happiness_debt_events e ON e.event_id = l.event_id AND e.event_type = 'leaver_transfer'
+   WHERE l.user_id = p_user_id
+     AND NOT EXISTS (SELECT 1 FROM happiness_debt_events r
+                      WHERE r.event_type = 'leaver_reversal' AND r.reverses_event_id = e.event_id)
+   ORDER BY e.created_at DESC
+   LIMIT 1
+   FOR UPDATE OF e;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('status', 'nothing_to_reverse');
+  END IF;
+  v_month := fn_agent_month_start(v_t.company_id, clock_timestamp());
+  INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, reverses_event_id)
+  VALUES (v_t.company_id, v_t.group_id, v_month, 'leaver_reversal', v_t.amount, v_t.event_id)
+  ON CONFLICT (reverses_event_id) WHERE event_type = 'leaver_reversal' DO NOTHING
+  RETURNING event_id INTO v_rev;
+  IF v_rev IS NULL THEN
+    RETURN jsonb_build_object('status', 'nothing_to_reverse');
+  END IF;
+  RETURN jsonb_build_object('status', 'reversed', 'reversal_event_id', v_rev, 'reverses_event_id', v_t.event_id,
+                            'team', v_t.group_id, 'period_month', v_month, 'amount', v_t.amount,
+                            'memo_after', fn_leaver_memo(v_t.company_id, v_month), 'label_he', 'יצא עם העוזבים');
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_reverse_leaver_transfer(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fn_reverse_leaver_transfer(uuid) TO service_role;
+
+-- Trigger body: employment_ended_at cleared (rpc_revert_offboarding or the HR system) → reverse the transfer.
+CREATE OR REPLACE FUNCTION fn_users_leaver_debt_reversal()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_reverse_leaver_transfer(NEW.user_id);
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_users_leaver_debt_reversal ON users;
+CREATE TRIGGER trg_users_leaver_debt_reversal
+    AFTER UPDATE OF employment_ended_at ON users
+    FOR EACH ROW WHEN (OLD.employment_ended_at IS NOT NULL AND NEW.employment_ended_at IS NULL)
+    EXECUTE FUNCTION fn_users_leaver_debt_reversal();
 
 -- Record a documented fix (vp_hr / cfo): remediation_records row + happiness_debt_events 'remediation'.
 CREATE OR REPLACE FUNCTION rpc_record_remediation(p_company_id uuid, p_team_id varchar, p_remediated_on date,
@@ -5586,7 +5707,8 @@ $$;
 REVOKE ALL ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric) TO authenticated, service_role;
 
--- Memo line "יצא עם העוזבים" through a month: Σ leaver_transfer − Σ remediation (never below 0).
+-- Memo line "יצא עם העוזבים" through a month: Σ leaver_transfer − Σ remediation − Σ leaver_reversal (v1.6.17)
+-- (never below 0).
 CREATE OR REPLACE FUNCTION fn_leaver_memo(p_company uuid, p_month date)
 RETURNS numeric
 LANGUAGE sql
@@ -5594,7 +5716,8 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT greatest(0, COALESCE(sum(CASE WHEN e.event_type = 'leaver_transfer' THEN e.amount ELSE -e.amount END), 0))
+  SELECT greatest(0, COALESCE(sum(CASE WHEN e.event_type = 'leaver_transfer' THEN e.amount
+                                       WHEN e.event_type IN ('remediation', 'leaver_reversal') THEN -e.amount END), 0))
     FROM happiness_debt_events e WHERE e.company_id = p_company AND e.period_month <= p_month
 $$;
 
