@@ -1,6 +1,6 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.18 · rpc.sql
--- Version: 1.6.18-mvp (2026-10-31 IL) — supersedes 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- CHR-ETRS MVP v1.6.19 · rpc.sql
+-- Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -8,6 +8,33 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- v1.6.19-r3 (Karin 31.10, J-80 = A): the burnout absences signal and the board absences both come ONLY from
+--   rpc_put_team_absences (vp_hr; total days per team per month: sickness + unplanned + early leave not
+--   pre-approved). Missing month → 'חסר: team_absence_input' and the signal is skipped (other signals unchanged);
+--   board = Σ team rows; rpc_put_board_absences dropped; fn_team_month_absences no longer used by burnout.
+-- v1.6.19-r2 (Karin 31.10, after PR #8):
+--   * G-3 / A-12: rpc_record_remediation never returns 422 for an amount; it is split FIFO (oldest first) over the
+--     team's open transfers (one allocation row per transfer); any leftover is a team remediation not attributed to
+--     any transfer (J-59 path). The response is ALWAYS {status 'recorded', label_he} — no amount / balance / count.
+--     A reversal returns the transfer minus the allocations to THAT transfer.
+--   * A-16 closed: J-65 causal note approved (no 'טיוטה'); J-70 dossier text = Karin's exact text; J-52 guard adds
+--     שימוע / שיחת בירור / התראה בכתב / מעקב ביצועים; J-53 definitions: redemption rate (redeemers ÷ active
+--     employees), key roles (role names marked by vp_hr, rpc_put_key_roles / rpc_get_key_roles, audited), board
+--     absences = sickness + unplanned only (r3: from rpc_put_team_absences; time benefits / planned vacation not counted).
+-- New in 1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; full module list in the v1.6.19 section at the end):
+--   * J-43 decided: the memo line "יצא עם העוזבים" and rpc_list_leaver_transfers move only in batches of 10 NEW
+--     leavers (distinct employees); remediations / reversals only as a batch touching ≥ 10 transfers; the list is
+--     aggregate (batch / batch_team with the complementary rule / adjustment_batch / company_total), cfo / vp_hr
+--     only (strict: no service / anon), audited. Reversal output = status only. A remediation can no longer name
+--     a transfer (400 transfer_selection_not_allowed).
+--   * A-3: ILS estimate = average cost of a redeemed spoon, 3-month moving average, ≥ 10 purchases (else "אין עדיין
+--     מספיק מימושים לאומדן"), cfo / vp_hr only (rpc_get_redeemed_spoon_cost_estimate; liability strict).
+--   * Verification levels 0–4 COMPUTED from evidence (rpc_put_metric_verification_evidence; manual tier → 422),
+--     'תיק אימות' per metric (kept with every report), pay / bonus linkage (report 422 below level 2), measuring
+--     body CHR-ETRS, company-side timing / wording changes logged (cap at level 1).
+--   * Report layers (investment & activity, adoption & usage "אימוץ", outcomes) + governance; inputs RPCs;
+--     5 sources (fn_board_sources; IJEB year 2026 in fn_chr_paper_year) + sources_note = Karin's binding A-10 text; burnout recommendation + guard; social
+--     events "ללא הערכה מקצועית"; J-54 cancelled absences are not absences.
 -- New in 1.6.18 (Karin 31.10 via Chief of Drive — fix round closing A-12, A-13, A-14):
 --   * A-12: rpc_record_remediation attributes every remediation to ONE leaver_transfer of the team (optional
 --     p_transfer_event_id, else the team's oldest open transfer) and never above its open balance (422
@@ -1920,10 +1947,12 @@ SET search_path = pg_catalog, public
 AS $$
 DECLARE
   v_row questionnaire_definition;
+  v_old questionnaire_definition;
 BEGIN
   IF auth.uid() IS NULL OR fn_app_role() <> 'vp_hr' THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
+  SELECT * INTO v_old FROM questionnaire_definition WHERE code = p_code;
   IF EXISTS (SELECT 1 FROM questionnaire_definition WHERE code = p_code AND is_locked) THEN
     PERFORM fn_raise_business('questionnaire_locked');
   END IF;
@@ -1946,6 +1975,14 @@ BEGIN
     answer_min = EXCLUDED.answer_min, answer_max = EXCLUDED.answer_max,
     is_active = EXCLUDED.is_active, updated_at = clock_timestamp()
   RETURNING * INTO v_row;
+  -- v1.6.19 (Part B2): a company-side change of timing / wording of an existing questionnaire is logged.
+  IF v_old.code IS NOT NULL AND v_old.frequency IS DISTINCT FROM v_row.frequency THEN
+    PERFORM fn_log_measurement_change(p_code, 'timing');
+  END IF;
+  IF v_old.code IS NOT NULL AND (v_old.name_he, v_old.name_en, v_old.item_count, v_old.answer_min, v_old.answer_max)
+       IS DISTINCT FROM (v_row.name_he, v_row.name_en, v_row.item_count, v_row.answer_min, v_row.answer_max) THEN
+    PERFORM fn_log_measurement_change(p_code, 'wording');
+  END IF;
   RETURN v_row;
 END;
 $$;
@@ -5251,8 +5288,8 @@ AS $$
    WHERE u.company_id = p_company
 $$;
 
--- get_open_golden_spoons_liability(company) — cfo / vp_hr only (v3 §3.2): open Golden Spoons + internal ILS
--- estimate by liability_method. No per-employee figure, no rate shown to any employee API.
+-- get_open_golden_spoons_liability(company) — cfo / vp_hr only (v3 §3.2; v1.6.19 strict): open Golden Spoons +
+-- internal ILS estimate (A-3: 3-month average cost of a redeemed spoon). No per-employee figure, no rate shown to any employee API.
 CREATE OR REPLACE FUNCTION rpc_get_open_golden_spoons_liability(p_company_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -5262,24 +5299,24 @@ SET search_path = pg_catalog, public
 AS $$
 DECLARE
   v_open   numeric;
-  v_method text := fn_agent_setting_text(p_company_id, 'liability_method');
+  v_est    jsonb;
   v_cost   numeric;
 BEGIN
-  PERFORM fn_assert_finance_viewer(p_company_id);
+  -- v1.6.19 (A-3, Karin 31.10): only an active cfo / vp_hr (service / anon → 403); the estimate is the average
+  -- cost of a redeemed spoon over 3 months, shown only with ≥ 10 purchases; spoon_cost_ils is not used.
+  PERFORM fn_assert_finance_viewer_strict(p_company_id);
   SELECT COALESCE(sum(a.golden_spoons), 0) INTO v_open
     FROM avatar_state a JOIN users u ON u.user_id = a.user_id WHERE u.company_id = p_company_id;
-  v_cost := CASE v_method WHEN 'fixed_cost' THEN fn_agent_setting_num(p_company_id, 'spoon_cost_ils')
-                          WHEN 'avg_redeemed' THEN fn_avg_redeemed_spoon_cost_ils(p_company_id) END;
+  v_est := fn_redeemed_spoon_cost_3m(p_company_id, fn_agent_local_ts(p_company_id, clock_timestamp())::date);
+  v_cost := (v_est->>'value')::numeric;
   RETURN jsonb_build_object(
     'open_golden_spoons', v_open,
     'ils_estimate', CASE WHEN v_cost IS NOT NULL THEN round(v_open * v_cost, 2) END,
-    'ils_status', CASE WHEN v_cost IS NULL THEN 'not_defined' ELSE 'set' END,
-    'liability_method', COALESCE(v_method, 'not_defined'),
-    'display_he', CASE WHEN v_cost IS NULL THEN 'לא הוגדר' END,
-    'how_calculated_he', CASE v_method
-       WHEN 'fixed_cost' THEN 'מספר Golden Spoons פתוחות × עלות פנימית קבועה לכפית (spoon_cost_ils).'
-       WHEN 'avg_redeemed' THEN 'מספר Golden Spoons פתוחות × העלות הממוצעת של Golden Spoon שמומשה בפועל.'
-       ELSE 'שיטת ההערכה לא הוגדרה; מוצג רק מספר ה-Golden Spoons הפתוחות.' END
+    'ils_status', v_est->>'status',
+    'liability_method', 'avg_redeemed',
+    'purchases_count', v_est->'purchases_count',
+    'display_he', v_est->>'display_he',
+    'how_calculated_he', 'מספר Golden Spoons פתוחות × העלות הממוצעת של כפית שמומשה בפועל (ממוצע נע של 3 חודשים; לפחות 10 מימושים).'
        || ' כולל עובדים שעזבו בתוך 30 יום למימוש; אחרי זה היתרה מתאפסת.',
     'updated_at', clock_timestamp());
 END;
@@ -5524,7 +5561,9 @@ AS $$
      AND q.local_date >= p_month AND q.local_date < fn_month_shift(p_month, 1)
 $$;
 
--- Approved absences of a team in a month as ONE aggregate count: early leave + approved absence entries.
+-- Approved absences of a team in a month as ONE aggregate count: early leave + approved absence entries
+-- (v1.6.19, J-54: cancelled entries are not absences). v1.6.19-r3 (J-80 = A): NO LONGER USED by the burnout agent
+-- (it counts approved / time-benefit entries, which the decided definition excludes) — kept, data untouched.
 CREATE OR REPLACE FUNCTION fn_team_month_absences(p_company uuid, p_group varchar, p_month date)
 RETURNS numeric
 LANGUAGE sql
@@ -5536,7 +5575,7 @@ AS $$
             WHERE u.company_id = p_company AND u.department = p_group
               AND e.local_date >= p_month AND e.local_date < fn_month_shift(p_month, 1))
         + (SELECT count(*) FROM approved_absence_entry a JOIN users u ON u.user_id = a.user_id
-            WHERE u.company_id = p_company AND u.department = p_group
+            WHERE u.company_id = p_company AND u.department = p_group AND a.schedule_status <> 'cancelled'
               AND a.requested_date >= p_month AND a.requested_date < fn_month_shift(p_month, 1)))::numeric
 $$;
 
@@ -5677,6 +5716,104 @@ AS $$
                                     AND fn_in_solid_subtree(auth.uid(), u.user_id)))
 $$;
 
+-- ---------- v1.6.19-r3 (Karin 31.10, J-80 = A): team absences = sickness + unplanned (incl. unapproved early leave) ----------
+
+-- The one absence definition of the burnout agent AND the board (J-80 = A; my Hebrew wording → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_absence_definition_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'היעדרות = ימי מחלה + היעדרות לא מתוכננת (כולל יציאה מוקדמת שלא אושרה מראש) בלבד; היעדרויות מאושרות וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש אינן נספרות'::text $$;
+
+-- Total absence days of a team month from team_absence_input (sickness + unplanned + unapproved early leave);
+-- NULL when vp_hr has not entered the month (never 0 by default — 'חסר').
+CREATE OR REPLACE FUNCTION fn_team_absence_days(p_company uuid, p_team varchar, p_month date)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT x.sickness_days + x.unplanned_absence_days + x.unapproved_early_leave_days
+    FROM team_absence_input x WHERE x.company_id = p_company AND x.team_id = p_team AND x.period_month = p_month
+$$;
+
+-- The burnout absences signal (J-80 = A). The month's input missing → 'חסר: team_absence_input' and the signal is
+-- SKIPPED (it never counts toward rising_risk; the other signals run unchanged). Fewer than 5 active employees in
+-- the team → not shown and skipped (same threshold as the board). Otherwise the usual 3-month moving-average rise
+-- test over the months that have an input (months without one are ignored by fn_ma).
+CREATE OR REPLACE FUNCTION fn_team_absence_signal(p_company uuid, p_vals numeric[], p_w int, p_k int, p_members int)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_n int := cardinality(p_vals);
+  v_d jsonb := jsonb_build_object('definition_he', fn_absence_definition_he(), 'text_status', fn_text_status_draft(),
+                                  'aggregate_only', true);
+BEGIN
+  IF p_vals[v_n] IS NULL THEN
+    RETURN v_d || jsonb_build_object('display_he', 'חסר: team_absence_input', 'rising', false, 'used_in_risk', false);
+  END IF;
+  IF p_members < fn_privacy_min_n('regular') THEN
+    RETURN v_d || jsonb_build_object('display_he', 'אין מספיק עובדים להצגה', 'rising', false, 'used_in_risk', false);
+  END IF;
+  RETURN fn_burnout_signal(p_company, 'rise', p_vals, p_w, p_k, fn_agent_setting_num(p_company, 'rise_pct'))
+         || v_d || jsonb_build_object('days', p_vals[v_n], 'used_in_risk', true);
+END;
+$$;
+
+-- vp_hr enters the TOTAL absence days of one team month (J-80 = A): sickness, unplanned absence, early leave that
+-- was not pre-approved. Aggregate only — no employee, no name. Each value ≥ 0 with one decimal; the team must have
+-- active employees in the month (else 400 invalid_team) and the total cannot exceed team size × days of the month
+-- (else 400 invalid_amount). Replaces that month's row; audited (team + month only).
+CREATE OR REPLACE FUNCTION rpc_put_team_absences(p_company_id uuid, p_team_id varchar, p_month date,
+                                                 p_sickness_days numeric, p_unplanned_absence_days numeric,
+                                                 p_unapproved_early_leave_days numeric)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_m date := fn_month_of(p_month);
+  v_members int;
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  IF p_month IS NULL OR p_team_id IS NULL OR length(btrim(p_team_id)) = 0 THEN
+    PERFORM fn_raise_bad_request('invalid_team');
+  END IF;
+  v_members := fn_team_month_members(p_company_id, p_team_id, v_m);
+  IF v_members = 0 THEN
+    PERFORM fn_raise_bad_request('invalid_team');
+  END IF;
+  IF p_sickness_days IS NULL OR p_unplanned_absence_days IS NULL OR p_unapproved_early_leave_days IS NULL
+     OR least(p_sickness_days, p_unplanned_absence_days, p_unapproved_early_leave_days) < 0
+     OR p_sickness_days <> round(p_sickness_days, 1) OR p_unplanned_absence_days <> round(p_unplanned_absence_days, 1)
+     OR p_unapproved_early_leave_days <> round(p_unapproved_early_leave_days, 1)
+     OR p_sickness_days + p_unplanned_absence_days + p_unapproved_early_leave_days
+        > v_members * extract(day FROM fn_month_shift(v_m, 1) - 1) THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO team_absence_input (company_id, team_id, period_month, sickness_days, unplanned_absence_days,
+                                  unapproved_early_leave_days)
+  VALUES (p_company_id, p_team_id, v_m, p_sickness_days, p_unplanned_absence_days, p_unapproved_early_leave_days)
+  ON CONFLICT (company_id, team_id, period_month) DO UPDATE
+    SET sickness_days = EXCLUDED.sickness_days, unplanned_absence_days = EXCLUDED.unplanned_absence_days,
+        unapproved_early_leave_days = EXCLUDED.unapproved_early_leave_days, entered_at = clock_timestamp();
+  PERFORM fn_audit_view('team_absences_put', jsonb_build_object('company_id', p_company_id, 'team', p_team_id,
+                                                                'period_month', v_m));
+  RETURN jsonb_build_object('team', p_team_id, 'period_month', v_m, 'status', 'saved');
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_team_absence_days(uuid, varchar, date),
+                       fn_team_absence_signal(uuid, numeric[], int, int, int) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) TO authenticated, service_role;
+
 -- get_burnout_trend(team) — coverage full (≥ 10 מדווחים בפועל) / partial (5–9: PCQ-12 + absences only) /
 -- none (< 5). "סיכון עולה" = ≥ 1 indicator crosses its threshold in 2 consecutive periods of the 3-month
 -- moving average. 12 כפיות are never read. Output is group level only — never an employee identifier, and
@@ -5714,7 +5851,7 @@ BEGIN
     v_mem := v_mem || fn_team_month_members(p_company_id, p_team_id, v_m);
     SELECT * INTO r FROM fn_team_month_tax_debt(p_company_id, p_team_id, v_m);
     v_tax := v_tax || r.deprivation_tax; v_debt := v_debt || r.happiness_debt;
-    v_abs := v_abs || fn_team_month_absences(p_company_id, p_team_id, v_m);
+    v_abs := v_abs || fn_team_absence_days(p_company_id, p_team_id, v_m);   -- r3: team input only (J-80 = A)
   END LOOP;
 
   v_cov := CASE WHEN v_rep[v_n] >= fn_privacy_min_n('shadow_balance') THEN 'full'
@@ -5733,8 +5870,7 @@ BEGIN
   IF NOT (v_sig_pcq->>'comparable_with_previous_month')::boolean THEN
     v_sig_pcq := v_sig_pcq || jsonb_build_object('display_he', 'אין הבדל שאפשר לקבוע');
   END IF;
-  v_sig_abs := fn_burnout_signal(p_company_id, 'rise', v_abs, v_w, v_k, fn_agent_setting_num(p_company_id, 'rise_pct'))
-               || jsonb_build_object('count', v_abs[v_n], 'aggregate_only', true);
+  v_sig_abs := fn_team_absence_signal(p_company_id, v_abs, v_w, v_k, v_mem[v_n]);   -- missing → 'חסר', skipped
 
   IF v_cov = 'full' THEN
     v_sig_tax := fn_burnout_signal(p_company_id, 'rise', v_tax, v_w, v_k, fn_agent_setting_num(p_company_id, 'rise_pct'));
@@ -5769,14 +5905,15 @@ BEGIN
     'comparable', (v_sig_pcq->>'comparable_with_previous_month')::boolean,
     'card_label_he', CASE WHEN v_cov = 'partial' THEN 'מגמה חלקית' END,
     'how_calculated_short_he', CASE WHEN v_cov = 'partial' THEN 'המגמה חלקית: מבוססת רק על PCQ-12 והיעדרויות.' END,
-    'signals', jsonb_build_object('pcq12', v_sig_pcq, 'approved_absences', v_sig_abs,
+    'signals', jsonb_build_object('pcq12', v_sig_pcq, 'absences', v_sig_abs,
                                   'deprivation_tax', v_sig_tax, 'happiness_debt', v_sig_debt,
                                   'team_movements', v_sig_mov),
     'rising_risk', v_rising,
     'rising_risk_label_he', CASE WHEN v_rising THEN 'סיכון עולה' END,
     'how_calculated_he', CASE WHEN v_cov = 'partial'
       THEN 'המגמה חלקית. היא מבוססת רק על PCQ-12 והיעדרויות, כי יש בקבוצה פחות מ-10 מדווחים בפועל.'
-      ELSE 'ממוצע נע של 3 חודשים; סיכון עולה כשסימן אחד לפחות חוצה את הסף בשתי תקופות רצופות. נכנסים: PCQ-12, מס קיפוח, חוב אושר, היעדרויות מאושרות (מספר מצטבר) ועזיבות רצוניות ובקשות מעבר ברמת צוות. לא נכנסים: 12 כפיות, נתון ברמת עובד ונתונים ביומטריים.' END);
+      ELSE 'ממוצע נע של 3 חודשים; סיכון עולה כשסימן אחד לפחות חוצה את הסף בשתי תקופות רצופות. נכנסים: PCQ-12, מס קיפוח, חוב אושר, היעדרויות (מחלה והיעדרות לא מתוכננת, כולל יציאה מוקדמת שלא אושרה מראש — סך ימים לצוות) ועזיבות רצוניות ובקשות מעבר ברמת צוות. לא נכנסים: 12 כפיות, נתון ברמת עובד ונתונים ביומטריים.' END)
+    || fn_burnout_recommendation(v_rising);   -- v1.6.19 (Part A4)
 END;
 $$;
 
@@ -5900,7 +6037,7 @@ REVOKE ALL ON FUNCTION fn_transfer_remediated(uuid), fn_transfer_open_balance(uu
 -- that transfer (A-12; 0 when they covered it all — still recorded). The memo line decreases by that net amount
 -- only, so no remediation is counted twice and no other leaver's share moves; the transfer's own balance is 0.
 -- The original transfer and remediations stay (WORM). Idempotent: one reversal per transfer (unique index).
--- Returns an id-free summary (no person_id / user_id / pseudonym). Only while the employment is active again.
+-- Returns a status only (v1.6.19). Only while the employment is active again.
 CREATE OR REPLACE FUNCTION fn_reverse_leaver_transfer(p_user_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -5939,11 +6076,8 @@ BEGIN
   IF v_rev IS NULL THEN
     RETURN jsonb_build_object('status', 'nothing_to_reverse');
   END IF;
-  RETURN jsonb_build_object('status', 'reversed', 'reversal_event_id', v_rev, 'reverses_event_id', v_t.event_id,
-                            'team', v_t.group_id, 'period_month', v_month,
-                            'transferred', v_t.amount, 'remediated', v_rem, 'amount', v_net,
-                            'transfer_balance_after', fn_transfer_open_balance(v_t.event_id),
-                            'memo_after', fn_leaver_memo(v_t.company_id, v_month), 'label_he', 'יצא עם העוזבים');
+  -- v1.6.19 (Karin 31.10): status only — no amount, team, id or memo value (the memo moves in batches, J-43).
+  RETURN jsonb_build_object('status', 'reversed', 'label_he', 'יצא עם העוזבים');
 END;
 $$;
 REVOKE ALL ON FUNCTION fn_reverse_leaver_transfer(uuid) FROM PUBLIC;
@@ -5968,107 +6102,135 @@ CREATE TRIGGER trg_users_leaver_debt_reversal
     FOR EACH ROW WHEN (OLD.employment_ended_at IS NOT NULL AND NEW.employment_ended_at IS NULL)
     EXECUTE FUNCTION fn_users_leaver_debt_reversal();
 
--- v1.6.18 (A-12): the leaver_transfer a remediation is attributed to. p_transfer given → it must be a transfer of
--- that company and team (else 400 invalid_remediation); NULL → the team's OLDEST transfer with an open balance and
--- a month ≤ the remediation month (none → 422 no_open_leaver_transfer). Locks the transfer row.
-CREATE OR REPLACE FUNCTION fn_remediation_target(p_company uuid, p_team varchar, p_month date, p_transfer uuid)
-RETURNS happiness_debt_events
+-- v1.6.19-r2 (Karin 31.10, G-3 / A-12): the single-target helper of v1.6.18 is replaced by the FIFO split below.
+DROP FUNCTION IF EXISTS fn_remediation_target(uuid, varchar, date, uuid);
+
+-- v1.6.19-r2 (A-12): FIFO plan of a remediation over the team's transfers — oldest first, each up to its open
+-- balance, only transfers of a month ≤ the remediation month. Locks those transfer rows. INTERNAL; never output.
+CREATE OR REPLACE FUNCTION fn_remediation_fifo_plan(p_company uuid, p_team varchar, p_month date, p_amount numeric)
+RETURNS TABLE (transfer_event_id uuid, amount numeric)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_t happiness_debt_events;
+  t      record;
+  v_left numeric := p_amount;
+  v_open numeric;
 BEGIN
-  IF p_transfer IS NOT NULL THEN
-    SELECT e.* INTO v_t FROM happiness_debt_events e
-     WHERE e.event_id = p_transfer AND e.event_type = 'leaver_transfer'
-       AND e.company_id = p_company AND e.group_id = p_team AND e.period_month <= p_month
-       FOR UPDATE;
-    IF NOT FOUND THEN
-      PERFORM fn_raise_bad_request('invalid_remediation');
-    END IF;
-  ELSE
-    SELECT e.* INTO v_t FROM happiness_debt_events e
-     WHERE e.event_type = 'leaver_transfer' AND e.company_id = p_company AND e.group_id = p_team
-       AND e.period_month <= p_month AND fn_transfer_open_balance(e.event_id) > 0
-     ORDER BY e.created_at, e.event_id
-     LIMIT 1
-       FOR UPDATE;
-    IF NOT FOUND THEN
-      PERFORM fn_raise_unprocessable('no_open_leaver_transfer');
-    END IF;
-  END IF;
-  RETURN v_t;
+  FOR t IN SELECT e.event_id FROM happiness_debt_events e
+            WHERE e.event_type = 'leaver_transfer' AND e.company_id = p_company AND e.group_id = p_team
+              AND e.period_month <= p_month
+            ORDER BY e.created_at, e.event_id
+              FOR UPDATE LOOP
+    EXIT WHEN v_left <= 0;
+    v_open := fn_transfer_open_balance(t.event_id);
+    CONTINUE WHEN v_open <= 0;
+    transfer_event_id := t.event_id;
+    amount := least(v_open, v_left);
+    v_left := v_left - amount;
+    RETURN NEXT;
+  END LOOP;
 END;
 $$;
-REVOKE ALL ON FUNCTION fn_remediation_target(uuid, varchar, date, uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_remediation_fifo_plan(uuid, varchar, date, numeric) FROM PUBLIC;
 
--- Record a documented fix (vp_hr / cfo): remediation_records row + happiness_debt_events 'remediation'.
--- v1.6.18 (A-12): attributed to exactly ONE leaver_transfer of the team (fn_remediation_target) and never above
--- its open balance (else 422 remediation_exceeds_transfer) — so it can never reduce another leaver's share.
-DROP FUNCTION IF EXISTS rpc_record_remediation(uuid, varchar, date, text, numeric);
-CREATE OR REPLACE FUNCTION rpc_record_remediation(p_company_id uuid, p_team_id varchar, p_remediated_on date,
-                                                  p_what_fixed text, p_reduction_amount numeric,
-                                                  p_transfer_event_id uuid DEFAULT NULL)
+-- v1.6.19-r2: validate a remediation request; every refusal depends on the input only (never on a balance).
+CREATE OR REPLACE FUNCTION fn_assert_remediation_input(p_team varchar, p_on date, p_what text, p_amount numeric,
+                                                       p_transfer uuid)
+RETURNS void
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+BEGIN
+  IF p_team IS NULL OR p_on IS NULL OR p_what IS NULL OR length(btrim(p_what)) = 0
+     OR p_amount IS NULL OR p_amount <= 0 OR p_amount <> round(p_amount, 2) THEN
+    PERFORM fn_raise_bad_request('invalid_remediation');
+  END IF;
+  -- the aggregate list shows no transfer, so none can be chosen
+  IF p_transfer IS NOT NULL THEN
+    PERFORM fn_raise_bad_request('transfer_selection_not_allowed');
+  END IF;
+END;
+$$;
+
+-- v1.6.19-r2: write one 'remediation' event of a remediation record (NULL when the amount is 0).
+CREATE OR REPLACE FUNCTION fn_insert_remediation_event(p_company uuid, p_team varchar, p_month date, p_amount numeric,
+                                                       p_remediation uuid)
 RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_id  uuid;
-  v_ev  uuid;
-  v_t   happiness_debt_events;
+  v_ev uuid;
+BEGIN
+  IF p_amount IS NULL OR p_amount <= 0 THEN
+    RETURN NULL;
+  END IF;
+  INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, remediation_id)
+  VALUES (p_company, p_team, p_month, 'remediation', p_amount, p_remediation)
+  RETURNING event_id INTO v_ev;
+  RETURN v_ev;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_insert_remediation_event(uuid, varchar, date, numeric, uuid) FROM PUBLIC;
+
+-- The one response of rpc_record_remediation (v1.6.19-r2, G-3): identical for every accepted call — no id,
+-- amount, balance or count, so nothing about any single transfer can be learned from it.
+CREATE OR REPLACE FUNCTION fn_remediation_response()
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT jsonb_build_object('status', 'recorded', 'label_he', 'יצא עם העוזבים') $$;
+
+-- Record a documented fix (vp_hr / cfo): one remediation_records row; the amount is split FIFO over the team's
+-- transfers (oldest first, each up to its open balance — happiness_debt_remediation_allocation, several rows
+-- allowed) in ONE attributed 'remediation' event; any leftover is a SECOND 'remediation' event of the same record
+-- with no allocation = a team remediation not attributed to any transfer (the J-59 path). v1.6.19-r2 (Karin 31.10,
+-- G-3): never a 422 for the amount; the response is always fn_remediation_response().
+DROP FUNCTION IF EXISTS rpc_record_remediation(uuid, varchar, date, text, numeric);
+DROP FUNCTION IF EXISTS rpc_record_remediation(uuid, varchar, date, text, numeric, uuid);
+CREATE OR REPLACE FUNCTION rpc_record_remediation(p_company_id uuid, p_team_id varchar, p_remediated_on date,
+                                                  p_what_fixed text, p_reduction_amount numeric,
+                                                  p_transfer_event_id uuid DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_id    uuid;
+  v_ev    uuid;
+  v_month date;
+  v_alloc numeric;
+  v_plan  jsonb;
 BEGIN
   PERFORM fn_assert_finance_viewer(p_company_id);
-  IF p_team_id IS NULL OR p_remediated_on IS NULL OR p_what_fixed IS NULL OR length(btrim(p_what_fixed)) = 0
-     OR p_reduction_amount IS NULL OR p_reduction_amount <= 0 OR p_reduction_amount <> round(p_reduction_amount, 2) THEN
-    PERFORM fn_raise_bad_request('invalid_remediation');
-  END IF;
-  v_t := fn_remediation_target(p_company_id, p_team_id, fn_month_of(p_remediated_on), p_transfer_event_id);
-  IF p_reduction_amount > fn_transfer_open_balance(v_t.event_id) THEN
-    PERFORM fn_raise_unprocessable('remediation_exceeds_transfer');
-  END IF;
+  PERFORM fn_assert_remediation_input(p_team_id, p_remediated_on, p_what_fixed, p_reduction_amount, p_transfer_event_id);
+  v_month := fn_month_of(p_remediated_on);
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('transfer_event_id', f.transfer_event_id, 'amount', f.amount)), '[]'::jsonb),
+         COALESCE(sum(f.amount), 0)
+    INTO v_plan, v_alloc
+    FROM fn_remediation_fifo_plan(p_company_id, p_team_id, v_month, p_reduction_amount) f;
   INSERT INTO remediation_records (company_id, group_id, remediated_on, what_fixed, approved_by, reduction_amount)
   VALUES (p_company_id, p_team_id, p_remediated_on, btrim(p_what_fixed), auth.uid(), p_reduction_amount)
   RETURNING remediation_id INTO v_id;
-  INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, remediation_id)
-  VALUES (p_company_id, p_team_id, fn_month_of(p_remediated_on), 'remediation', p_reduction_amount, v_id)
-  RETURNING event_id INTO v_ev;
-  INSERT INTO happiness_debt_remediation_allocation (remediation_event_id, transfer_event_id, amount)
-  VALUES (v_ev, v_t.event_id, p_reduction_amount);
-  RETURN v_id;
+  -- leftover first, so that a batch taken by the allocation trigger already sees it (J-59: it rides with any batch)
+  PERFORM fn_insert_remediation_event(p_company_id, p_team_id, v_month, p_reduction_amount - v_alloc, v_id);
+  v_ev := fn_insert_remediation_event(p_company_id, p_team_id, v_month, v_alloc, v_id);
+  IF v_ev IS NOT NULL THEN
+    INSERT INTO happiness_debt_remediation_allocation (remediation_event_id, transfer_event_id, amount)
+    SELECT v_ev, p.transfer_event_id, p.amount FROM jsonb_to_recordset(v_plan) AS p(transfer_event_id uuid, amount numeric);
+  END IF;
+  RETURN fn_remediation_response();
 END;
 $$;
 REVOKE ALL ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric, uuid) TO authenticated, service_role;
 
--- v1.6.18 (A-12): per-transfer view of the memo line for vp_hr / cfo, so a remediation can be attributed to a
--- named transfer. One row per leaver_transfer: team, month, moved, remediated, reversed, open balance. No person
--- field (the transfer is identified by its event id only).
-CREATE OR REPLACE FUNCTION rpc_list_leaver_transfers(p_company_id uuid)
-RETURNS TABLE (transfer_event_id uuid, team text, period_month date, transferred numeric, remediated numeric,
-               reversed numeric, open_balance numeric, label_he text)
-LANGUAGE plpgsql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-  PERFORM fn_assert_finance_viewer(p_company_id);
-  RETURN QUERY
-  SELECT t.event_id, t.group_id::text, t.period_month, t.amount, fn_transfer_remediated(t.event_id),
-         COALESCE((SELECT sum(v.amount) FROM happiness_debt_events v
-                    WHERE v.event_type = 'leaver_reversal' AND v.reverses_event_id = t.event_id), 0),
-         fn_transfer_open_balance(t.event_id), 'יצא עם העוזבים'::text
-    FROM happiness_debt_events t
-   WHERE t.company_id = p_company_id AND t.event_type = 'leaver_transfer'
-   ORDER BY t.created_at, t.event_id;
-END;
-$$;
-REVOKE ALL ON FUNCTION rpc_list_leaver_transfers(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rpc_list_leaver_transfers(uuid) TO authenticated, service_role;
+-- rpc_list_leaver_transfers: v1.6.19 aggregate version (batches only, no per-employee or per-transfer row) in the
+-- v1.6.19 section.
 
 -- Memo line "יצא עם העוזבים" through a month: Σ leaver_transfer − Σ remediation − Σ leaver_reversal (v1.6.17)
 -- (never below 0). v1.6.18 (A-12): a reversal now carries only the net (moved − attributed remediations), so the
@@ -6206,34 +6368,7 @@ BEGIN
 END;
 $$;
 
--- Assurance tier 0–4 of a board metric (v3 §5.6), cfo / vp_hr.
-CREATE OR REPLACE FUNCTION rpc_put_metric_assurance(p_company_id uuid, p_metric_key text, p_tier int, p_explanation_he text DEFAULT NULL)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-  PERFORM fn_assert_finance_viewer(p_company_id);
-  IF p_tier IS NULL OR p_tier NOT BETWEEN 0 AND 4 OR p_metric_key IS NULL THEN
-    PERFORM fn_raise_bad_request('invalid_assurance_tier');
-  END IF;
-  INSERT INTO metric_assurance (company_id, metric_key, tier, explanation_he)
-  VALUES (p_company_id, p_metric_key, p_tier, p_explanation_he)
-  ON CONFLICT (company_id, metric_key) DO UPDATE
-    SET tier = EXCLUDED.tier, explanation_he = EXCLUDED.explanation_he, updated_at = clock_timestamp();
-END;
-$$;
-
--- Hebrew label of an assurance tier (v3 §5.6).
-CREATE OR REPLACE FUNCTION fn_assurance_label_he(p_tier int)
-RETURNS text
-LANGUAGE sql
-IMMUTABLE
-AS $$
-  SELECT CASE p_tier WHEN 0 THEN 'לא מאומת' WHEN 1 THEN 'בקרה פנימית' WHEN 2 THEN 'בדיקה פנימית מתועדת'
-                     WHEN 3 THEN 'סקירה חיצונית' WHEN 4 THEN 'ביקורת חיצונית מלאה' END
-$$;
+-- rpc_put_metric_assurance / fn_assurance_label_he: replaced in v1.6.19 (computed levels, see the v1.6.19 section).
 
 -- Monthly 15-question check (B1–B4, C1–C7, R1–R4). C6–C7 count only with independent approval.
 -- ≥ 2/3 yes (10+) = "התחייבות אמינה"; ≤ 1/3 (5−) = "הוצאה לתצוגה"; in between v3 gives no label → "לא הוגדר".
@@ -6386,92 +6521,7 @@ BEGIN
 END;
 $$;
 
--- build_board_report(company, month) — publishes only with a balanced line-by-line reconciliation and the
--- prior-period figures (v3 §5.1, tests 15 + 18); else 422. The 10 % / 12 % switch changes the DISPLAY only.
-CREATE OR REPLACE FUNCTION rpc_build_board_report(p_company_id uuid, p_month date,
-                                                  p_display_deprivation_rate numeric DEFAULT NULL)
-RETURNS jsonb
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-DECLARE
-  v_month  date := fn_month_of(p_month);
-  v_cur    jsonb;
-  v_prev   jsonb;
-  v_rate   numeric := fn_agent_setting_num(p_company_id, 'deprivation_tax_rate');
-  v_alt    numeric := fn_agent_setting_num(p_company_id, 'deprivation_tax_sensitivity');
-  v_disp   numeric := COALESCE(p_display_deprivation_rate, v_rate);
-  v_tax    numeric;
-  v_memo   jsonb;
-  v_assur  jsonb;
-  v_bcr    bcr_checks;
-  v_report jsonb;
-BEGIN
-  PERFORM fn_assert_finance_viewer(p_company_id);
-  IF v_disp NOT IN (v_rate, v_alt) THEN
-    PERFORM fn_raise_bad_request('invalid_sensitivity_rate');
-  END IF;
-  v_cur := fn_reconciliation_month(p_company_id, v_month);
-  IF v_cur IS NULL THEN
-    PERFORM fn_raise_unprocessable('reconciliation_missing');
-  END IF;
-  IF NOT (v_cur->>'is_first_period')::boolean THEN
-    v_prev := fn_reconciliation_month(p_company_id, fn_month_shift(v_month, -1));
-    IF v_prev IS NULL THEN
-      PERFORM fn_raise_unprocessable('reconciliation_prior_period_missing');
-    END IF;
-  END IF;
-
-  v_tax := (v_cur->>'deprivation_tax')::numeric;
-  v_memo := CASE WHEN fn_company_month_reporters(p_company_id, v_month) >= fn_privacy_min_n('shadow_balance')
-                 THEN jsonb_build_object('amount', fn_leaver_memo(p_company_id, v_month), 'label_he', 'יצא עם העוזבים',
-                                         'evidence_he', 'בינוני')
-                 ELSE jsonb_build_object('amount', NULL, 'label_he', 'יצא עם העוזבים', 'display_he', 'אין מספיק מדווחים בפועל להצגה') END;
-  SELECT jsonb_object_agg(k, jsonb_build_object('tier', COALESCE(m.tier, 0), 'label_he', fn_assurance_label_he(COALESCE(m.tier, 0))))
-    INTO v_assur
-    FROM unnest(ARRAY['chr_real_ebitda', 'happiness_debt_balance', 'deprivation_tax', 'exported_on_exit',
-                      'pcq12_company', 'turnover_above_baseline', 'bcr_score']) k
-    LEFT JOIN metric_assurance m ON m.company_id = p_company_id AND m.metric_key = k;
-  SELECT * INTO v_bcr FROM bcr_checks b WHERE b.company_id = p_company_id AND b.check_month = v_month;
-
-  v_report := jsonb_build_object(
-    'month', v_month,
-    'chr_real_ebitda', jsonb_build_object('value', v_cur->'chr_real_ebitda', 'gaap_ebitda', v_cur->'gaap_ebitda',
-                                          'definition_he', 'מדד ניהולי חלופי, לא רווח חשבונאי'),
-    'reconciliation', jsonb_build_array(
-      jsonb_build_object('line', 'gaap_ebitda', 'label_he', 'GAAP EBITDA', 'current', v_cur->'gaap_ebitda', 'prior', v_prev->'gaap_ebitda')) ||
-      (SELECT jsonb_agg(jsonb_build_object('line', c->>'obligation_class', 'label_he', 'פחות: ' || (c->>'label_he'),
-                                           'current', c->'amount',
-                                           'prior', (SELECT p->'amount' FROM jsonb_array_elements(v_prev->'debt_lines') p
-                                                      WHERE p->>'obligation_class' = c->>'obligation_class')))
-         FROM jsonb_array_elements(v_cur->'debt_lines') c) ||
-      jsonb_build_array(
-        jsonb_build_object('line', 'deprivation_tax', 'label_he', 'פחות: מס קיפוח', 'current', v_cur->'deprivation_tax', 'prior', v_prev->'deprivation_tax'),
-        jsonb_build_object('line', 'chr_real_ebitda', 'label_he', 'שווה: CHR Real EBITDA', 'current', v_cur->'chr_real_ebitda', 'prior', v_prev->'chr_real_ebitda')),
-    'prior_period_note_he', CASE WHEN v_prev IS NULL THEN 'אין תקופה קודמת (דוח ראשון)' END,
-    'shadow_balance', v_cur->'debt_lines',
-    'shadow_balance_note_he', 'גילוי ניהולי, לא הפרשה בספרים',
-    'happiness_debt_balance', v_cur->'happiness_debt_balance',
-    'exported_on_exit', v_memo,
-    'deprivation_tax', jsonb_build_object('stored_rate', v_rate, 'stored_amount', v_tax, 'display_rate', v_disp,
-                                          'display_amount', round(v_tax * v_disp / v_rate, 2),
-                                          'note_he', 'נמדד בתפקידים מול לקוחות (Oswald et al. 2015; Bellet et al. 2024)'),
-    'turnover_above_baseline', fn_turnover_above_baseline(p_company_id, v_month),
-    'misleading_margins_flag', fn_misleading_margins(p_company_id, v_month),
-    'wellbeing_pcq12', fn_company_month_pcq(p_company_id, v_month),
-    'assurance_tier', v_assur,
-    'bcr_score', CASE WHEN v_bcr.company_id IS NULL THEN jsonb_build_object('display_he', 'לא בוצע')
-                      ELSE jsonb_build_object('yes_count', v_bcr.yes_count, 'of', 15, 'result_he', v_bcr.result_he) END,
-    'choices_he', 'שיעור מס קיפוח 12% (מתג רגישות 10%); חוב אושר לפי נקודת האמצע של דרג העלות (40% / 125% / 300%); עלות החלפה רק מעל קו הבסיס לכל דרג.',
-    'sources', jsonb_build_array(jsonb_build_object('topic_he', 'המושג CHR', 'source', 'צבאן ושביט 2025',
-                                                    'doi', '10.1080/13571516.2025.2599785', 'status_he', 'פורסם')),
-    'sources_note_he', 'קישורי DOI והמתאם r=0.37 בנספח לא אומתו — לבדוק לפני הנספח לדירקטוריון.');
-  INSERT INTO board_report (company_id, period_month, report) VALUES (p_company_id, v_month, v_report);
-  PERFORM fn_audit_view('board_report_published', jsonb_build_object('company_id', p_company_id, 'month', v_month));
-  RETURN v_report;
-END;
-$$;
+-- rpc_build_board_report: v1.6.19 version in the v1.6.19 section at the end of this file.
 
 -- Latest published board report of a month: cfo / vp_hr and the company's governance roles.
 CREATE OR REPLACE FUNCTION rpc_get_board_report(p_company_id uuid, p_month date)
@@ -6505,9 +6555,1839 @@ REVOKE ALL ON FUNCTION fn_leaver_memo(uuid, date), fn_company_month_shadow(uuid,
                        fn_misleading_margins(uuid, date), fn_users_leaver_debt_transfer() FROM PUBLIC;
 REVOKE ALL ON FUNCTION rpc_put_happiness_debt_split(uuid, date, numeric, numeric, numeric, numeric),
                        rpc_put_board_reconciliation(uuid, date, numeric, numeric, boolean),
-                       rpc_put_metric_assurance(uuid, text, int, text), rpc_put_bcr_check(uuid, date, jsonb, boolean),
-                       rpc_build_board_report(uuid, date, numeric), rpc_get_board_report(uuid, date) FROM PUBLIC;
+                       rpc_put_bcr_check(uuid, date, jsonb, boolean), rpc_get_board_report(uuid, date) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_put_happiness_debt_split(uuid, date, numeric, numeric, numeric, numeric),
                           rpc_put_board_reconciliation(uuid, date, numeric, numeric, boolean),
-                          rpc_put_metric_assurance(uuid, text, int, text), rpc_put_bcr_check(uuid, date, jsonb, boolean),
-                          rpc_build_board_report(uuid, date, numeric), rpc_get_board_report(uuid, date) TO authenticated, service_role;
+                          rpc_put_bcr_check(uuid, date, jsonb, boolean), rpc_get_board_report(uuid, date) TO authenticated, service_role;
+
+-- =============================================================================
+-- v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77)
+-- Modules below: strict finance access · A-3 ILS estimate · leaver batching (memo line + aggregate leaver list) ·
+-- verification levels and 'תיק אימות' · pay linkage · measuring body · social events · report inputs ·
+-- burnout recommendation · sources · the three report layers + governance. No output holds person_id /
+-- user_id / pseudonym.
+-- =============================================================================
+
+-- ---------- strict access (J-45, A-3): only an active cfo / vp_hr of the company; service / anon refused ----------
+
+-- 403 insufficient_privilege unless the caller (auth.uid()) is an active cfo / vp_hr of p_company, for ANY role.
+CREATE OR REPLACE FUNCTION fn_assert_finance_viewer_strict(p_company uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF p_company IS NULL OR auth.uid() IS NULL OR NOT fn_is_finance_viewer(p_company) THEN
+    PERFORM fn_raise_business('insufficient_privilege');
+  END IF;
+END;
+$$;
+
+-- Text status of Karin's own fixed texts introduced in v1.6.19 (Part A / B quotes): 'טיוטה'.
+CREATE OR REPLACE FUNCTION fn_text_status_draft()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'טיוטה'::text $$;
+
+REVOKE EXECUTE ON FUNCTION rpc_get_open_golden_spoons_liability(uuid) FROM service_role;   -- v1.6.19 strict
+
+-- ---------- A-3 (Karin 31.10): ILS estimate = average cost of a redeemed spoon, 3-month moving average ----------
+
+-- The exact message when there are fewer than 10 purchases in the window (Karin 31.10).
+CREATE OR REPLACE FUNCTION fn_spoon_estimate_insufficient_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'אין עדיין מספיק מימושים לאומדן'::text $$;
+
+-- Minimum number of purchases in the window before an estimate is shown (Karin 31.10: 10).
+CREATE OR REPLACE FUNCTION fn_spoon_estimate_min_purchases()
+RETURNS int
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 10 $$;
+
+-- First day of the 3-month window that ends with the company-local month of p_day (J-60: current + 2 previous).
+CREATE OR REPLACE FUNCTION fn_spoon_estimate_window_from(p_company uuid, p_day date)
+RETURNS date
+LANGUAGE sql
+STABLE
+AS $$ SELECT fn_month_shift(fn_month_of(p_day), -2) $$;
+
+-- INTERNAL (never granted to clients): Σ internal ILS cost ÷ Σ Golden Spoons of the company's EverStore purchases
+-- in the 3-month window up to p_day. jsonb {status ok | insufficient | missing, purchases_count, value, window_*}.
+-- A purchase whose item has no internal cost → status missing ('חסר: everstore_item_cost.internal_cost_ils').
+CREATE OR REPLACE FUNCTION fn_redeemed_spoon_cost_3m(p_company uuid, p_day date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_from date := fn_spoon_estimate_window_from(p_company, p_day);
+  v_n int; v_missing int; v_cost numeric; v_spoons numeric;
+BEGIN
+  SELECT count(*), count(*) FILTER (WHERE c.item_id IS NULL), sum(c.internal_cost_ils), sum(sp.price_golden_spoons)
+    INTO v_n, v_missing, v_cost, v_spoons
+    FROM shop_purchase sp
+    JOIN users u ON u.user_id = sp.user_id
+    LEFT JOIN everstore_item_cost c ON c.item_id = sp.item_id
+   WHERE u.company_id = p_company AND sp.price_golden_spoons > 0
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date BETWEEN v_from AND p_day;
+  IF v_n < fn_spoon_estimate_min_purchases() THEN
+    RETURN jsonb_build_object('status', 'insufficient', 'purchases_count', v_n, 'value', NULL,
+                              'window_from', v_from, 'window_to', p_day, 'display_he', fn_spoon_estimate_insufficient_he());
+  END IF;
+  IF v_missing > 0 THEN
+    RETURN jsonb_build_object('status', 'missing', 'purchases_count', v_n, 'value', NULL,
+                              'window_from', v_from, 'window_to', p_day, 'display_he', 'חסר: everstore_item_cost.internal_cost_ils');
+  END IF;
+  RETURN jsonb_build_object('status', 'ok', 'purchases_count', v_n, 'value', round(v_cost / v_spoons, 4),
+                            'window_from', v_from, 'window_to', p_day, 'display_he', NULL);
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_redeemed_spoon_cost_3m(uuid, date) FROM PUBLIC;
+
+-- cfo / vp_hr only (service / anon / employee / manager / board → 403): the ILS estimate of one redeemed spoon.
+CREATE OR REPLACE FUNCTION rpc_get_redeemed_spoon_cost_estimate(p_company_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_e jsonb;
+BEGIN
+  PERFORM fn_assert_finance_viewer_strict(p_company_id);
+  v_e := fn_redeemed_spoon_cost_3m(p_company_id, fn_agent_local_ts(p_company_id, clock_timestamp())::date);
+  PERFORM fn_audit_view('redeemed_spoon_cost_view', jsonb_build_object('company_id', p_company_id));
+  RETURN jsonb_build_object('ils_per_redeemed_spoon', v_e->'value', 'status', v_e->'status',
+                            'purchases_count', v_e->'purchases_count', 'window_from', v_e->'window_from',
+                            'window_to', v_e->'window_to', 'display_he', v_e->'display_he',
+                            'method_he', 'העלות הממוצעת של כפית שמומשה בפועל, ממוצע נע של 3 חודשים (כולל החודש הנוכחי).');
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_get_redeemed_spoon_cost_estimate(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_get_redeemed_spoon_cost_estimate(uuid) TO authenticated;
+
+-- ---------- leaver batching (Karin 31.10, decided J-43) ----------
+
+-- Batch size: 10 NEW leavers per memo / list update, and ≥ 10 distinct transfers per adjustment batch.
+CREATE OR REPLACE FUNCTION fn_leaver_batch_min()
+RETURNS int
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 10 $$;
+
+-- INTERNAL key of the leaver behind a transfer (the closed link's employee, else the transfer itself). Never output.
+CREATE OR REPLACE FUNCTION fn_leaver_key(p_transfer uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE((SELECT l.user_id::text FROM happiness_debt_leaver_link l WHERE l.event_id = p_transfer), p_transfer::text)
+$$;
+
+-- A transfer an adjustment (remediation / reversal) belongs to (for a FIFO-split remediation: one of them); NULL for
+-- an unattributed remediation (pre-1.6.18, or the v1.6.19-r2 leftover above every open balance).
+CREATE OR REPLACE FUNCTION fn_adjustment_transfer(p_event uuid)
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE(e.reverses_event_id,
+                  (SELECT min(a.transfer_event_id::text)::uuid FROM happiness_debt_remediation_allocation a
+                    WHERE a.remediation_event_id = e.event_id))
+    FROM happiness_debt_events e WHERE e.event_id = p_event
+$$;
+
+-- v1.6.19-r2: number of distinct transfers touched by the pending (not yet batched) reversals and attributed
+-- remediations — a remediation split FIFO counts every transfer it was allocated to. INTERNAL; never output.
+CREATE OR REPLACE FUNCTION fn_pending_adjusted_transfers(p_company uuid)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(DISTINCT x.t)::int FROM (
+    SELECT e.reverses_event_id AS t FROM happiness_debt_events e
+     WHERE e.company_id = p_company AND e.event_type = 'leaver_reversal'
+       AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id)
+    UNION ALL
+    SELECT a.transfer_event_id FROM happiness_debt_events e
+      JOIN happiness_debt_remediation_allocation a ON a.remediation_event_id = e.event_id
+     WHERE e.company_id = p_company AND e.event_type = 'remediation'
+       AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id)) x
+$$;
+REVOKE ALL ON FUNCTION fn_pending_adjusted_transfers(uuid) FROM PUBLIC;
+
+-- Take the next memo snapshot of a company when ≥ 10 new leavers are pending. Pending remediations / reversals
+-- are included only when they touch ≥ 10 distinct transfers (Karin 31.10); unattributed pre-1.6.18 remediations
+-- ride with any snapshot (J-59). Returns the new snapshot id or NULL. Serialised per company.
+CREATE OR REPLACE FUNCTION fn_leaver_memo_try_snapshot(p_company uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_new int; v_adj int; v_batch int; v_id uuid; v_take_adj boolean;
+  v_t numeric; v_r numeric; v_v numeric;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtext('leaver_memo:' || p_company::text));
+  SELECT count(DISTINCT fn_leaver_key(e.event_id)) INTO v_new FROM happiness_debt_events e
+   WHERE e.company_id = p_company AND e.event_type = 'leaver_transfer'
+     AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id);
+  IF v_new < fn_leaver_batch_min() THEN
+    RETURN NULL;
+  END IF;
+  v_adj := fn_pending_adjusted_transfers(p_company);
+  v_take_adj := v_adj >= fn_leaver_batch_min();
+  SELECT COALESCE(max(s.batch_no), 0) + 1 INTO v_batch FROM leaver_memo_snapshot s WHERE s.company_id = p_company;
+  -- cumulative totals after this snapshot = already included + what this snapshot includes
+  SELECT COALESCE(sum(e.amount) FILTER (WHERE e.event_type = 'leaver_transfer'), 0),
+         COALESCE(sum(e.amount) FILTER (WHERE e.event_type = 'remediation'), 0),
+         COALESCE(sum(e.amount) FILTER (WHERE e.event_type = 'leaver_reversal'), 0)
+    INTO v_t, v_r, v_v
+    FROM happiness_debt_events e
+   WHERE e.company_id = p_company
+     AND (EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id)
+          OR e.event_type = 'leaver_transfer'
+          OR (e.event_type = 'remediation' AND fn_adjustment_transfer(e.event_id) IS NULL)
+          OR v_take_adj);
+  INSERT INTO leaver_memo_snapshot (company_id, batch_no, new_leavers, adjusted_transfers,
+                                    transferred_total, remediated_total, reversed_total, memo_amount)
+  VALUES (p_company, v_batch, v_new, CASE WHEN v_take_adj THEN v_adj ELSE 0 END,
+          v_t, v_r, v_v, greatest(0, v_t - v_r - v_v))
+  RETURNING snapshot_id INTO v_id;
+  INSERT INTO leaver_memo_inclusion (event_id, snapshot_id)
+  SELECT e.event_id, v_id FROM happiness_debt_events e
+   WHERE e.company_id = p_company
+     AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id)
+     AND (e.event_type = 'leaver_transfer'
+          OR (e.event_type = 'remediation' AND fn_adjustment_transfer(e.event_id) IS NULL)
+          OR v_take_adj);
+  RETURN v_id;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_leaver_key(uuid), fn_adjustment_transfer(uuid), fn_leaver_memo_try_snapshot(uuid) FROM PUBLIC;
+
+-- Trigger body: a new leaver link (a leaver_transfer + its employee), a reversal or a remediation attribution may
+-- complete a batch → try a snapshot for that company.
+CREATE OR REPLACE FUNCTION fn_leaver_memo_on_event()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_company uuid;
+  v_event   uuid;
+BEGIN
+  IF TG_TABLE_NAME = 'happiness_debt_remediation_allocation' THEN
+    v_event := NEW.remediation_event_id;
+  ELSE
+    v_event := NEW.event_id;
+  END IF;
+  SELECT e.company_id INTO v_company FROM happiness_debt_events e WHERE e.event_id = v_event;
+  IF v_company IS NOT NULL THEN
+    PERFORM fn_leaver_memo_try_snapshot(v_company);
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_leaver_memo_on_link ON happiness_debt_leaver_link;
+CREATE TRIGGER trg_leaver_memo_on_link AFTER INSERT ON happiness_debt_leaver_link
+    FOR EACH ROW EXECUTE FUNCTION fn_leaver_memo_on_event();
+DROP TRIGGER IF EXISTS trg_leaver_memo_on_reversal ON happiness_debt_events;
+CREATE TRIGGER trg_leaver_memo_on_reversal AFTER INSERT ON happiness_debt_events
+    FOR EACH ROW WHEN (NEW.event_type = 'leaver_reversal') EXECUTE FUNCTION fn_leaver_memo_on_event();
+DROP TRIGGER IF EXISTS trg_leaver_memo_on_allocation ON happiness_debt_remediation_allocation;
+CREATE TRIGGER trg_leaver_memo_on_allocation AFTER INSERT ON happiness_debt_remediation_allocation
+    FOR EACH ROW EXECUTE FUNCTION fn_leaver_memo_on_event();
+
+-- The waiting note shown while new leavers / adjustments are not yet in a batch (Karin's text → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_leaver_memo_waiting_note_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'מוצג הערך מהעדכון הקודם; העדכון הבא ממתין להצטברות של מספיק עוזבים חדשים (10 לפחות).'::text $$;
+
+-- Latest snapshot of a company taken before the end of p_month (NULL p_month = latest overall).
+CREATE OR REPLACE FUNCTION fn_leaver_memo_snapshot_at(p_company uuid, p_month date)
+RETURNS leaver_memo_snapshot
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT s.* FROM leaver_memo_snapshot s
+   WHERE s.company_id = p_company
+     AND (p_month IS NULL OR s.taken_at < fn_agent_day_start(p_company, fn_month_shift(p_month, 1)))
+   ORDER BY s.batch_no DESC LIMIT 1
+$$;
+
+-- True when some transfer / adjustment of the company (created before the end of p_month) waits for a batch.
+CREATE OR REPLACE FUNCTION fn_leaver_memo_pending(p_company uuid, p_month date)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM happiness_debt_events e
+                  WHERE e.company_id = p_company
+                    AND (p_month IS NULL OR e.created_at < fn_agent_day_start(p_company, fn_month_shift(p_month, 1)))
+                    AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id))
+$$;
+
+-- Published memo line "יצא עם העוזבים" for a board report month: the value of the latest batch, with the
+-- waiting note while newer leavers / adjustments are pending. NULL amount before the first batch.
+CREATE OR REPLACE FUNCTION fn_leaver_memo_published(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_s leaver_memo_snapshot := fn_leaver_memo_snapshot_at(p_company, p_month);
+  v_pending boolean := fn_leaver_memo_pending(p_company, p_month);
+BEGIN
+  RETURN jsonb_build_object(
+    'amount', v_s.memo_amount, 'batch_no', v_s.batch_no, 'label_he', 'יצא עם העוזבים',
+    'display_he', CASE WHEN v_s.snapshot_id IS NULL THEN 'עדיין לא הצטברו מספיק עוזבים לעדכון ראשון' END,
+    'waiting_note_he', CASE WHEN v_pending THEN fn_leaver_memo_waiting_note_he() END,
+    'text_status', CASE WHEN v_pending THEN fn_text_status_draft() END);
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_leaver_memo_snapshot_at(uuid, date), fn_leaver_memo_pending(uuid, date),
+                       fn_leaver_memo_published(uuid, date) FROM PUBLIC;
+
+-- Teams shown inside one batch: ≥ 10 leavers each, and the rest of the batch (batch − shown teams) is 0 or ≥ 10,
+-- else the smallest shown team is folded back until it is (Karin 31.10 complementary rule; fn_complement_safe_keys).
+CREATE OR REPLACE FUNCTION fn_leaver_batch_teams(p_snapshot uuid)
+RETURNS TABLE (team text, leavers int, transferred numeric)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_rows jsonb; v_total int; v_keys text[];
+BEGIN
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('key', x.g, 'n', x.n, 'amt', x.amt)), '[]'::jsonb) INTO v_rows
+    FROM (SELECT e.group_id::text AS g, count(DISTINCT fn_leaver_key(e.event_id))::int AS n, sum(e.amount) AS amt
+            FROM leaver_memo_inclusion i JOIN happiness_debt_events e ON e.event_id = i.event_id
+           WHERE i.snapshot_id = p_snapshot AND e.event_type = 'leaver_transfer'
+           GROUP BY e.group_id) x;
+  SELECT count(DISTINCT fn_leaver_key(e.event_id)) INTO v_total
+    FROM leaver_memo_inclusion i JOIN happiness_debt_events e ON e.event_id = i.event_id
+   WHERE i.snapshot_id = p_snapshot AND e.event_type = 'leaver_transfer';
+  v_keys := fn_complement_safe_keys(v_rows, v_total, fn_leaver_batch_min());
+  RETURN QUERY SELECT r->>'key', (r->>'n')::int, (r->>'amt')::numeric
+                 FROM jsonb_array_elements(v_rows) r WHERE r->>'key' = ANY (v_keys) ORDER BY 1;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_leaver_batch_teams(uuid) FROM PUBLIC;
+
+-- ---------- aggregate leaver list (MANDATORY v1.6.19 fix; Karin 31.10) ----------
+-- rpc_list_leaver_transfers(company) — cfo / vp_hr only (service / anon → 403), audited. NO per-employee row,
+-- NO id of a person or of a transfer. Row kinds, all from the batches (leaver_memo_snapshot):
+--   batch            one row per batch of ≥ 10 new leavers: period_from / period_to, leavers_count, transferred
+--   batch_team       a team inside a batch: ≥ 10 leavers AND the rest of the batch 0 or ≥ 10 leavers
+--   adjustment_batch remediations / reversals included in a batch (≥ 10 distinct transfers): remediated, reversed
+--   company_total    cumulative transferred / remediated / reversed and open_balance = the published memo line
+-- While new leavers wait for a batch, company_total carries the waiting note (Karin's text, 'טיוטה').
+DROP FUNCTION IF EXISTS rpc_list_leaver_transfers(uuid);
+CREATE OR REPLACE FUNCTION rpc_list_leaver_transfers(p_company_id uuid)
+RETURNS TABLE (row_kind text, batch_no int, team text, period_from date, period_to date, leavers_count int,
+               transferred numeric, remediated numeric, reversed numeric, open_balance numeric,
+               label_he text, note_he text, text_status text)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_last leaver_memo_snapshot;
+  v_pending boolean;
+  s leaver_memo_snapshot;
+BEGIN
+  PERFORM fn_assert_finance_viewer_strict(p_company_id);
+  PERFORM fn_audit_view('leaver_transfers_view', jsonb_build_object('company_id', p_company_id));
+  v_last := fn_leaver_memo_snapshot_at(p_company_id, NULL);
+  v_pending := fn_leaver_memo_pending(p_company_id, NULL);
+  FOR s IN SELECT * FROM leaver_memo_snapshot x WHERE x.company_id = p_company_id ORDER BY x.batch_no LOOP
+    RETURN QUERY
+    SELECT 'batch'::text, s.batch_no, NULL::text, min(e.period_month), max(e.period_month),
+           count(DISTINCT fn_leaver_key(e.event_id))::int, sum(e.amount), NULL::numeric, NULL::numeric, NULL::numeric,
+           'יצא עם העוזבים'::text, NULL::text, NULL::text
+      FROM leaver_memo_inclusion i JOIN happiness_debt_events e ON e.event_id = i.event_id
+     WHERE i.snapshot_id = s.snapshot_id AND e.event_type = 'leaver_transfer';
+    RETURN QUERY
+    SELECT 'batch_team'::text, s.batch_no, t.team,
+           (SELECT min(e.period_month) FROM leaver_memo_inclusion i JOIN happiness_debt_events e ON e.event_id = i.event_id
+             WHERE i.snapshot_id = s.snapshot_id AND e.event_type = 'leaver_transfer' AND e.group_id = t.team),
+           (SELECT max(e.period_month) FROM leaver_memo_inclusion i JOIN happiness_debt_events e ON e.event_id = i.event_id
+             WHERE i.snapshot_id = s.snapshot_id AND e.event_type = 'leaver_transfer' AND e.group_id = t.team),
+           t.leavers, t.transferred, NULL::numeric, NULL::numeric, NULL::numeric,
+           'יצא עם העוזבים'::text, NULL::text, NULL::text
+      FROM fn_leaver_batch_teams(s.snapshot_id) t;
+    IF s.adjusted_transfers > 0 THEN
+      RETURN QUERY
+      SELECT 'adjustment_batch'::text, s.batch_no, NULL::text, NULL::date, NULL::date, s.adjusted_transfers,
+             NULL::numeric,
+             COALESCE(sum(e.amount) FILTER (WHERE e.event_type = 'remediation' AND fn_adjustment_transfer(e.event_id) IS NOT NULL), 0),
+             COALESCE(sum(e.amount) FILTER (WHERE e.event_type = 'leaver_reversal'), 0), NULL::numeric,
+             'יצא עם העוזבים'::text, NULL::text, NULL::text
+        FROM leaver_memo_inclusion i JOIN happiness_debt_events e ON e.event_id = i.event_id
+       WHERE i.snapshot_id = s.snapshot_id AND e.event_type IN ('remediation', 'leaver_reversal');
+    END IF;
+  END LOOP;
+  RETURN QUERY
+  SELECT 'company_total'::text, v_last.batch_no, NULL::text, NULL::date, NULL::date,
+         (SELECT count(DISTINCT fn_leaver_key(e.event_id))::int FROM leaver_memo_inclusion i
+            JOIN happiness_debt_events e ON e.event_id = i.event_id
+            JOIN leaver_memo_snapshot x ON x.snapshot_id = i.snapshot_id
+           WHERE x.company_id = p_company_id AND e.event_type = 'leaver_transfer'),
+         v_last.transferred_total, v_last.remediated_total, v_last.reversed_total, v_last.memo_amount,
+         'יצא עם העוזבים'::text,
+         CASE WHEN v_last.snapshot_id IS NULL THEN 'עדיין לא הצטברו מספיק עוזבים להצגה'
+              WHEN v_pending THEN fn_leaver_memo_waiting_note_he() END,
+         CASE WHEN v_pending AND v_last.snapshot_id IS NOT NULL THEN fn_text_status_draft() END;
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_list_leaver_transfers(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_list_leaver_transfers(uuid) TO authenticated;
+
+-- ---------- verification levels 0–4 (Part A1) ----------
+
+-- The board metrics a level / dossier / pay linkage can be recorded for (existing 7 + the v1.6.19 layers).
+CREATE OR REPLACE FUNCTION fn_board_metric_keys()
+RETURNS text[]
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT ARRAY['chr_real_ebitda', 'happiness_debt_balance', 'deprivation_tax', 'exported_on_exit', 'pcq12_company',
+               'turnover_above_baseline', 'bcr_score', 'everstore_spend', 'other_wellbeing_spend',
+               'redemption_by_category', 'coverage_by_unit', 'ihs_company', 'tps12_company', 'key_role_turnover',
+               'absences', 'safety_incidents', 'governance']
+$$;
+
+-- The questionnaire a board metric is measured with (NULL = not a questionnaire metric).
+CREATE OR REPLACE FUNCTION fn_metric_questionnaire(p_metric text)
+RETURNS varchar
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT CASE p_metric WHEN 'pcq12_company' THEN 'PCQ-12' WHEN 'ihs_company' THEN 'IHS'
+                       WHEN 'tps12_company' THEN 'TPS-12' END::varchar
+$$;
+
+-- Karin's definitions of the levels 0–4 (Part A1, text status 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_assurance_label_he(p_tier int)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT CASE p_tier
+    WHEN 0 THEN 'רמה 0 — לא זוהו שאלון, אוכלוסייה, תזמון או שיטת ניקוד'
+    WHEN 1 THEN 'רמה 1 — שאלון ואוכלוסייה מזוהים, ללא בקרה'
+    WHEN 2 THEN 'רמה 2 — לפחות בקרה אחת: שיעור דיווח, גוף מודד נפרד או נוהל סודיות'
+    WHEN 3 THEN 'רמה 3 — ביקורת חיצונית מוגבלת לפי תקן מזוהה החל על המדד עצמו'
+    WHEN 4 THEN 'רמה 4 — ביקורת חיצונית מלאה לפי תקן מזוהה החל על המדד עצמו' END
+$$;
+
+-- The measuring body (Part B2): CHR-ETRS, a body separate from the company.
+CREATE OR REPLACE FUNCTION fn_measuring_body()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'CHR-ETRS'::text $$;
+
+-- Company-local [from, to) instants of a month.
+CREATE OR REPLACE FUNCTION fn_month_bounds(p_company uuid, p_month date, OUT from_ts timestamptz, OUT to_ts timestamptz)
+LANGUAGE sql
+STABLE
+AS $$ SELECT fn_agent_day_start(p_company, p_month), fn_agent_day_start(p_company, fn_month_shift(p_month, 1)) $$;
+
+-- Number of company-side changes of timing / wording of a questionnaire in a month (any company: the
+-- questionnaire catalogue is shared — J-61).
+CREATE OR REPLACE FUNCTION fn_measurement_changes(p_company uuid, p_code varchar, p_month date)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(*)::int FROM measurement_change_log c, fn_month_bounds(p_company, p_month) b
+   WHERE c.questionnaire_code = p_code AND c.changed_at >= b.from_ts AND c.changed_at < b.to_ts
+$$;
+
+-- Separate measuring body counts as a control only if the company cannot change timing / wording (a locked
+-- instrument) and no such change was logged in the month (Part B2).
+CREATE OR REPLACE FUNCTION fn_separate_body_control(p_company uuid, p_metric text, p_month date)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE((SELECT d.is_locked FROM questionnaire_definition d WHERE d.code = fn_metric_questionnaire(p_metric)), false)
+     AND fn_measurement_changes(p_company, fn_metric_questionnaire(p_metric), p_month) = 0
+$$;
+
+-- Latest evidence row of a company / metric / month (NULL row when none).
+CREATE OR REPLACE FUNCTION fn_verification_evidence(p_company uuid, p_metric text, p_month date)
+RETURNS metric_verification_evidence
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT e.* FROM metric_verification_evidence e
+   WHERE e.company_id = p_company AND e.metric_key = p_metric AND e.period_month = p_month
+   ORDER BY e.entered_at DESC LIMIT 1
+$$;
+
+-- Verification level 0–4 computed from the evidence (Part A1): 0 unless questionnaire (questionnaire metrics only),
+-- population, timing and scoring are identified; a logged company change caps at 1 (B2); full / limited external
+-- audit to an identified standard applying to the metric itself → 4 / 3; any control (reporting rate,
+-- confidentiality, separate measuring body) → 2; else 1. An industry comparison never raises the level.
+CREATE OR REPLACE FUNCTION fn_verification_level(p_company uuid, p_metric text, p_month date)
+RETURNS int
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  e metric_verification_evidence := fn_verification_evidence(p_company, p_metric, p_month);
+  v_code varchar := fn_metric_questionnaire(p_metric);
+  v_audit boolean;
+BEGIN
+  IF e.evidence_id IS NULL
+     OR (v_code IS NOT NULL AND e.questionnaire_identified IS NOT TRUE)
+     OR NOT (e.population_identified AND e.timing_identified AND e.scoring_identified) THEN
+    RETURN 0;
+  END IF;
+  IF v_code IS NOT NULL AND fn_measurement_changes(p_company, v_code, p_month) > 0 THEN
+    RETURN 1;
+  END IF;
+  v_audit := e.audit_applies_to_metric AND length(btrim(COALESCE(e.audit_standard, ''))) > 0;
+  IF v_audit AND e.audit_scope = 'full' THEN RETURN 4; END IF;
+  IF v_audit AND e.audit_scope = 'limited' THEN RETURN 3; END IF;
+  IF e.ctl_reporting_rate OR e.ctl_confidentiality OR fn_separate_body_control(p_company, p_metric, p_month) THEN
+    RETURN 2;
+  END IF;
+  RETURN 1;
+END;
+$$;
+
+-- jsonb {tier, label_he, text_status} of one metric / month.
+CREATE OR REPLACE FUNCTION fn_verification_json(p_company uuid, p_metric text, p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object('tier', l, 'label_he', fn_assurance_label_he(l), 'text_status', fn_text_status_draft())
+    FROM fn_verification_level(p_company, p_metric, p_month) l
+$$;
+REVOKE ALL ON FUNCTION fn_measurement_changes(uuid, varchar, date), fn_separate_body_control(uuid, text, date),
+                       fn_verification_evidence(uuid, text, date), fn_verification_level(uuid, text, date),
+                       fn_verification_json(uuid, text, date) FROM PUBLIC;
+
+-- cfo / vp_hr record the evidence of a metric month (append-only); returns the computed level.
+CREATE OR REPLACE FUNCTION rpc_put_metric_verification_evidence(
+  p_company_id uuid, p_metric_key text, p_month date,
+  p_questionnaire_identified boolean, p_population_identified boolean, p_timing_identified boolean,
+  p_scoring_identified boolean, p_ctl_reporting_rate boolean DEFAULT false, p_ctl_confidentiality boolean DEFAULT false,
+  p_audit_scope text DEFAULT 'none', p_audit_standard text DEFAULT NULL, p_audit_applies_to_metric boolean DEFAULT false,
+  p_industry_comparison boolean DEFAULT false)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_metric_key IS NULL OR NOT (p_metric_key = ANY (fn_board_metric_keys())) OR p_month IS NULL
+     OR COALESCE(p_audit_scope, '') NOT IN ('none', 'limited', 'full')
+     OR p_population_identified IS NULL OR p_timing_identified IS NULL OR p_scoring_identified IS NULL THEN
+    PERFORM fn_raise_bad_request('invalid_verification_evidence');
+  END IF;
+  INSERT INTO metric_verification_evidence (company_id, metric_key, period_month, questionnaire_identified,
+    population_identified, timing_identified, scoring_identified, ctl_reporting_rate, ctl_confidentiality,
+    audit_scope, audit_standard, audit_applies_to_metric, industry_comparison)
+  VALUES (p_company_id, p_metric_key, fn_month_of(p_month), p_questionnaire_identified, p_population_identified,
+          p_timing_identified, p_scoring_identified, COALESCE(p_ctl_reporting_rate, false), COALESCE(p_ctl_confidentiality, false),
+          p_audit_scope, NULLIF(btrim(p_audit_standard), ''), COALESCE(p_audit_applies_to_metric, false),
+          COALESCE(p_industry_comparison, false));
+  PERFORM fn_audit_view('verification_evidence_put', jsonb_build_object('company_id', p_company_id, 'metric_key', p_metric_key));
+  RETURN jsonb_build_object('metric_key', p_metric_key, 'period_month', fn_month_of(p_month))
+         || fn_verification_json(p_company_id, p_metric_key, fn_month_of(p_month));
+END;
+$$;
+
+-- v1.6.19: the level is COMPUTED (Part A1) — the old manual tier input is refused (422).
+CREATE OR REPLACE FUNCTION rpc_put_metric_assurance(p_company_id uuid, p_metric_key text, p_tier int, p_explanation_he text DEFAULT NULL)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  PERFORM fn_raise_unprocessable('verification_level_is_computed');
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_put_metric_verification_evidence(uuid, text, date, boolean, boolean, boolean, boolean, boolean,
+                       boolean, text, text, boolean, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_metric_verification_evidence(uuid, text, date, boolean, boolean, boolean, boolean, boolean,
+                          boolean, text, text, boolean, boolean) TO authenticated, service_role;
+
+-- ---------- 'תיק אימות' per metric (Part A2) ----------
+
+-- [from, to] dates of the measurement window of a questionnaire for a month (quarterly → the calendar quarter).
+CREATE OR REPLACE FUNCTION fn_measure_window(p_code varchar, p_month date, OUT w_from date, OUT w_to date)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT CASE WHEN d.frequency = 'quarterly' THEN date_trunc('quarter', p_month)::date ELSE p_month END,
+         (CASE WHEN d.frequency = 'quarterly' THEN (date_trunc('quarter', p_month) + interval '3 months')::date
+               ELSE fn_month_shift(p_month, 1) END) - 1
+    FROM questionnaire_definition d WHERE d.code = p_code
+$$;
+
+-- Company score of a questionnaire over [from, to]: average, מדווחים בפועל, members, reporting rate and range
+-- (NULL score below the regular threshold of 5 reporters).
+CREATE OR REPLACE FUNCTION fn_company_period_score(p_company uuid, p_code varchar, p_from date, p_to date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_avg numeric; v_rep int; v_mem int := fn_team_month_members(p_company, NULL, fn_month_of(p_to)); v_r numeric; v_m numeric;
+BEGIN
+  SELECT round(avg(q.score), 2), count(DISTINCT q.user_id) INTO v_avg, v_rep
+    FROM questionnaire_submission q JOIN users u ON u.user_id = q.user_id
+   WHERE u.company_id = p_company AND q.questionnaire_code = p_code AND q.local_date BETWEEN p_from AND p_to;
+  v_r := CASE WHEN v_mem > 0 THEN least(1, round(v_rep::numeric / v_mem, 4)) ELSE 0 END;
+  IF v_rep < fn_privacy_min_n('regular') THEN
+    RETURN jsonb_build_object('questionnaire', p_code, 'score', NULL, 'reporters_count', NULL, 'members_count', NULL,
+                              'response_rate', NULL, 'display_he', 'אין מספיק מדווחים בפועל להצגה');
+  END IF;
+  v_m := fn_margin_of_error(p_company, v_r);
+  RETURN jsonb_build_object('questionnaire', p_code, 'score', v_avg, 'reporters_count', v_rep, 'members_count', v_mem,
+                            'response_rate', v_r, 'margin', v_m, 'range_low', greatest(0, v_avg - v_m),
+                            'range_high', least(100, v_avg + v_m), 'window_from', p_from, 'window_to', p_to);
+END;
+$$;
+
+-- Latest wording version of a questionnaire in effect before p_before (NULL = no texts entered → להשלמה).
+CREATE OR REPLACE FUNCTION fn_wording_version(p_code varchar, p_before timestamptz)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT max(v.version_no) FROM questionnaire_item_version v
+   WHERE v.questionnaire_code = p_code AND v.effective_from < p_before
+$$;
+
+-- Dossier section: questionnaire wording and its change vs the previous period.
+CREATE OR REPLACE FUNCTION fn_dossier_wording(p_company uuid, p_code varchar, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_cur int := fn_wording_version(p_code, fn_agent_day_start(p_company, fn_month_shift(p_month, 1)));
+  v_prev int := fn_wording_version(p_code, fn_agent_day_start(p_company, p_month));
+BEGIN
+  RETURN jsonb_build_object(
+    'questionnaire', p_code,
+    'name_he', (SELECT d.name_he FROM questionnaire_definition d WHERE d.code = p_code),
+    'items', CASE WHEN v_cur IS NULL THEN NULL ELSE
+      (SELECT jsonb_agg(jsonb_build_object('item_no', v.item_no, 'text_he', v.text_he) ORDER BY v.item_no)
+         FROM questionnaire_item_version v WHERE v.questionnaire_code = p_code AND v.version_no = v_cur) END,
+    'version', v_cur, 'previous_version', v_prev,
+    'changed_vs_previous_period', CASE WHEN v_cur IS NULL THEN NULL ELSE v_cur IS DISTINCT FROM v_prev END,
+    'display_he', CASE WHEN v_cur IS NULL THEN 'להשלמה: נוסח השאלות לא הוזן' END,
+    'company_changes_in_period', fn_measurement_changes(p_company, p_code, p_month));
+END;
+$$;
+
+-- Dossier section: measured population vs payroll and exceptions.
+CREATE OR REPLACE FUNCTION fn_dossier_population(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_mem int := fn_team_month_members(p_company, NULL, p_month);
+  r payroll_population_input;
+BEGIN
+  SELECT * INTO r FROM payroll_population_input p WHERE p.company_id = p_company AND p.period_month = p_month;
+  RETURN jsonb_build_object('measured_population', v_mem, 'payroll_headcount', r.payroll_headcount,
+    'difference', CASE WHEN r.company_id IS NOT NULL THEN r.payroll_headcount - v_mem END,
+    'exceptions', r.exceptions,
+    'display_he', CASE WHEN r.company_id IS NULL THEN 'חסר: payroll_population_input.payroll_headcount' END);
+END;
+$$;
+
+-- Dossier section: measurement timing vs organisational events of the month and the month before.
+CREATE OR REPLACE FUNCTION fn_dossier_timing(p_company uuid, p_code varchar, p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object(
+    'frequency', (SELECT d.frequency FROM questionnaire_definition d WHERE d.code = p_code),
+    'window_from', w.w_from, 'window_to', w.w_to,
+    'org_events', COALESCE((SELECT jsonb_agg(jsonb_build_object('event_date', o.event_date, 'description_he', o.description_he)
+                                             ORDER BY o.event_date)
+                              FROM org_event o WHERE o.company_id = p_company
+                               AND o.event_date BETWEEN fn_month_shift(w.w_from, -1) AND w.w_to), '[]'::jsonb),
+    'display_he', CASE WHEN NOT EXISTS (SELECT 1 FROM org_event o WHERE o.company_id = p_company
+                                         AND o.event_date BETWEEN fn_month_shift(w.w_from, -1) AND w.w_to)
+                       THEN 'לא תועדו אירועים ארגוניים בתקופה' END)
+    FROM fn_measure_window(p_code, p_month) w
+$$;
+
+-- Golden Spoons value of the questionnaire in effect during the month (A-14 history): value at the start + changes.
+CREATE OR REPLACE FUNCTION fn_dossier_golden_spoons(p_company uuid, p_code varchar, p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  WITH k AS (SELECT d.reward_setting_key AS key FROM questionnaire_definition d WHERE d.code = p_code),
+       b AS (SELECT * FROM fn_month_bounds(p_company, p_month))
+  SELECT jsonb_build_object(
+    'setting_key', k.key,
+    'value_at_period_start', COALESCE(
+        (SELECT h.value_after FROM questionnaire_reward_history h, b
+          WHERE h.company_id = p_company AND h.setting_key = k.key AND h.effective_from < b.from_ts
+          ORDER BY h.effective_from DESC LIMIT 1),
+        (SELECT h.value_before FROM questionnaire_reward_history h
+          WHERE h.company_id = p_company AND h.setting_key = k.key ORDER BY h.effective_from LIMIT 1),
+        (SELECT s.value_numeric FROM agent_settings s WHERE s.company_id IS NULL AND s.setting_key = k.key)),
+    'changes_in_period', COALESCE((SELECT jsonb_agg(jsonb_build_object('effective_from', h.effective_from, 'value', h.value_after)
+                                                    ORDER BY h.effective_from)
+                                     FROM questionnaire_reward_history h, b
+                                    WHERE h.company_id = p_company AND h.setting_key = k.key
+                                      AND h.effective_from >= b.from_ts AND h.effective_from < b.to_ts), '[]'::jsonb))
+    FROM k
+$$;
+
+-- How non-reporting is handled, shown in every questionnaire dossier (J-70, Karin's exact text 31.10; approved).
+CREATE OR REPLACE FUNCTION fn_dossier_non_reporting_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'מי שלא דיווח לא נספר: אין השלמה או הערכה של נתונים חסרים. הטווח שמוצג ליד הציון מראה כמה הוא יכול להשתנות בגללם.'::text $$;
+
+-- The full 'תיק אימות' of one metric / month. Questionnaire sections only for questionnaire metrics.
+CREATE OR REPLACE FUNCTION fn_build_verification_dossier(p_company uuid, p_metric text, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_code varchar := fn_metric_questionnaire(p_metric);
+  w record;
+  v_na constant text := 'לא רלוונטי: המדד אינו מבוסס שאלון';
+BEGIN
+  IF v_code IS NULL THEN
+    RETURN jsonb_build_object('metric_key', p_metric, 'period_month', p_month,
+      'verification_level', fn_verification_json(p_company, p_metric, p_month),
+      'questionnaire', jsonb_build_object('display_he', v_na), 'population', fn_dossier_population(p_company, p_month),
+      'timing', jsonb_build_object('display_he', v_na), 'reporting', jsonb_build_object('display_he', v_na),
+      'independence', jsonb_build_object('measuring_body', fn_measuring_body(), 'display_he', v_na),
+      'scoring', jsonb_build_object('display_he', v_na), 'golden_spoons', jsonb_build_object('display_he', v_na));
+  END IF;
+  SELECT * INTO w FROM fn_measure_window(v_code, p_month);
+  RETURN jsonb_build_object('metric_key', p_metric, 'period_month', p_month,
+    'verification_level', fn_verification_json(p_company, p_metric, p_month),
+    'questionnaire', fn_dossier_wording(p_company, v_code, p_month),
+    'population', fn_dossier_population(p_company, p_month),
+    'timing', fn_dossier_timing(p_company, v_code, p_month),
+    'reporting', fn_company_period_score(p_company, v_code, w.w_from, w.w_to)
+                 || jsonb_build_object('non_reporting_handling_he', fn_dossier_non_reporting_he()),
+    'independence', jsonb_build_object('measuring_body', fn_measuring_body(), 'label_he', 'גוף מודד',
+                      'company_can_change_timing_or_wording', NOT COALESCE((SELECT d.is_locked FROM questionnaire_definition d WHERE d.code = v_code), false),
+                      'company_changes_in_period', fn_measurement_changes(p_company, v_code, p_month),
+                      'counts_as_control', fn_separate_body_control(p_company, p_metric, p_month)),
+    'scoring', jsonb_build_object('scoring_method', (SELECT d.scoring_method FROM questionnaire_definition d WHERE d.code = v_code),
+                                  'consistent', COALESCE((SELECT d.is_locked FROM questionnaire_definition d WHERE d.code = v_code), false)
+                                                AND fn_measurement_changes(p_company, v_code, p_month) = 0),
+    'golden_spoons', fn_dossier_golden_spoons(p_company, v_code, p_month));
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_company_period_score(uuid, varchar, date, date), fn_wording_version(varchar, timestamptz),
+                       fn_dossier_wording(uuid, varchar, date), fn_dossier_population(uuid, date),
+                       fn_dossier_timing(uuid, varchar, date), fn_dossier_golden_spoons(uuid, varchar, date),
+                       fn_build_verification_dossier(uuid, text, date) FROM PUBLIC;
+
+-- cfo / vp_hr read the 'תיק אימות' of a metric month, built live from the current inputs; last_kept_at = when a
+-- dossier of that metric month was last kept with a published board report (NULL = never).
+CREATE OR REPLACE FUNCTION rpc_get_verification_dossier(p_company_id uuid, p_metric_key text, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_kept timestamptz;
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_metric_key IS NULL OR NOT (p_metric_key = ANY (fn_board_metric_keys())) OR p_month IS NULL THEN
+    PERFORM fn_raise_bad_request('invalid_verification_evidence');
+  END IF;
+  SELECT max(d.built_at) INTO v_kept FROM verification_dossier d
+   WHERE d.company_id = p_company_id AND d.metric_key = p_metric_key AND d.period_month = fn_month_of(p_month);
+  RETURN fn_build_verification_dossier(p_company_id, p_metric_key, fn_month_of(p_month))
+         || jsonb_build_object('last_kept_at', v_kept);
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_get_verification_dossier(uuid, text, date) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_get_verification_dossier(uuid, text, date) TO authenticated, service_role;
+
+-- ---------- pay / bonus linkage (Part A3) ----------
+
+-- Latest pay use of a metric: {used_for_pay, used_for_manager_bonus} (both false when never set).
+CREATE OR REPLACE FUNCTION fn_metric_pay_use(p_company uuid, p_metric text)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object('used_for_pay', COALESCE(l.used_for_pay, false),
+                            'used_for_manager_bonus', COALESCE(l.used_for_manager_bonus, false))
+    FROM (SELECT 1) x
+    LEFT JOIN LATERAL (SELECT * FROM metric_pay_linkage m WHERE m.company_id = p_company AND m.metric_key = p_metric
+                        ORDER BY m.effective_from DESC LIMIT 1) l ON true
+$$;
+REVOKE ALL ON FUNCTION fn_metric_pay_use(uuid, text) FROM PUBLIC;
+
+-- cfo / vp_hr flag a metric as used for pay / manager bonuses (history kept, WORM).
+CREATE OR REPLACE FUNCTION rpc_put_metric_pay_linkage(p_company_id uuid, p_metric_key text, p_used_for_pay boolean,
+                                                      p_used_for_manager_bonus boolean)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_metric_key IS NULL OR NOT (p_metric_key = ANY (fn_board_metric_keys()))
+     OR p_used_for_pay IS NULL OR p_used_for_manager_bonus IS NULL THEN
+    PERFORM fn_raise_bad_request('invalid_pay_linkage');
+  END IF;
+  INSERT INTO metric_pay_linkage (company_id, metric_key, used_for_pay, used_for_manager_bonus)
+  VALUES (p_company_id, p_metric_key, p_used_for_pay, p_used_for_manager_bonus);
+  PERFORM fn_audit_view('metric_pay_linkage_put', jsonb_build_object('company_id', p_company_id, 'metric_key', p_metric_key));
+  RETURN jsonb_build_object('metric_key', p_metric_key) || fn_metric_pay_use(p_company_id, p_metric_key);
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_put_metric_pay_linkage(uuid, text, boolean, boolean) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_metric_pay_linkage(uuid, text, boolean, boolean) TO authenticated, service_role;
+
+-- 422 pay_linked_metric_below_level_2 when a metric used for pay / bonuses is below level 2 in the month (Part A3).
+CREATE OR REPLACE FUNCTION fn_assert_pay_linked_levels(p_company uuid, p_month date)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM unnest(fn_board_metric_keys()) k
+              WHERE ((fn_metric_pay_use(p_company, k)->>'used_for_pay')::boolean
+                     OR (fn_metric_pay_use(p_company, k)->>'used_for_manager_bonus')::boolean)
+                AND fn_verification_level(p_company, k, p_month) < 2) THEN
+    PERFORM fn_raise_unprocessable('pay_linked_metric_below_level_2');
+  END IF;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_assert_pay_linked_levels(uuid, date) FROM PUBLIC;
+
+-- ---------- report inputs (cfo / vp_hr; aggregate values only, NULL = not entered) ----------
+
+-- Other wellbeing spend and the audited expense line of a month (Part B1a).
+CREATE OR REPLACE FUNCTION rpc_put_wellbeing_spend(p_company_id uuid, p_month date, p_other_wellbeing_spend_ils numeric,
+                                                   p_audited_expense_line_ils numeric, p_audited_line_name text DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_month IS NULL OR p_other_wellbeing_spend_ils < 0 OR p_audited_expense_line_ils < 0 THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO wellbeing_spend_input (company_id, period_month, other_wellbeing_spend_ils, audited_expense_line_ils, audited_line_name)
+  VALUES (p_company_id, fn_month_of(p_month), p_other_wellbeing_spend_ils, p_audited_expense_line_ils, NULLIF(btrim(p_audited_line_name), ''))
+  ON CONFLICT (company_id, period_month) DO UPDATE SET other_wellbeing_spend_ils = EXCLUDED.other_wellbeing_spend_ils,
+    audited_expense_line_ils = EXCLUDED.audited_expense_line_ils, audited_line_name = EXCLUDED.audited_line_name,
+    entered_at = clock_timestamp();
+  PERFORM fn_audit_view('wellbeing_spend_put', jsonb_build_object('company_id', p_company_id, 'month', fn_month_of(p_month)));
+  RETURN jsonb_build_object('period_month', fn_month_of(p_month), 'status', 'saved');
+END;
+$$;
+
+-- Number of safety incidents of a month (Part B1c).
+CREATE OR REPLACE FUNCTION rpc_put_safety_incidents(p_company_id uuid, p_month date, p_incident_count int)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_month IS NULL OR p_incident_count IS NULL OR p_incident_count < 0 THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO safety_incident_monthly (company_id, period_month, incident_count)
+  VALUES (p_company_id, fn_month_of(p_month), p_incident_count)
+  ON CONFLICT (company_id, period_month) DO UPDATE SET incident_count = EXCLUDED.incident_count, entered_at = clock_timestamp();
+  RETURN jsonb_build_object('period_month', fn_month_of(p_month), 'status', 'saved');
+END;
+$$;
+
+-- Voluntary key-role exits and key-role headcount of a month (Part B1c; aggregate input — J-56).
+CREATE OR REPLACE FUNCTION rpc_put_key_role_turnover(p_company_id uuid, p_month date, p_voluntary_exits int, p_key_role_headcount int)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_month IS NULL OR p_voluntary_exits IS NULL OR p_key_role_headcount IS NULL OR p_voluntary_exits < 0
+     OR p_key_role_headcount < 0 OR p_voluntary_exits > p_key_role_headcount THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO key_role_turnover_input (company_id, period_month, voluntary_key_role_exits, key_role_headcount)
+  VALUES (p_company_id, fn_month_of(p_month), p_voluntary_exits, p_key_role_headcount)
+  ON CONFLICT (company_id, period_month) DO UPDATE SET voluntary_key_role_exits = EXCLUDED.voluntary_key_role_exits,
+    key_role_headcount = EXCLUDED.key_role_headcount, entered_at = clock_timestamp();
+  RETURN jsonb_build_object('period_month', fn_month_of(p_month), 'status', 'saved');
+END;
+$$;
+
+-- Governance layer inputs (Part B3): accountable executive ROLE NAME, exec pay tied to metrics, complaint time.
+CREATE OR REPLACE FUNCTION rpc_put_company_governance(p_company_id uuid, p_accountable_exec_role_name text,
+                                                      p_exec_pay_tied_to_metrics boolean, p_mean_complaint_handling_days numeric)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_mean_complaint_handling_days < 0 THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO company_governance (company_id, accountable_exec_role_name, exec_pay_tied_to_metrics, mean_complaint_handling_days)
+  VALUES (p_company_id, NULLIF(btrim(p_accountable_exec_role_name), ''), p_exec_pay_tied_to_metrics, p_mean_complaint_handling_days)
+  ON CONFLICT (company_id) DO UPDATE SET accountable_exec_role_name = EXCLUDED.accountable_exec_role_name,
+    exec_pay_tied_to_metrics = EXCLUDED.exec_pay_tied_to_metrics,
+    mean_complaint_handling_days = EXCLUDED.mean_complaint_handling_days, updated_at = clock_timestamp();
+  PERFORM fn_audit_view('company_governance_put', jsonb_build_object('company_id', p_company_id));
+  RETURN fn_board_layer_governance(p_company_id);
+END;
+$$;
+
+-- Payroll headcount and exceptions by reason (counts) of a month (Part A2).
+CREATE OR REPLACE FUNCTION rpc_put_payroll_population(p_company_id uuid, p_month date, p_payroll_headcount int,
+                                                      p_exceptions jsonb DEFAULT '{}'::jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_month IS NULL OR p_payroll_headcount IS NULL OR p_payroll_headcount < 0
+     OR jsonb_typeof(COALESCE(p_exceptions, '{}'::jsonb)) <> 'object'
+     OR EXISTS (SELECT 1 FROM jsonb_each(COALESCE(p_exceptions, '{}'::jsonb)) x
+                 WHERE jsonb_typeof(x.value) <> 'number' OR (x.value)::text::numeric < 0) THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO payroll_population_input (company_id, period_month, payroll_headcount, exceptions)
+  VALUES (p_company_id, fn_month_of(p_month), p_payroll_headcount, COALESCE(p_exceptions, '{}'::jsonb))
+  ON CONFLICT (company_id, period_month) DO UPDATE SET payroll_headcount = EXCLUDED.payroll_headcount,
+    exceptions = EXCLUDED.exceptions, entered_at = clock_timestamp();
+  RETURN jsonb_build_object('period_month', fn_month_of(p_month), 'status', 'saved');
+END;
+$$;
+
+-- An organisational event (date + description) the measurement timing is compared with (Part A2).
+CREATE OR REPLACE FUNCTION rpc_add_org_event(p_company_id uuid, p_event_date date, p_description_he text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_event_date IS NULL OR p_description_he IS NULL OR length(btrim(p_description_he)) = 0 THEN
+    PERFORM fn_raise_bad_request('invalid_org_event');
+  END IF;
+  INSERT INTO org_event (company_id, event_date, description_he) VALUES (p_company_id, p_event_date, btrim(p_description_he));
+  RETURN jsonb_build_object('event_date', p_event_date, 'status', 'saved');
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_put_wellbeing_spend(uuid, date, numeric, numeric, text), rpc_put_safety_incidents(uuid, date, int),
+                       rpc_put_key_role_turnover(uuid, date, int, int), rpc_put_company_governance(uuid, text, boolean, numeric),
+                       rpc_put_payroll_population(uuid, date, int, jsonb), rpc_add_org_event(uuid, date, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_wellbeing_spend(uuid, date, numeric, numeric, text), rpc_put_safety_incidents(uuid, date, int),
+                          rpc_put_key_role_turnover(uuid, date, int, int), rpc_put_company_governance(uuid, text, boolean, numeric),
+                          rpc_put_payroll_population(uuid, date, int, jsonb), rpc_add_org_event(uuid, date, text)
+                          TO authenticated, service_role;
+
+-- ---------- question wording and company-side measurement changes (Part A2 / B2) ----------
+
+-- Log one company-side change of timing / wording of a questionnaire (caps its metrics at level 1 in that month).
+CREATE OR REPLACE FUNCTION fn_log_measurement_change(p_code varchar, p_kind text)
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  INSERT INTO measurement_change_log (company_id, questionnaire_code, change_kind) VALUES (fn_my_company(), p_code, p_kind)
+$$;
+REVOKE ALL ON FUNCTION fn_log_measurement_change(varchar, text) FROM PUBLIC;
+
+-- New wording version of a questionnaire. A locked instrument: CHR-ETRS only (service call; a client → 403
+-- questionnaire_locked). An unlocked one: vp_hr may change it, and the change is logged (company side).
+CREATE OR REPLACE FUNCTION rpc_put_questionnaire_items(p_code varchar, p_texts text[])
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  d questionnaire_definition;
+  v_ver int;
+BEGIN
+  SELECT * INTO d FROM questionnaire_definition q WHERE q.code = p_code;
+  IF NOT FOUND OR p_texts IS NULL OR cardinality(p_texts) <> d.item_count
+     OR EXISTS (SELECT 1 FROM unnest(p_texts) t WHERE t IS NULL OR length(btrim(t)) = 0) THEN
+    PERFORM fn_raise_bad_request('invalid_questionnaire_items');
+  END IF;
+  IF fn_is_client_call() THEN
+    IF auth.uid() IS NULL OR fn_app_role() <> 'vp_hr' THEN
+      PERFORM fn_raise_business('anti_get_blocked');
+    END IF;
+    IF d.is_locked THEN
+      PERFORM fn_raise_business('questionnaire_locked');
+    END IF;
+  END IF;
+  SELECT COALESCE(max(v.version_no), 0) + 1 INTO v_ver FROM questionnaire_item_version v WHERE v.questionnaire_code = p_code;
+  INSERT INTO questionnaire_item_version (questionnaire_code, version_no, item_no, text_he)
+  SELECT p_code, v_ver, t.n, btrim(t.txt) FROM unnest(p_texts) WITH ORDINALITY t(txt, n);
+  IF fn_is_client_call() THEN
+    PERFORM fn_log_measurement_change(p_code, 'wording');
+  END IF;
+  RETURN jsonb_build_object('questionnaire', p_code, 'version', v_ver, 'items', cardinality(p_texts));
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_put_questionnaire_items(varchar, text[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_questionnaire_items(varchar, text[]) TO authenticated, service_role;
+
+-- ---------- social events (Part A5): 'ללא הערכה מקצועית', no attendance, no Golden Spoons ----------
+
+-- vp_hr of the company creates a social event (no attendance is ever recorded).
+CREATE OR REPLACE FUNCTION rpc_create_social_event(p_company_id uuid, p_title_he text, p_event_date date)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_id uuid;
+BEGIN
+  IF auth.uid() IS NULL OR fn_app_role() <> 'vp_hr' OR fn_my_company() IS DISTINCT FROM p_company_id THEN
+    PERFORM fn_raise_business('insufficient_privilege');
+  END IF;
+  IF p_title_he IS NULL OR length(btrim(p_title_he)) = 0 OR p_event_date IS NULL THEN
+    PERFORM fn_raise_bad_request('invalid_social_event');
+  END IF;
+  INSERT INTO social_event (company_id, title_he, event_date) VALUES (p_company_id, btrim(p_title_he), p_event_date)
+  RETURNING social_event_id INTO v_id;
+  RETURN jsonb_build_object('social_event_id', v_id, 'title_he', btrim(p_title_he), 'event_date', p_event_date,
+                            'evaluation_label_he', 'ללא הערכה מקצועית', 'golden_spoons', 0);
+END;
+$$;
+
+-- Any active employee of the company lists its social events (no attendance, no evaluation, no Golden Spoons).
+CREATE OR REPLACE FUNCTION rpc_list_social_events(p_company_id uuid)
+RETURNS TABLE (social_event_id uuid, title_he text, event_date date, evaluation_label_he text)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR fn_my_company() IS DISTINCT FROM p_company_id OR fn_employment_ended(auth.uid()) THEN
+    PERFORM fn_raise_business('insufficient_privilege');
+  END IF;
+  RETURN QUERY SELECT e.social_event_id, e.title_he, e.event_date, e.evaluation_label_he
+                 FROM social_event e WHERE e.company_id = p_company_id ORDER BY e.event_date, e.title_he;
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_create_social_event(uuid, text, date), rpc_list_social_events(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_create_social_event(uuid, text, date), rpc_list_social_events(uuid) TO authenticated;
+
+-- ---------- burnout recommendation (Part A4) ----------
+
+-- The only recommendation of the burnout agent (Karin's text → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_burnout_recommendation_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'לבדוק את תנאי העבודה בצוות'::text $$;
+
+-- The forbidden suggestions of the burnout agent (J-52, approved by Karin 31.10): more feedback, documentation,
+-- improvement plan / PIP, and (v1.6.19-r2) hearing, clarification talk, written warning, performance monitoring.
+CREATE OR REPLACE FUNCTION fn_recommendation_forbidden_pattern()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT ('(משוב|פידבק|תיעוד|לתעד|תוכנית שיפור|תכנית שיפור|תוכנית לשיפור|\mPIP\M|feedback|documentation|document|improvement plan|performance improvement'
+         || '|שימוע|שיחת בירור|שיחות בירור|התראה בכתב|התראות בכתב|מעקב ביצועים|מעקב אחר ביצועים)')::text
+$$;
+
+-- False when a recommendation text contains a forbidden suggestion (fn_recommendation_forbidden_pattern; J-52).
+CREATE OR REPLACE FUNCTION fn_recommendation_allowed(p_text text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT p_text IS NULL OR p_text !~* fn_recommendation_forbidden_pattern()
+$$;
+
+-- Recommendation block of a burnout trend: only when the risk rises; refuses a forbidden text (500 → never shipped).
+CREATE OR REPLACE FUNCTION fn_burnout_recommendation(p_rising boolean)
+RETURNS jsonb
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+BEGIN
+  IF NOT fn_recommendation_allowed(fn_burnout_recommendation_he()) THEN
+    RAISE EXCEPTION 'forbidden_recommendation';
+  END IF;
+  RETURN jsonb_build_object('recommendation_he', CASE WHEN p_rising THEN fn_burnout_recommendation_he() END,
+                            'recommendation_text_status', CASE WHEN p_rising THEN fn_text_status_draft() END);
+END;
+$$;
+
+-- ---------- sources of the board appendix (Karin 31.10; all DOIs checked by Karin) ----------
+
+-- Publication year of the IJEB CHR paper (Karin 31.10: 2026; online 2025 — the DOI keeps its own 2025).
+CREATE OR REPLACE FUNCTION fn_chr_paper_year()
+RETURNS int
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 2026 $$;
+
+-- The 5 sources of the board appendix with doi + status_he (the only place statuses are set).
+CREATE OR REPLACE FUNCTION fn_board_sources()
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT jsonb_build_array(
+    jsonb_build_object('topic_he', 'המושג CHR', 'source', 'צבאן ושביט ' || fn_chr_paper_year(),
+      'citation', 'Tsaban, S., & Shavit, T. (' || fn_chr_paper_year() || '). Corporate happiness responsibility (CHR) – changing the role of corporations. International Journal of the Economics of Business, 33(1), 123–160. https://doi.org/10.1080/13571516.2025.2599785',
+      'doi', '10.1080/13571516.2025.2599785', 'status_he', 'פורסם'),
+    jsonb_build_object('topic_he', 'מס קיפוח 12%: אושר ופריון', 'source', 'Oswald, Proto & Sgroi 2015',
+      'citation', 'Oswald, A. J., Proto, E., & Sgroi, D. (2015). Happiness and productivity. Journal of Labor Economics, 33(4), 789–822.',
+      'doi', '10.1086/681096', 'status_he', 'פורסם'),
+    jsonb_build_object('topic_he', 'מס קיפוח 12%: אושר ופריון', 'source', 'Bellet, De Neve & Ward 2024',
+      'citation', 'Bellet, C. S., De Neve, J.-E., & Ward, G. (2024). Does employee happiness have an impact on productivity? Management Science, 70(3), 1656–1679.',
+      'doi', '10.1287/mnsc.2023.4766', 'status_he', 'פורסם'),
+    jsonb_build_object('topic_he', 'מבנה הדוח בשלוש שכבות: השקעה ופעילות, אימוץ ושימוש, תוצאות', 'source', 'צבאן ושביט 2026',
+      'citation', 'Tsaban, S., & Shavit, T. (2026). Unveiling the Value of Happiness: Why Reporting on Corporate Investments in Employee Happiness Matters. World, 7(5), 77. https://doi.org/10.3390/world7050077 — פורסם, עבר ביקורת עמיתים',
+      'doi', '10.3390/world7050077', 'status_he', 'פורסם'),
+    jsonb_build_object('topic_he', 'האם רווחת עובדים משתלמת', 'source', 'צבאן 2026',
+      'citation', 'Tsaban, S. (2026). Does Employee Well-Being Pay?',
+      'doi', '10.13140/rg.2.2.35568.62722', 'status_he', 'טיוטה'))
+$$;
+
+-- Karin's binding appendix text (A-10, 31.10), EXACT characters, a line break between the two sentences.
+-- r = 0.37 is never shown alone or as a link to profit: only inside this text, always next to 0.14–0.16.
+CREATE OR REPLACE FUNCTION fn_board_binding_text_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'מתאם בין רווחת עובדים לביצועים: r = 0.37 (רווח בר-סמך 95%: 0.26–0.48; יציב בין 0.31 ל-0.39 בבדיקות רגישות).' || chr(10) || 'הקשר הישיר לרווחיות חלש יותר: 0.14–0.16. המסלול החזק ביותר עובר דרך הלקוחות. (טיוטה)' $$;
+
+-- The appendix note next to the sources, tied to the 'Does Employee Well-Being Pay?' source ('טיוטה').
+CREATE OR REPLACE FUNCTION fn_board_sources_note()
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT jsonb_build_object('text_he', fn_board_binding_text_he(), 'source', s->>'source', 'citation', s->>'citation',
+                            'doi', s->>'doi', 'status_he', s->>'status_he', 'text_status', fn_text_status_draft())
+    FROM jsonb_array_elements(fn_board_sources()) s
+   WHERE s->>'doi' = '10.13140/rg.2.2.35568.62722'
+$$;
+
+-- ---------- the three report layers + governance (Part B1, B3; Tsaban & Shavit 2026, World 7(5):77) ----------
+
+-- Lowest verification level of a set of metrics in a month = the layer's label (J-62).
+CREATE OR REPLACE FUNCTION fn_layer_level_json(p_company uuid, p_keys text[], p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object('tier', l, 'label_he', fn_assurance_label_he(l), 'text_status', fn_text_status_draft())
+    FROM (SELECT min(fn_verification_level(p_company, k, p_month)) AS l FROM unnest(p_keys) k) x
+$$;
+
+-- Σ Golden Spoons redeemed in the company-local month (internal; never shown next to an ILS amount).
+CREATE OR REPLACE FUNCTION fn_month_redeemed_spoons(p_company uuid, p_month date)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE(sum(sp.price_golden_spoons), 0) FROM shop_purchase sp JOIN users u ON u.user_id = sp.user_id
+   WHERE u.company_id = p_company AND sp.price_golden_spoons > 0
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date >= p_month
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date < fn_month_shift(p_month, 1)
+$$;
+
+-- Layer (a) investment & activity: EverStore budget (Golden Spoons), EverStore spend estimate in ILS (A-3; the
+-- per-spoon value itself is never shown here), other wellbeing spend, reconciliation to the audited expense line.
+CREATE OR REPLACE FUNCTION fn_board_layer_investment(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_last_day date := fn_month_shift(p_month, 1) - 1;
+  v_est jsonb := fn_redeemed_spoon_cost_3m(p_company, v_last_day);
+  v_es numeric; i wellbeing_spend_input;
+BEGIN
+  SELECT * INTO i FROM wellbeing_spend_input w WHERE w.company_id = p_company AND w.period_month = p_month;
+  v_es := CASE WHEN v_est->>'status' = 'ok' THEN round(fn_month_redeemed_spoons(p_company, p_month) * (v_est->>'value')::numeric, 2) END;
+  RETURN jsonb_build_object(
+    'label_he', 'השקעה ופעילות',
+    'verification_level', fn_layer_level_json(p_company, ARRAY['everstore_spend', 'other_wellbeing_spend'], p_month),
+    'everstore_budget_golden_spoons', (SELECT b.budget_golden_spoons FROM everstore_budget b WHERE b.company_id = p_company AND b.budget_month = p_month),
+    'everstore_spend_ils', v_es,
+    'everstore_spend_display_he', CASE WHEN v_es IS NULL THEN v_est->>'display_he' END,
+    'other_wellbeing_spend_ils', i.other_wellbeing_spend_ils,
+    'other_wellbeing_spend_display_he', CASE WHEN i.other_wellbeing_spend_ils IS NULL THEN 'חסר: wellbeing_spend_input.other_wellbeing_spend_ils' END,
+    'audited_expense_line_ils', i.audited_expense_line_ils, 'audited_line_name', i.audited_line_name,
+    'audited_expense_display_he', CASE WHEN i.audited_expense_line_ils IS NULL THEN 'חסר: wellbeing_spend_input.audited_expense_line_ils' END,
+    'reconciliation_difference_ils', CASE WHEN v_es IS NOT NULL AND i.other_wellbeing_spend_ils IS NOT NULL AND i.audited_expense_line_ils IS NOT NULL
+                                          THEN i.audited_expense_line_ils - v_es - i.other_wellbeing_spend_ils END,
+    'reconciliation_display_he', CASE WHEN v_es IS NULL OR i.other_wellbeing_spend_ils IS NULL OR i.audited_expense_line_ils IS NULL THEN 'לא הוגדר' END);
+END;
+$$;
+
+-- Keys to show from rows {key, n} so that each shown n ≥ p_min and the rest (p_total − Σ shown) is 0 or ≥ p_min
+-- (complementary suppression: the smallest shown row is folded into the rest until that holds).
+CREATE OR REPLACE FUNCTION fn_complement_safe_keys(p_rows jsonb, p_total int, p_min int)
+RETURNS text[]
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v_keys text[]; v_shown int;
+BEGIN
+  SELECT array_agg(r->>'key' ORDER BY (r->>'n')::int DESC, r->>'key') INTO v_keys
+    FROM jsonb_array_elements(COALESCE(p_rows, '[]'::jsonb)) r WHERE (r->>'n')::int >= p_min;
+  LOOP
+    SELECT COALESCE(sum((r->>'n')::int), 0) INTO v_shown FROM jsonb_array_elements(COALESCE(p_rows, '[]'::jsonb)) r
+     WHERE r->>'key' = ANY (COALESCE(v_keys, '{}'));
+    EXIT WHEN COALESCE(cardinality(v_keys), 0) = 0 OR p_total - v_shown = 0 OR p_total - v_shown >= p_min;
+    v_keys := v_keys[1:cardinality(v_keys) - 1];
+  END LOOP;
+  RETURN COALESCE(v_keys, '{}');
+END;
+$$;
+
+-- Layer (b) adoption & usage, shown under 'אימוץ' (never 'הצלחה'): by category buyers and share of redeemed
+-- spoons (≥ 5 buyers, complement-safe), redemption rate (J-53: redeemers ÷ active employees), coverage by unit
+-- (מדווחים בפועל ÷ members, ≥ 5 reporters, complement-safe) and the company aggregate.
+CREATE OR REPLACE FUNCTION fn_board_layer_adoption(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_min_b int := fn_agent_setting_num(p_company, 'small_category_min_buyers')::int;
+  v_min_r int := fn_privacy_min_n('regular');
+  v_cat jsonb; v_cat_keys text[]; v_buyers int; v_spoons numeric;
+  v_unit jsonb; v_unit_keys text[]; v_rep int; v_mem int;
+BEGIN
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('key', x.category, 'n', x.buyers, 'spoons', x.spoons)), '[]'::jsonb),
+         COALESCE(sum(x.spoons), 0)
+    INTO v_cat, v_spoons
+    FROM (SELECT sp.category, count(DISTINCT sp.user_id)::int AS buyers, sum(sp.price_golden_spoons) AS spoons
+            FROM shop_purchase sp JOIN users u ON u.user_id = sp.user_id
+           WHERE u.company_id = p_company AND sp.price_golden_spoons > 0
+             AND fn_agent_local_ts(p_company, sp.purchased_at)::date >= p_month
+             AND fn_agent_local_ts(p_company, sp.purchased_at)::date < fn_month_shift(p_month, 1)
+           GROUP BY sp.category) x;
+  SELECT count(DISTINCT sp.user_id) INTO v_buyers FROM shop_purchase sp JOIN users u ON u.user_id = sp.user_id
+   WHERE u.company_id = p_company AND sp.price_golden_spoons > 0
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date >= p_month
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date < fn_month_shift(p_month, 1);
+  v_cat_keys := fn_complement_safe_keys(v_cat, (SELECT COALESCE(sum((r->>'n')::int), 0)::int FROM jsonb_array_elements(v_cat) r), v_min_b);
+
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('key', d.dept, 'n', d.rep, 'members', d.mem)), '[]'::jsonb)
+    INTO v_unit
+    FROM (SELECT u.department AS dept, fn_team_month_members(p_company, u.department, p_month) AS mem,
+                 (SELECT count(DISTINCT q.user_id)::int FROM questionnaire_submission q JOIN users u2 ON u2.user_id = q.user_id
+                   WHERE u2.company_id = p_company AND u2.department = u.department
+                     AND q.local_date >= p_month AND q.local_date < fn_month_shift(p_month, 1)) AS rep
+            FROM users u WHERE u.company_id = p_company AND u.department IS NOT NULL
+           GROUP BY u.department) d;
+  v_rep := (SELECT COALESCE(sum((r->>'n')::int), 0) FROM jsonb_array_elements(v_unit) r);
+  v_mem := fn_team_month_members(p_company, NULL, p_month);
+  v_unit_keys := fn_complement_safe_keys(v_unit, v_rep, v_min_r);
+
+  RETURN jsonb_build_object(
+    'label_he', 'אימוץ',
+    'verification_level', fn_layer_level_json(p_company, ARRAY['redemption_by_category', 'coverage_by_unit'], p_month),
+    'redemption_rate', fn_redemption_rate_json(p_company, p_month, NULL),
+    'by_category', (SELECT COALESCE(jsonb_agg(jsonb_build_object('category', r->>'key', 'buyers_count', (r->>'n')::int,
+                                     'share_of_redeemed_pct', CASE WHEN v_spoons > 0 THEN round((r->>'spoons')::numeric * 100 / v_spoons, 1) END,
+                                     'redemption_rate', fn_redemption_rate_json(p_company, p_month, r->>'key'))
+                                     ORDER BY r->>'key'), '[]'::jsonb)
+                      FROM jsonb_array_elements(v_cat) r WHERE r->>'key' = ANY (v_cat_keys)),
+    'categories_note_he', CASE WHEN cardinality(v_cat_keys) < jsonb_array_length(v_cat) THEN 'קטגוריות עם פחות מ-5 קונים אוחדו ואינן מוצגות בנפרד' END,
+    'buyers_count', CASE WHEN v_buyers >= v_min_b THEN v_buyers END,
+    'coverage_by_unit', (SELECT COALESCE(jsonb_agg(jsonb_build_object('unit', r->>'key', 'reporters_count', (r->>'n')::int,
+                                        'members_count', (r->>'members')::int,
+                                        'coverage_rate', CASE WHEN (r->>'members')::int > 0 THEN round((r->>'n')::numeric / (r->>'members')::int, 4) END)
+                                        ORDER BY r->>'key'), '[]'::jsonb)
+                           FROM jsonb_array_elements(v_unit) r WHERE r->>'key' = ANY (v_unit_keys)),
+    'coverage_company', CASE WHEN v_rep >= v_min_r THEN jsonb_build_object('reporters_count', v_rep, 'members_count', v_mem,
+                               'coverage_rate', CASE WHEN v_mem > 0 THEN least(1, round(v_rep::numeric / v_mem, 4)) END)
+                             ELSE jsonb_build_object('display_he', 'אין מספיק מדווחים בפועל להצגה') END,
+    'thresholds_he', 'קטגוריה: 5 קונים לפחות; יחידה: 5 מדווחים בפועל לפחות; תאים קטנים אוחדו כך שאי אפשר לחשב אותם מההפרש.');
+END;
+$$;
+
+-- ---------- J-53 definitions (Karin 31.10, v1.6.19-r2) ----------
+
+-- Active employee of a company in a month (has an employee profile, hired before the month ends, not ended before
+-- it starts) — the population of the redemption rate (J-53). INTERNAL.
+CREATE OR REPLACE FUNCTION fn_active_in_month(p_company uuid, p_user uuid, p_month date)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM users u
+                  WHERE u.user_id = p_user AND u.company_id = p_company AND u.has_employee_profile
+                    AND (u.hire_date IS NULL OR u.hire_date < fn_month_shift(p_month, 1))
+                    AND (u.employment_ended_at IS NULL OR fn_agent_local_ts(p_company, u.employment_ended_at)::date >= p_month))
+$$;
+
+-- Number of active employees who redeemed at least one EverStore item in the company-local month (all categories
+-- when p_category is NULL). INTERNAL; only the aggregate leaves this function.
+CREATE OR REPLACE FUNCTION fn_month_redeemers(p_company uuid, p_month date, p_category text)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(DISTINCT sp.user_id)::int FROM shop_purchase sp JOIN users u ON u.user_id = sp.user_id
+   WHERE u.company_id = p_company AND sp.price_golden_spoons > 0
+     AND (p_category IS NULL OR sp.category::text = p_category)
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date >= p_month
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date < fn_month_shift(p_month, 1)
+     AND fn_active_in_month(p_company, sp.user_id, p_month)
+$$;
+
+-- Karin's definition of the redemption rate (J-53), in my Hebrew wording (J-74 → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_redemption_rate_definition_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'שיעור מימוש = עובדים שמימשו לפחות פריט אחד בתקופה ÷ עובדים פעילים בתקופה'::text $$;
+
+-- Redemption rate of a month (J-53): redeemers ÷ active employees; shown only with ≥ small_category_min_buyers
+-- redeemers (5) and ≥ 5 active employees, else a display text.
+CREATE OR REPLACE FUNCTION fn_redemption_rate_json(p_company uuid, p_month date, p_category text)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_red int := fn_month_redeemers(p_company, p_month, p_category);
+  v_act int := fn_team_month_members(p_company, NULL, p_month);
+  v_def jsonb := jsonb_build_object('definition_he', fn_redemption_rate_definition_he(), 'text_status', fn_text_status_draft());
+BEGIN
+  IF v_red < fn_agent_setting_num(p_company, 'small_category_min_buyers')::int OR v_act < fn_privacy_min_n('regular') THEN
+    RETURN v_def || jsonb_build_object('display_he', 'אין מספיק מממשים להצגה');
+  END IF;
+  RETURN v_def || jsonb_build_object('redeemers_count', v_red, 'active_employees_count', v_act,
+                                     'rate', round(v_red::numeric / v_act, 4));
+END;
+$$;
+
+-- An active vp_hr of the company is the caller (else 403 insufficient_privilege; service calls refused too).
+CREATE OR REPLACE FUNCTION fn_assert_vp_hr(p_company uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR NOT EXISTS (SELECT 1 FROM users u
+                                        WHERE u.user_id = auth.uid() AND u.company_id = p_company
+                                          AND u.employment_ended_at IS NULL AND u.app_role = 'vp_hr') THEN
+    PERFORM fn_raise_business('insufficient_privilege');
+  END IF;
+END;
+$$;
+
+-- Clean list of key-role names: trimmed, distinct, 1–100 names of 1–80 characters; a name that looks like a person
+-- identifier (uuid / e-mail / digits only) is refused — key roles are roles, never people (J-53). 400 invalid_key_roles.
+CREATE OR REPLACE FUNCTION fn_clean_key_roles(p_names text[])
+RETURNS text[]
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v text[];
+BEGIN
+  SELECT array_agg(DISTINCT btrim(n) ORDER BY btrim(n)) INTO v FROM unnest(COALESCE(p_names, '{}')) n WHERE n IS NOT NULL;
+  IF v IS NULL OR cardinality(v) > 100
+     OR EXISTS (SELECT 1 FROM unnest(v) n
+                 WHERE length(n) = 0 OR length(n) > 80 OR n ~ '@' OR n ~ '^[0-9 ]+$'
+                    OR n ~* '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}') THEN
+    PERFORM fn_raise_bad_request('invalid_key_roles');
+  END IF;
+  RETURN v;
+END;
+$$;
+
+-- The key roles in effect for a company (latest setting), NULL when vp_hr has not marked any.
+CREATE OR REPLACE FUNCTION fn_key_roles(p_company uuid)
+RETURNS text[]
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT s.role_names FROM company_key_role_setting s WHERE s.company_id = p_company ORDER BY s.set_at DESC, s.setting_id LIMIT 1
+$$;
+
+-- Karin's definition of a key role (J-53) + the marked role names (no people), my Hebrew wording (J-74 → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_key_role_definition_json(p_company uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object('key_role_definition_he', 'תפקיד מפתח = תפקידים (לא אנשים) שסומנו על ידי vp_hr בהגדרות החברה',
+                            'key_roles', to_jsonb(fn_key_roles(p_company)), 'text_status', fn_text_status_draft())
+$$;
+
+-- vp_hr marks the company's key roles (role names only; replaces the previous list; history kept WORM; audited).
+CREATE OR REPLACE FUNCTION rpc_put_key_roles(p_company_id uuid, p_role_names text[])
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v text[];
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  v := fn_clean_key_roles(p_role_names);
+  INSERT INTO company_key_role_setting (company_id, role_names) VALUES (p_company_id, v);
+  PERFORM fn_audit_view('key_roles_put', jsonb_build_object('company_id', p_company_id, 'key_roles', to_jsonb(v)));
+  RETURN jsonb_build_object('status', 'saved', 'key_roles', to_jsonb(v));
+END;
+$$;
+
+-- cfo / vp_hr read the company's key roles and their definition (role names only).
+CREATE OR REPLACE FUNCTION rpc_get_key_roles(p_company_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  RETURN fn_key_role_definition_json(p_company_id);
+END;
+$$;
+
+-- Karin's definition of board absences (J-53), my Hebrew wording (J-74 → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_board_absence_definition_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT fn_absence_definition_he() $$;   -- r3: one definition for the board and the burnout agent (J-80 = A)
+
+-- Board absences of a month (J-53, r3 J-85): the SUM of the month's team_absence_input rows (sickness + unplanned
+-- + unapproved early leave) — approved absence / refresh entries, time benefits, vacation and pre-approved early
+-- leave are NOT counted. A team with active employees but no row → 'חסר: team_absence_input' (+ how many teams);
+-- fewer than 5 active employees in the company, or teams of < 5 employees whose combined size is 1–4 (their days
+-- could be derived from the total minus the shown teams) → not shown.
+CREATE OR REPLACE FUNCTION fn_board_absences_json(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_d jsonb := jsonb_build_object('definition_he', fn_board_absence_definition_he(), 'text_status', fn_text_status_draft());
+  r record;
+BEGIN
+  WITH teams AS (
+    SELECT d.department AS team, fn_team_month_members(p_company, d.department, p_month) AS members
+      FROM (SELECT DISTINCT u.department FROM users u
+             WHERE u.company_id = p_company AND u.department IS NOT NULL AND u.has_employee_profile) d)
+  SELECT count(*) FILTER (WHERE t.members > 0 AND x.team_id IS NULL) AS missing,
+         COALESCE(sum(t.members) FILTER (WHERE x.team_id IS NOT NULL AND t.members < fn_privacy_min_n('regular')), 0) AS small_members,
+         sum(x.sickness_days) AS sick, sum(x.unplanned_absence_days) AS unplanned,
+         sum(x.unapproved_early_leave_days) AS early, count(x.team_id) AS teams
+    INTO r
+    FROM teams t LEFT JOIN team_absence_input x
+      ON x.company_id = p_company AND x.team_id = t.team AND x.period_month = p_month;
+  IF r.missing > 0 OR r.teams = 0 THEN
+    RETURN v_d || jsonb_build_object('display_he', 'חסר: team_absence_input', 'teams_missing_count', r.missing);
+  END IF;
+  IF fn_team_month_members(p_company, NULL, p_month) < fn_privacy_min_n('regular')
+     OR r.small_members BETWEEN 1 AND fn_privacy_min_n('regular') - 1 THEN
+    RETURN v_d || jsonb_build_object('display_he', 'אין מספיק עובדים להצגה');
+  END IF;
+  RETURN v_d || jsonb_build_object('days', r.sick + r.unplanned + r.early, 'sickness_days', r.sick,
+                                   'unplanned_absence_days', r.unplanned, 'unapproved_early_leave_days', r.early,
+                                   'teams_count', r.teams);
+END;
+$$;
+
+-- v1.6.19-r3 (J-85): the company-level board absence input is replaced by the team rows (board = Σ teams); the
+-- function goes, the table board_absence_input and its rows stay.
+DROP FUNCTION IF EXISTS rpc_put_board_absences(uuid, date, numeric, numeric);
+
+REVOKE ALL ON FUNCTION fn_active_in_month(uuid, uuid, date), fn_month_redeemers(uuid, date, text),
+                       fn_redemption_rate_json(uuid, date, text), fn_assert_vp_hr(uuid), fn_key_roles(uuid),
+                       fn_key_role_definition_json(uuid), fn_board_absences_json(uuid, date) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid) TO authenticated, service_role;
+
+-- System absence records of a company month (approved absence entries + early leave), cancelled entries excluded
+-- (J-54). v1.6.19-r2: no longer the board absences (J-53 → fn_board_absences_json); kept, unused by the report.
+CREATE OR REPLACE FUNCTION fn_company_month_absences(p_company uuid, p_month date)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT ((SELECT count(*) FROM early_leave_log e JOIN users u ON u.user_id = e.user_id
+            WHERE u.company_id = p_company AND e.local_date >= p_month AND e.local_date < fn_month_shift(p_month, 1))
+        + (SELECT count(*) FROM approved_absence_entry a JOIN users u ON u.user_id = a.user_id
+            WHERE u.company_id = p_company AND a.schedule_status <> 'cancelled'
+              AND a.requested_date >= p_month AND a.requested_date < fn_month_shift(p_month, 1)))::int
+$$;
+
+-- Layer (c) outcomes: PCQ-12 (month), IHS / TPS-12 (quarter) with reporting rate and range; voluntary key-role
+-- turnover; absences; safety incidents. Missing inputs → 'חסר: <field>'.
+CREATE OR REPLACE FUNCTION fn_board_layer_outcomes(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  k key_role_turnover_input; s safety_incident_monthly; w record; v_ihs jsonb; v_tps jsonb;
+BEGIN
+  SELECT * INTO w FROM fn_measure_window('IHS', p_month);
+  v_ihs := fn_company_period_score(p_company, 'IHS', w.w_from, w.w_to);
+  SELECT * INTO w FROM fn_measure_window('TPS-12', p_month);
+  v_tps := fn_company_period_score(p_company, 'TPS-12', w.w_from, w.w_to);
+  SELECT * INTO k FROM key_role_turnover_input x WHERE x.company_id = p_company AND x.period_month = p_month;
+  SELECT * INTO s FROM safety_incident_monthly x WHERE x.company_id = p_company AND x.period_month = p_month;
+  RETURN jsonb_build_object(
+    'label_he', 'תוצאות',
+    'verification_level', fn_layer_level_json(p_company, ARRAY['pcq12_company', 'ihs_company', 'tps12_company',
+                                              'key_role_turnover', 'absences', 'safety_incidents'], p_month),
+    'pcq12', fn_company_month_pcq(p_company, p_month),
+    'ihs', v_ihs, 'tps12', v_tps,
+    'key_role_turnover', fn_key_role_definition_json(p_company) || CASE
+       WHEN fn_key_roles(p_company) IS NULL THEN jsonb_build_object('display_he', 'חסר: company_key_role_setting')
+       WHEN k.company_id IS NULL THEN jsonb_build_object('display_he', 'חסר: key_role_turnover_input')
+       WHEN k.key_role_headcount < fn_privacy_min_n('regular') THEN jsonb_build_object('display_he', 'אין מספיק בעלי תפקידי מפתח להצגה')
+       ELSE jsonb_build_object('voluntary_exits', k.voluntary_key_role_exits, 'key_role_headcount', k.key_role_headcount,
+                               'rate', round(k.voluntary_key_role_exits::numeric / k.key_role_headcount, 4)) END,
+    'absences', fn_board_absences_json(p_company, p_month),
+    'safety_incidents', CASE WHEN s.company_id IS NULL THEN jsonb_build_object('display_he', 'חסר: safety_incident_monthly.incident_count')
+                             ELSE jsonb_build_object('count', s.incident_count) END);
+END;
+$$;
+
+-- Governance layer (Part B3): accountable senior executive (role name only), exec pay tied to metrics, mean
+-- complaint handling time. Missing → 'חסר: <field>' / 'לא הוגדר'.
+CREATE OR REPLACE FUNCTION fn_board_layer_governance(p_company uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  g company_governance;
+BEGIN
+  SELECT * INTO g FROM company_governance x WHERE x.company_id = p_company;
+  RETURN jsonb_build_object(
+    'label_he', 'ממשל',
+    'accountable_exec_role_name', g.accountable_exec_role_name,
+    'accountable_exec_display_he', CASE WHEN g.accountable_exec_role_name IS NULL THEN 'חסר: company_governance.accountable_exec_role_name' END,
+    'exec_pay_tied_to_metrics', g.exec_pay_tied_to_metrics,
+    'exec_pay_display_he', CASE WHEN g.exec_pay_tied_to_metrics IS NULL THEN 'לא הוגדר' END,
+    'mean_complaint_handling_days', g.mean_complaint_handling_days,
+    'complaint_display_he', CASE WHEN g.mean_complaint_handling_days IS NULL THEN 'חסר: company_governance.mean_complaint_handling_days' END);
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_layer_level_json(uuid, text[], date), fn_month_redeemed_spoons(uuid, date),
+                       fn_board_layer_investment(uuid, date), fn_board_layer_adoption(uuid, date),
+                       fn_company_month_absences(uuid, date), fn_board_layer_outcomes(uuid, date),
+                       fn_board_layer_governance(uuid) FROM PUBLIC;
+
+-- The board report layers object (Part B1 + B3), each with its verification level; source = the World paper.
+CREATE OR REPLACE FUNCTION fn_board_layers(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object(
+    'investment_activity', fn_board_layer_investment(p_company, p_month),
+    'adoption_usage', fn_board_layer_adoption(p_company, p_month),
+    'outcomes', fn_board_layer_outcomes(p_company, p_month),
+    'governance', fn_board_layer_governance(p_company)
+                  || jsonb_build_object('verification_level', fn_layer_level_json(p_company, ARRAY['governance'], p_month)),
+    'measuring_body', jsonb_build_object('label_he', 'גוף מודד', 'name', fn_measuring_body()),
+    'structure_source_doi', '10.3390/world7050077')
+$$;
+REVOKE ALL ON FUNCTION fn_board_layers(uuid, date) FROM PUBLIC;
+
+-- ---------- board report v1.6.19 ----------
+
+-- The questionnaire-based board metrics a 'תיק אימות' is kept for with every published report.
+CREATE OR REPLACE FUNCTION fn_dossier_metric_keys()
+RETURNS text[]
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT ARRAY['pcq12_company', 'ihs_company', 'tps12_company'] $$;
+
+-- Computed verification level of every board metric of the month (Part A1) + its pay use (Part A3).
+CREATE OR REPLACE FUNCTION fn_board_verification_levels(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_object_agg(k, fn_verification_json(p_company, k, p_month) || fn_metric_pay_use(p_company, k))
+    FROM unnest(fn_board_metric_keys()) k
+$$;
+
+-- Build and keep (WORM) the 'תיק אימות' of each questionnaire metric with the report; returns {metric: dossier}.
+CREATE OR REPLACE FUNCTION fn_keep_board_dossiers(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  k text; v jsonb; v_all jsonb := '{}'::jsonb;
+BEGIN
+  FOREACH k IN ARRAY fn_dossier_metric_keys() LOOP
+    v := fn_build_verification_dossier(p_company, k, p_month);
+    INSERT INTO verification_dossier (company_id, metric_key, period_month, dossier) VALUES (p_company, k, p_month, v);
+    v_all := v_all || jsonb_build_object(k, v);
+  END LOOP;
+  RETURN v_all;
+END;
+$$;
+
+-- Karin's fixed text shown next to CHR Real EBITDA (Part B4, 'טיוטה'); added beside the locked definition (J-51).
+CREATE OR REPLACE FUNCTION fn_real_ebitda_note_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת'::text $$;
+
+-- The causal-claim note of the report (Part B): the report shows links, not causes. Approved by Karin 31.10 (J-65),
+-- so it carries no 'טיוטה' marking.
+CREATE OR REPLACE FUNCTION fn_board_causal_note()
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT jsonb_build_object('note_he', 'הדוח מציג השקעה, אימוץ ותוצאות זה לצד זה; הוא אינו קובע שההשקעה גרמה לתוצאות.')
+$$;
+
+-- The memo line "יצא עם העוזבים" for the report: published batch value (J-43), behind the shadow-balance threshold.
+CREATE OR REPLACE FUNCTION fn_board_memo_line(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT CASE WHEN fn_company_month_reporters(p_company, p_month) >= fn_privacy_min_n('shadow_balance')
+              THEN fn_leaver_memo_published(p_company, p_month) || jsonb_build_object('evidence_he', 'בינוני')
+              ELSE jsonb_build_object('amount', NULL, 'label_he', 'יצא עם העוזבים', 'display_he', 'אין מספיק מדווחים בפועל להצגה') END
+$$;
+REVOKE ALL ON FUNCTION fn_board_verification_levels(uuid, date), fn_keep_board_dossiers(uuid, date),
+                       fn_board_memo_line(uuid, date) FROM PUBLIC;
+
+-- build_board_report(company, month) — publishes only with a balanced line-by-line reconciliation and the
+-- prior-period figures (v3 §5.1, tests 15 + 18), else 422; and (v1.6.19, Part A3) only when every metric used
+-- for pay / manager bonuses is at level ≥ 2 (else 422 pay_linked_metric_below_level_2). The 10 % / 12 % switch
+-- changes the DISPLAY only. v1.6.19: computed levels, 'תיק אימות' kept, three layers + governance, measuring
+-- body, published (batched) memo line, the 5 sources.
+CREATE OR REPLACE FUNCTION rpc_build_board_report(p_company_id uuid, p_month date,
+                                                  p_display_deprivation_rate numeric DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_month  date := fn_month_of(p_month);
+  v_cur    jsonb;
+  v_prev   jsonb;
+  v_rate   numeric := fn_agent_setting_num(p_company_id, 'deprivation_tax_rate');
+  v_alt    numeric := fn_agent_setting_num(p_company_id, 'deprivation_tax_sensitivity');
+  v_disp   numeric := COALESCE(p_display_deprivation_rate, v_rate);
+  v_tax    numeric;
+  v_bcr    bcr_checks;
+  v_report jsonb;
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF v_disp NOT IN (v_rate, v_alt) THEN
+    PERFORM fn_raise_bad_request('invalid_sensitivity_rate');
+  END IF;
+  v_cur := fn_reconciliation_month(p_company_id, v_month);
+  IF v_cur IS NULL THEN
+    PERFORM fn_raise_unprocessable('reconciliation_missing');
+  END IF;
+  IF NOT (v_cur->>'is_first_period')::boolean THEN
+    v_prev := fn_reconciliation_month(p_company_id, fn_month_shift(v_month, -1));
+    IF v_prev IS NULL THEN
+      PERFORM fn_raise_unprocessable('reconciliation_prior_period_missing');
+    END IF;
+  END IF;
+  PERFORM fn_assert_pay_linked_levels(p_company_id, v_month);
+
+  v_tax := (v_cur->>'deprivation_tax')::numeric;
+  SELECT * INTO v_bcr FROM bcr_checks b WHERE b.company_id = p_company_id AND b.check_month = v_month;
+
+  v_report := jsonb_build_object(
+    'month', v_month,
+    'chr_real_ebitda', jsonb_build_object('value', v_cur->'chr_real_ebitda', 'gaap_ebitda', v_cur->'gaap_ebitda',
+                                          'definition_he', 'מדד ניהולי חלופי, לא רווח חשבונאי',
+                                          'note_he', fn_real_ebitda_note_he(), 'text_status', fn_text_status_draft()),
+    'reconciliation', jsonb_build_array(
+      jsonb_build_object('line', 'gaap_ebitda', 'label_he', 'GAAP EBITDA', 'current', v_cur->'gaap_ebitda', 'prior', v_prev->'gaap_ebitda')) ||
+      (SELECT jsonb_agg(jsonb_build_object('line', c->>'obligation_class', 'label_he', 'פחות: ' || (c->>'label_he'),
+                                           'current', c->'amount',
+                                           'prior', (SELECT p->'amount' FROM jsonb_array_elements(v_prev->'debt_lines') p
+                                                      WHERE p->>'obligation_class' = c->>'obligation_class')))
+         FROM jsonb_array_elements(v_cur->'debt_lines') c) ||
+      jsonb_build_array(
+        jsonb_build_object('line', 'deprivation_tax', 'label_he', 'פחות: מס קיפוח', 'current', v_cur->'deprivation_tax', 'prior', v_prev->'deprivation_tax'),
+        jsonb_build_object('line', 'chr_real_ebitda', 'label_he', 'שווה: CHR Real EBITDA', 'current', v_cur->'chr_real_ebitda', 'prior', v_prev->'chr_real_ebitda')),
+    'prior_period_note_he', CASE WHEN v_prev IS NULL THEN 'אין תקופה קודמת (דוח ראשון)' END,
+    'shadow_balance', v_cur->'debt_lines',
+    'shadow_balance_note_he', 'גילוי ניהולי, לא הפרשה בספרים',
+    'happiness_debt_balance', v_cur->'happiness_debt_balance',
+    'exported_on_exit', fn_board_memo_line(p_company_id, v_month),
+    'deprivation_tax', jsonb_build_object('stored_rate', v_rate, 'stored_amount', v_tax, 'display_rate', v_disp,
+                                          'display_amount', round(v_tax * v_disp / v_rate, 2),
+                                          'note_he', 'נמדד בתפקידים מול לקוחות (Oswald et al. 2015; Bellet et al. 2024)'),
+    'turnover_above_baseline', fn_turnover_above_baseline(p_company_id, v_month),
+    'misleading_margins_flag', fn_misleading_margins(p_company_id, v_month),
+    'wellbeing_pcq12', fn_company_month_pcq(p_company_id, v_month),
+    'verification_levels', fn_board_verification_levels(p_company_id, v_month),
+    'layers', fn_board_layers(p_company_id, v_month),
+    'measuring_body', jsonb_build_object('label_he', 'גוף מודד', 'name', fn_measuring_body()),
+    'causal_note', fn_board_causal_note(),
+    'verification_dossiers', fn_keep_board_dossiers(p_company_id, v_month),
+    'bcr_score', CASE WHEN v_bcr.company_id IS NULL THEN jsonb_build_object('display_he', 'לא בוצע')
+                      ELSE jsonb_build_object('yes_count', v_bcr.yes_count, 'of', 15, 'result_he', v_bcr.result_he) END,
+    'choices_he', 'שיעור מס קיפוח 12% (מתג רגישות 10%); חוב אושר לפי נקודת האמצע של דרג העלות (40% / 125% / 300%); עלות החלפה רק מעל קו הבסיס לכל דרג.',
+    'sources', fn_board_sources(),
+    'sources_note', fn_board_sources_note());
+  INSERT INTO board_report (company_id, period_month, report) VALUES (p_company_id, v_month, v_report);
+  PERFORM fn_audit_view('board_report_published', jsonb_build_object('company_id', p_company_id, 'month', v_month));
+  RETURN v_report;
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_build_board_report(uuid, date, numeric), rpc_put_metric_assurance(uuid, text, int, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_build_board_report(uuid, date, numeric), rpc_put_metric_assurance(uuid, text, int, text)
+                          TO authenticated, service_role;
+
+-- v1.6.19 in-place upgrade: a company that already has ≥ 10 un-batched leavers gets its first batch now.
+DO $$
+DECLARE c uuid;
+BEGIN
+  FOR c IN SELECT DISTINCT e.company_id FROM happiness_debt_events e WHERE e.event_type = 'leaver_transfer' LOOP
+    PERFORM fn_leaver_memo_try_snapshot(c);
+  END LOOP;
+END $$;

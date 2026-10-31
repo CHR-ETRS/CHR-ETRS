@@ -1,6 +1,6 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.18 · tests/test_agents_v1_6_16.sql — agents (agents-bot-instructions-v3) on PostgreSQL 17
--- Version: 1.6.18-mvp (2026-10-31) — supersedes the 1.6.17-mvp and 1.6.16-mvp files of the same name (filename kept so the Drive
+-- CHR-ETRS MVP v1.6.19 · tests/test_agents_v1_6_16.sql — agents (agents-bot-instructions-v3) on PostgreSQL 17
+-- Version: 1.6.19-mvp (2026-10-31) — supersedes the 1.6.18-mvp, 1.6.17-mvp and 1.6.16-mvp files of the same name (filename kept so the Drive
 -- id history stays in one place). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_agents_v1_6_16.sql
 -- Covers: the 18 server tests of v3 §6.3 (tagged "v3-T<n>"), A1 (conversion blocked), A2 (anonymous EverStore
@@ -11,6 +11,9 @@
 -- refused after exit (section 4b); A-8 reversed offboarding returns the memo-line debt to the team (section 9b).
 -- v1.6.18 (Karin 31.10): A-14 questionnaire amounts per company (section 3b), A-13 time benefits scheduled after
 -- exit are cancelled + refunded (section 4c), A-12 reversal returns transfer − attributed remediations (section 9c).
+-- v1.6.19 (Karin 31.10): A-3 liability estimate, liability_method locked; reversal output status only; remediation
+-- without transfer selection (400 / one 422); aggregate leaver list; computed verification levels; A4 recommendation.
+-- The new v1.6.19 board tests are in tests/test_board_v1_6_19.sql.
 -- Fixed dates (2026) keep the expectations independent of the run date.
 -- =============================================================================
 \set QUIET on
@@ -192,10 +195,10 @@ SELECT t_assert('settings: the 15% placeholder movement_rise_pct and the two mar
   NOT EXISTS (SELECT 1 FROM agent_settings WHERE setting_key IN ('movement_rise_pct', 'margin_budget_points_pcq', 'margin_budget_points_ihs')));
 SELECT t_assert('settings: one range coefficient 12.5 (v3 §4.3)',
   (SELECT value_numeric = 12.5 FROM agent_settings WHERE company_id IS NULL AND setting_key = 'score_range_coefficient'));
-SELECT t_assert('settings: open values stay "לא הוגדר" (company_timezone, daily_summary_time, liability_method, spoon_cost_ils, turnover baselines, check-in Golden Spoons)',
-  (SELECT count(*) = 8 AND bool_and(value_numeric IS NULL AND value_text IS NULL) FROM agent_settings
+SELECT t_assert('settings: open values stay "לא הוגדר" (company_timezone, daily_summary_time, spoon_cost_ils [deprecated v1.6.19], turnover baselines, check-in Golden Spoons)',
+  (SELECT count(*) = 7 AND bool_and(value_numeric IS NULL AND value_text IS NULL) FROM agent_settings
     WHERE company_id IS NULL AND value_status = 'not_defined'
-      AND setting_key IN ('company_timezone', 'daily_summary_time', 'liability_method', 'spoon_cost_ils',
+      AND setting_key IN ('company_timezone', 'daily_summary_time', 'spoon_cost_ils',
                           'turnover_baseline_junior', 'turnover_baseline_mid', 'turnover_baseline_senior',
                           'golden_spoons_per_checkin')));
 SELECT t_assert('v1.6.17 A-5: TPS-12 / IHS participation = agent_settings golden_spoons_per_quarterly_questionnaire 10, set and adjustable (not locked)',
@@ -220,7 +223,8 @@ SELECT t_expect_http('settings: locked key movement_min_team_size → 403 settin
 SELECT t_expect_http('settings: unknown key → 400', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'nope', 1)$$, 'unknown_setting', 400);
 SELECT t_expect_http('settings: bad time → 400', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'daily_summary_time', NULL, '25:00')$$, 'invalid_setting_value', 400);
 SELECT t_expect_http('settings: bad timezone → 400', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'company_timezone', NULL, 'Mars/Base')$$, 'invalid_setting_value', 400);
-SELECT t_expect_http('settings: bad liability method → 400', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'liability_method', NULL, 'guess')$$, 'invalid_setting_value', 400);
+SELECT t_expect_http('v1.6.19 A-3: liability_method is locked to avg_redeemed → 403 setting_locked', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'liability_method', NULL, 'guess')$$, 'setting_locked', 403);
+SELECT t_expect_http('v1.6.19 A-3: spoon_cost_ils is deprecated and locked → 403 setting_locked', $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'spoon_cost_ils', 2.5)$$, 'setting_locked', 403);
 SELECT t_expect_http('v1.6.18 A-14: cfo''s permission on the quarterly amount is removed → 403 insufficient_privilege',
   $$SELECT * FROM rpc_put_agent_setting(t_u('cA'), 'golden_spoons_per_quarterly_questionnaire', 12)$$, 'insufficient_privilege', 403);
 SELECT t_expect_http('v1.6.18 A-14: …and on the short amount, including a reset → 403',
@@ -429,15 +433,11 @@ RESET ROLE;
 SELECT t_as(t_u('cfoB'));
 SET ROLE authenticated;
 INSERT INTO t_outputs SELECT 'liability_not_defined', rpc_get_open_golden_spoons_liability(t_u('cB'));
-SELECT t_assert('v3-T6: cfo sees open Golden Spoons; ILS estimate "לא הוגדר" while liability_method is not set',
+SELECT t_assert('v3-T6 + v1.6.19 A-3: cfo sees open Golden Spoons; fewer than 10 purchases → no ILS estimate, "אין עדיין מספיק מימושים לאומדן"',
   (SELECT (j->>'open_golden_spoons')::numeric = 40 + 50 + 40 + 30 + 30 AND j->'ils_estimate' = 'null'::jsonb
-          AND j->>'ils_status' = 'not_defined' AND j->>'display_he' = 'לא הוגדר'
+          AND j->>'ils_status' = 'insufficient' AND j->>'display_he' = 'אין עדיין מספיק מימושים לאומדן'
+          AND j->>'liability_method' = 'avg_redeemed'
      FROM (SELECT rpc_get_open_golden_spoons_liability(t_u('cB')) j) x));
-SELECT setting_key FROM rpc_put_agent_setting(t_u('cB'), 'liability_method', NULL, 'fixed_cost');
-SELECT setting_key FROM rpc_put_agent_setting(t_u('cB'), 'spoon_cost_ils', 2.5);
-INSERT INTO t_outputs SELECT 'liability_fixed', rpc_get_open_golden_spoons_liability(t_u('cB'));
-SELECT t_assert('v3-T6: fixed_cost method → ILS = open × spoon_cost_ils (190 × 2.5 = 475; v1.6.17 Cantril 10)',
-  (SELECT (j->>'ils_estimate')::numeric = 475 FROM (SELECT rpc_get_open_golden_spoons_liability(t_u('cB')) j) x));
 RESET ROLE;
 SELECT t_as(t_u('empB1'));
 SET ROLE authenticated;
@@ -875,6 +875,11 @@ SELECT t_assert('v3-T3: one crossing period only (Aug has 1 event, Sep crosses) 
   (SELECT j->'signals'->'team_movements'->'crossed_last_periods' = '[false, true]'::jsonb AND NOT (j->>'rising_risk')::boolean
           AND j->'rising_risk_label_he' = 'null'::jsonb
      FROM t_outputs WHERE label = 'trend_big_sep'));
+SELECT t_assert('v1.6.19 A4: rising risk → the only recommendation "לבדוק את תנאי העבודה בצוות" (טיוטה)',
+  (SELECT j->>'recommendation_he' = 'לבדוק את תנאי העבודה בצוות' AND j->>'recommendation_text_status' = 'טיוטה'
+     FROM t_outputs WHERE label = 'trend_big_oct'));
+SELECT t_assert('v1.6.19 A4: not rising → no recommendation',
+  (SELECT j->'recommendation_he' = 'null'::jsonb FROM t_outputs WHERE label = 'trend_big_sep'));
 SELECT t_assert('5th signal (Karin): no display below 10 employees — NINE (9 employees) gets no movement figures',
   (SELECT bool_and(j->'signals'->'team_movements'->'shown' = 'false'::jsonb
                    AND NOT (j->'signals'->'team_movements' ? 'team_rate')
@@ -899,7 +904,7 @@ SELECT t_assert('v3-T11: team with 7 מדווחים בפועל → partial, "מ�
           AND j->>'how_calculated_short_he' = 'המגמה חלקית: מבוססת רק על PCQ-12 והיעדרויות.'
           AND j->'signals'->'deprivation_tax'->>'display_he' = 'אין מספיק מדווחים בפועל להצגה'
           AND j->'signals'->'happiness_debt'->>'display_he' = 'אין מספיק מדווחים בפועל להצגה'
-          AND j->'signals' ? 'pcq12' AND j->'signals' ? 'approved_absences'
+          AND j->'signals' ? 'pcq12' AND j->'signals' ? 'absences'
           AND (j->>'reporters_count')::int = 7
      FROM t_outputs WHERE label = 'trend_seven'));
 SELECT t_assert('v3 §4.4: fewer than 5 מדווחים בפועל → none, the whole card says "אין מספיק מדווחים בפועל להצגה" (no signals)',
@@ -908,13 +913,21 @@ SELECT t_assert('v3 §4.4: fewer than 5 מדווחים בפועל → none, the 
 SELECT t_assert('get_burnout_trend: full coverage (12) returns response_rate, margin, comparable (v3 §6.4 fields)',
   (SELECT j->>'coverage' = 'full' AND (j->>'response_rate')::numeric = 1 AND (j->>'margin')::numeric = 0 AND j ? 'comparable'
      FROM t_outputs WHERE label = 'trend_big_oct'));
-SELECT t_assert('v3-T2: absences only as one aggregate count (count + aggregate_only), and only from 5 מדווחים בפועל',
-  (SELECT (j->'signals'->'approved_absences'->>'aggregate_only')::boolean AND j->'signals'->'approved_absences' ? 'count'
+SELECT t_assert('v3-T2 + r3: absences only as one aggregate team figure (aggregate_only), only from 5 מדווחים בפועל; no input yet → "חסר: team_absence_input", skipped',
+  (SELECT (j->'signals'->'absences'->>'aggregate_only')::boolean
+          AND j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input'
+          AND NOT (j->'signals'->'absences'->>'used_in_risk')::boolean AND NOT (j->'signals'->'absences') ? 'days'
      FROM t_outputs WHERE label = 'trend_seven')
-  AND (SELECT NOT (j::text LIKE '%approved_absences%') FROM t_outputs WHERE label = 'trend_three'));
+  AND (SELECT NOT (j::text LIKE '%absences%') FROM t_outputs WHERE label = 'trend_three')
+  AND (SELECT bool_and(NOT (j::text LIKE '%approved_absences%')) FROM t_outputs WHERE label LIKE 'trend_%'));
+SELECT t_assert('r3 (J-80 = A): a missing absence input does not stop the agent — partial SEVEN still has its PCQ-12 signal, and BIG October is still "סיכון עולה" from the 5th signal',
+  (SELECT j->>'coverage' = 'partial' AND j->'signals'->'pcq12' ? 'moving_average' FROM t_outputs WHERE label = 'trend_seven')
+  AND (SELECT (j->>'rising_risk')::boolean AND j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input'
+         FROM t_outputs WHERE label = 'trend_big_oct'));
 SELECT t_assert('v3-T1: Agent 2 never reads the 12-spoons data (no spoon_budget / spoon columns in its functions)',
   NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname IN ('rpc_get_burnout_trend', 'fn_team_month_members', 'fn_team_month_pcq',
                                                       'fn_team_month_absences', 'fn_team_month_tax_debt', 'fn_burnout_signal',
+                                                      'fn_team_absence_days', 'fn_team_absence_signal',
                                                       'fn_movement_events', 'fn_movement_period', 'fn_ma', 'fn_pooled_rate',
                                                       'fn_may_read_team_agent')
                  AND prosrc ~* '(spoon_budget|current_spoon_count|team_spoon_avg|spoons_company_avg|spoon_reporter)'));
@@ -945,6 +958,94 @@ SELECT t_assert('team_movements: group counts only (no person / user / name colu
   NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_movements' AND column_name ~* '(person|user|name|pseudonym)')
   AND NOT has_table_privilege('authenticated', 'team_movements', 'SELECT'));
 
+-- ============ 8b. v1.6.19-r3 (Karin 31.10, J-80 = A) · burnout absences = team input (sick + unplanned + unapproved early leave) ============
+-- System rows that must NOT count: approved absence / refresh entries (incl. a time benefit) and pre-approved early leave.
+INSERT INTO approved_absence_entry (user_id, company_id, requested_date, schedule_status)
+SELECT t_u('big' || i), t_u('cA'), DATE '2026-10-12', 'coordinated' FROM generate_series(1, 4) i;
+INSERT INTO early_leave_log (user_id, local_date) SELECT t_u('big' || i), DATE '2026-10-13' FROM generate_series(5, 7) i;
+SELECT t_as(t_u('hrA'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'trend_big_sys_only', rpc_get_burnout_trend(t_u('cA'), 'BIG', '2026-10-01');
+RESET ROLE;
+SELECT t_assert('r3: approved absences / time benefits (4) and pre-approved early leave (3) exist for BIG in October but are NOT counted → still "חסר"',
+  fn_team_month_absences(t_u('cA'), 'BIG', '2026-10-01') = 7
+  AND (SELECT j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input' FROM t_outputs WHERE label = 'trend_big_sys_only'));
+-- vp_hr enters TOTAL days per team month: Jun–Aug 10, Sep 20, Oct 30 (sick 20 + unplanned 6 + unapproved early leave 4).
+SELECT t_as(t_u('hrA'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'team_abs_put', rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 20, 6, 4);
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cA'), 'BIG', m, 8, 2, 0)) AS earlier
+  FROM unnest(ARRAY[DATE '2026-06-01', '2026-07-01', '2026-08-01']) m;
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cA'), 'BIG', '2026-09-15', 12, 4, 4)) AS sep;
+SELECT t_expect_http('r3: negative days → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', -1, 0, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('r3: two decimals → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1.25, 0, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('r3: more days than team size × days of the month (12 × 31 = 372) → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 300, 70, 3)$$, 'invalid_amount', 400);
+SELECT t_expect_http('r3: a team with no active employee → 400 invalid_team', $$SELECT rpc_put_team_absences(t_u('cA'), 'NOPE', '2026-10-01', 1, 0, 0)$$, 'invalid_team', 400);
+SELECT t_expect_http('r3: a missing value is not 0 → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, NULL, 0)$$, 'invalid_amount', 400);
+INSERT INTO t_outputs SELECT 'trend_big_abs', rpc_get_burnout_trend(t_u('cA'), 'BIG', '2026-10-01');
+INSERT INTO t_outputs SELECT 'trend_seven_abs', rpc_get_burnout_trend(t_u('cA'), 'SEVEN', '2026-10-01');
+RESET ROLE;
+SELECT t_assert('r3: BIG October absences = 30 days = sick 20 + unplanned 6 + unapproved early leave 4 (the 7 system rows not added)',
+  (SELECT (j->'signals'->'absences'->>'days')::numeric = 30 AND (j->'signals'->'absences'->>'used_in_risk')::boolean
+          AND (j->'signals'->'absences'->>'aggregate_only')::boolean
+          AND j->'signals'->'absences'->>'definition_he' = fn_absence_definition_he()
+          AND j->'signals'->'absences'->>'text_status' = 'טיוטה'
+     FROM t_outputs WHERE label = 'trend_big_abs')
+  AND fn_team_absence_days(t_u('cA'), 'BIG', '2026-10-01') = 30 AND fn_team_absence_days(t_u('cA'), 'BIG', '2026-09-01') = 20);
+SELECT t_assert('r3: the absence term uses the existing rise test — 10, 10, 10, 20, 30 → crosses in 2 consecutive periods → rising',
+  (SELECT (j->'signals'->'absences'->>'rising')::boolean AND j->'signals'->'absences'->'crossed_last_periods' = '[true, true]'::jsonb
+     FROM t_outputs WHERE label = 'trend_big_abs'));
+SELECT t_assert('r3: the other signals are unchanged by the absence input (PCQ-12, מס קיפוח, Happiness Debt, 5th signal identical to the run without it)',
+  (SELECT a.j->'signals'->'pcq12' = b.j->'signals'->'pcq12' AND a.j->'signals'->'deprivation_tax' = b.j->'signals'->'deprivation_tax'
+          AND a.j->'signals'->'happiness_debt' = b.j->'signals'->'happiness_debt'
+          AND a.j->'signals'->'team_movements' = b.j->'signals'->'team_movements'
+     FROM t_outputs a, t_outputs b WHERE a.label = 'trend_big_abs' AND b.label = 'trend_big_oct'));
+SELECT t_assert('r3: a team without its month input (SEVEN) keeps "חסר" while BIG has data — per team, per month',
+  (SELECT j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input' FROM t_outputs WHERE label = 'trend_seven_abs'));
+SELECT t_assert('r3: the input is audited (team + month only, no person) and its output is team + month + status',
+  (SELECT count(*) = 5 AND bool_and(t_ids_free(a.scope) AND a.subject_user_id IS NULL AND a.viewer_id = t_u('hrA')
+                                    AND a.scope ? 'team' AND NOT a.scope ? 'sickness_days')
+     FROM access_audit_log a WHERE a.action = 'team_absences_put')
+  AND (SELECT j = jsonb_build_object('team', 'BIG', 'period_month', DATE '2026-10-01', 'status', 'saved') FROM t_outputs WHERE label = 'team_abs_put'));
+SELECT t_as(t_u('cfoA'));
+SET ROLE authenticated;
+SELECT t_expect_http('r3: cfo → 403 on the team absences input (vp_hr only)', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('mgrA'));
+SET ROLE authenticated;
+SELECT t_expect_http('r3: manager → 403 on the team absences input', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('big1'));
+SET ROLE authenticated;
+SELECT t_expect_http('r3: employee → 403 on the team absences input', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_expect_http('r3: service call (no caller) → 403 on the team absences input', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+SELECT t_assert('r3: team_absence_input is closed (RLS forced, no client grant) and has no person / user / employee / name column',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_absence_input' AND column_name ~* '(person|user|employee|pseudonym|name|email)')
+  AND NOT has_table_privilege('authenticated', 'team_absence_input', 'SELECT')
+  AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'team_absence_input'::regclass));
+SELECT t_assert('r3 catalog: NO table and NO function accepts absence / sick days next to a person (no person_id / user_id / employee id / name / e-mail column or argument beside absence-day count fields)',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns d JOIN information_schema.columns p
+                ON p.table_schema = d.table_schema AND p.table_name = d.table_name
+               WHERE d.table_schema = 'public' AND d.column_name ~* '(sick|unplanned|absence_days|absent_days|early_leave_days)'
+                 AND d.data_type IN ('numeric', 'integer', 'smallint', 'bigint', 'real', 'double precision')
+                 AND p.column_name ~* '(person|user|employee|pseudonym|name|email)')
+  AND NOT EXISTS (SELECT 1 FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
+                   WHERE n.nspname = 'public' AND f.proargnames IS NOT NULL
+                     AND EXISTS (SELECT 1 FROM unnest(f.proargnames) a WHERE a ~* '(sick|unplanned|absence_days|absent_days|early_leave_days)')
+                     AND EXISTS (SELECT 1 FROM unnest(f.proargnames) a WHERE a ~* '(person|user|employee|pseudonym|name|email)'))
+  AND (SELECT count(DISTINCT table_name) >= 2 FROM information_schema.columns WHERE table_schema = 'public' AND column_name ~* 'sick')
+  AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rpc_put_team_absences'));
+SELECT t_expect_err('r3: the per-employee early-leave flag sick_day_deducted stays locked false (an early leave is never a sick day)',
+  $$INSERT INTO early_leave_log (user_id, local_date, sick_day_deducted) VALUES (t_u('big1'), DATE '2026-10-20', true)$$, '23514');
+SELECT t_assert('r3: the system absence tables carry no sick-day field (approved_absence_entry / early_leave_log are never sick days)',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name IN ('approved_absence_entry', 'early_leave_log')
+               AND column_name ~* '(sick_days|unplanned|absence_days)'));
+SELECT t_assert('r3: the burnout agent no longer reads the old system absence count',
+  (SELECT prosrc !~ 'fn_team_month_absences' AND prosrc ~ 'fn_team_absence_days' FROM pg_proc WHERE proname = 'rpc_get_burnout_trend'));
+SELECT t_assert('r3: B_t is unchanged (0.41·S + 0.37·O + 0.22·D, no absence term): B_t(5, 10, 1) = 0.78, B_t(1, 10, 1) = 0.37',
+  fn_b_t(5, 10, 1) = 0.78 AND fn_b_t(1, 10, 1) = 0.37 AND fn_b_t(3, 5, 3) = 0.5);
+
 -- ============ 9. v3-T13 · Happiness Debt on exit → memo line "יצא עם העוזבים" ============
 INSERT INTO employee_value_asset (user_id, company_id, annual_salary) VALUES (t_u('leaverA'), t_u('cA'), 100000);
 UPDATE employee_value_asset SET happiness_debt_liability = 50000 WHERE user_id = t_u('leaverA');
@@ -961,7 +1062,7 @@ SELECT t_assert('v3-T13: memo line through October = 50,000', fn_leaver_memo(t_u
 SELECT t_as(t_u('cfoA'));
 SET ROLE authenticated;
 SELECT t_assert('remediation: a documented fix (what, when, who approved, amount) reduces the memo line (50,000 − 20,000)',
-  rpc_record_remediation(t_u('cA'), 'REST', '2026-10-20', 'הקטנת עומס משמרות', 20000) IS NOT NULL);
+  rpc_record_remediation(t_u('cA'), 'REST', '2026-10-20', 'הקטנת עומס משמרות', 20000) = fn_remediation_response());
 SELECT t_expect_http('remediation: missing description → 400', $$SELECT rpc_record_remediation(t_u('cA'), 'REST', '2026-10-20', ' ', 1)$$, 'invalid_remediation', 400);
 RESET ROLE;
 SELECT t_assert('remediation: memo line = 30,000; remediation_records keeps who approved (cfo)',
@@ -1039,9 +1140,8 @@ ALTER TABLE users DISABLE TRIGGER trg_users_leaver_debt_reversal;   -- test only
 UPDATE users SET employment_ended_at = NULL WHERE user_id = t_u('retD');
 ALTER TABLE users ENABLE TRIGGER trg_users_leaver_debt_reversal;
 INSERT INTO t_outputs SELECT 'a8_reversed', fn_reverse_leaver_transfer(t_u('retD'));
-SELECT t_assert('A-8: the reversal output is an id-free summary (status reversed, team TEAMD, 8,000, memo after 5,000, label "יצא עם העוזבים")',
-  (SELECT j->>'status' = 'reversed' AND j->>'team' = 'TEAMD' AND (j->>'amount')::numeric = 8000
-          AND (j->>'memo_after')::numeric = 5000 AND j->>'label_he' = 'יצא עם העוזבים' AND t_ids_free(j)
+SELECT t_assert('A-8 + v1.6.19: the reversal output is status only (status reversed, label "יצא עם העוזבים") — no amount, team, id or memo value',
+  (SELECT j = jsonb_build_object('status', 'reversed', 'label_he', 'יצא עם העוזבים') AND t_ids_free(j)
      FROM t_outputs WHERE label = 'a8_reversed'));
 SELECT t_assert('A-8: each of retD''s two transfers is reversed exactly once (2 reversals, 2 distinct targets)',
   (SELECT count(*) = 2 AND count(DISTINCT reverses_event_id) = 2 FROM happiness_debt_events
@@ -1055,7 +1155,7 @@ SELECT t_assert('A-8 privacy: crypto-shredding an employee removes the internal 
   NOT EXISTS (SELECT 1 FROM happiness_debt_leaver_link WHERE user_id = t_u('otherD'))
   AND fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 5000);
 
--- ============ 9c. v1.6.18 A-12 (Karin 31.10) · reversal returns the transfer minus its documented remediations ============
+-- ============ 9c. A-12 / G-3 (Karin 31.10, v1.6.19-r2) · FIFO remediation, leftover unattributed, reversal per transfer ============
 -- Company E: remE (100) and peerE (50) leave TEAME, xE (40) leaves TEAMX, in that order, 2 days before the run.
 INSERT INTO employee_value_asset (user_id, company_id, annual_salary) VALUES (t_u('remE'), t_u('cE'), 100000), (t_u('peerE'), t_u('cE'), 100000), (t_u('xE'), t_u('cE'), 100000);
 UPDATE employee_value_asset SET happiness_debt_liability = 100 WHERE user_id = t_u('remE');
@@ -1070,73 +1170,124 @@ CREATE TEMP TABLE t_a12 AS
          (SELECT l.event_id FROM happiness_debt_leaver_link l WHERE l.user_id = t_u('peerE')) AS t_peer,
          (SELECT l.event_id FROM happiness_debt_leaver_link l WHERE l.user_id = t_u('xE')) AS t_x;
 GRANT SELECT ON t_a12 TO authenticated;
+-- Call rpc_record_remediation and roll it back; returns everything the caller could observe (SQLSTATE, message,
+-- detail, body) so that responses can be compared byte for byte.
+CREATE OR REPLACE FUNCTION t_rem_probe(p_team varchar, p_on date, p_amount numeric) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE v_detail text;
+BEGIN
+  RAISE EXCEPTION 'probe' USING DETAIL = rpc_record_remediation(t_u('cE'), p_team, p_on, 'ניסיון', p_amount)::text;
+EXCEPTION WHEN OTHERS THEN
+  GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
+  RETURN SQLSTATE || '|' || SQLERRM || '|' || COALESCE(v_detail, '');
+END $$;
+GRANT EXECUTE ON FUNCTION t_rem_probe(varchar, date, numeric) TO authenticated;
+-- An allocation of a transfer (sum over every remediation of it).
+CREATE OR REPLACE FUNCTION t_alloc(p_transfer uuid) RETURNS numeric LANGUAGE sql AS $$
+  SELECT COALESCE(sum(a.amount), 0) FROM happiness_debt_remediation_allocation a WHERE a.transfer_event_id = p_transfer
+$$;
+-- Unattributed remediation amount of company E (remediation events with no allocation row).
+CREATE OR REPLACE FUNCTION t_unattributed_e() RETURNS numeric LANGUAGE sql AS $$
+  SELECT COALESCE(sum(e.amount), 0) FROM happiness_debt_events e
+   WHERE e.company_id = t_u('cE') AND e.event_type = 'remediation'
+     AND NOT EXISTS (SELECT 1 FROM happiness_debt_remediation_allocation a WHERE a.remediation_event_id = e.event_id)
+$$;
 SELECT t_assert('A-12: three transfers (100 + 50 + 40) → memo line "יצא עם העוזבים" 190',
   fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 190);
 SELECT t_as(t_u('hrE'));
 SET ROLE authenticated;
-SELECT t_assert('A-12: a documented remediation of 30 for TEAME (vp_hr) is recorded',
-  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'צמצום שעות נוספות בצוות', 30) IS NOT NULL);
-INSERT INTO t_outputs SELECT 'a12_transfers', jsonb_agg(to_jsonb(x)) FROM rpc_list_leaver_transfers(t_u('cE')) x;
-SELECT t_expect_http('A-12: a remediation above the attributed transfer''s open balance (80 > 70) → 422 remediation_exceeds_transfer',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 80)$$, 'remediation_exceeds_transfer', 422);
-SELECT t_expect_http('A-12: a named transfer cannot take more than its own balance (peerE 60 > 50) → 422',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 60, (SELECT t_peer FROM t_a12))$$, 'remediation_exceeds_transfer', 422);
-SELECT t_expect_http('A-12: a transfer of another team cannot be named (TEAMX transfer for TEAME) → 400 invalid_remediation',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 5, (SELECT t_x FROM t_a12))$$, 'invalid_remediation', 400);
-SELECT t_expect_http('A-12: a team with no open transfer → 422 no_open_leaver_transfer',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'NOPE', (SELECT today FROM t_a12), 'ניסיון', 5)$$, 'no_open_leaver_transfer', 422);
-SELECT t_expect_http('A-12: a remediation dated before the transfer''s month cannot be attributed to it → 400',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', DATE '2026-01-15', 'ניסיון', 5, (SELECT t_rem FROM t_a12))$$, 'invalid_remediation', 400);
+INSERT INTO t_outputs SELECT 'g3_probe_' || k, to_jsonb(t_rem_probe(team, (SELECT today FROM t_a12), amt))
+  FROM (VALUES ('lt', 'TEAME', 30), ('eq', 'TEAME', 100), ('gt', 'TEAME', 120), ('gt_all', 'TEAME', 500),
+               ('no_transfer', 'NOPE', 5)) v(k, team, amt);
+INSERT INTO t_outputs SELECT 'g3_probe_before_months', to_jsonb(t_rem_probe('TEAME', DATE '2026-01-15', 5));
 RESET ROLE;
-SELECT t_assert('A-12: the remediation is attributed to ONE transfer — the team''s oldest open one (remE''s), 30',
+SELECT t_assert('G-3: the response (status, message, body) is identical for amount < balance, = balance, > balance, > all balances, a team with no transfer and a date before every transfer — never 422',
+  (SELECT count(DISTINCT j) = 1 AND count(*) = 6 FROM t_outputs WHERE label LIKE 'g3_probe_%')
+  AND (SELECT j #>> '{}' = 'P0001|probe|' || fn_remediation_response()::text FROM t_outputs WHERE label = 'g3_probe_gt_all'));
+SELECT t_assert('G-3: the response is status only — no amount, balance or count',
+  fn_remediation_response() = jsonb_build_object('status', 'recorded', 'label_he', 'יצא עם העוזבים')
+  AND t_ids_free(fn_remediation_response()));
+SELECT t_assert('G-3: the probes were rolled back (no remediation row, memo still 190)',
+  NOT EXISTS (SELECT 1 FROM remediation_records WHERE company_id = t_u('cE')) AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 190);
+SELECT t_as(t_u('hrE'));
+SET ROLE authenticated;
+SELECT t_assert('A-12: a documented remediation of 30 for TEAME (vp_hr) → the status response',
+  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'צמצום שעות נוספות בצוות', 30) = fn_remediation_response());
+INSERT INTO t_outputs SELECT 'a12_transfers', jsonb_agg(to_jsonb(x)) FROM rpc_list_leaver_transfers(t_u('cE')) x;
+SELECT t_expect_http('v1.6.19: a transfer can no longer be named (the list shows no transfer) → 400 transfer_selection_not_allowed',
+  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 60, (SELECT t_peer FROM t_a12))$$, 'transfer_selection_not_allowed', 400);
+SELECT t_expect_http('v1.6.19: …also a transfer of another team → 400 transfer_selection_not_allowed',
+  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 5, (SELECT t_x FROM t_a12))$$, 'transfer_selection_not_allowed', 400);
+RESET ROLE;
+SELECT t_assert('A-12: 30 (< the oldest balance) → one allocation, to the team''s oldest transfer (remE''s)',
   (SELECT count(*) = 1 AND bool_and(a.transfer_event_id = (SELECT t_rem FROM t_a12) AND a.amount = 30)
      FROM happiness_debt_remediation_allocation a JOIN happiness_debt_events e ON e.event_id = a.remediation_event_id WHERE e.company_id = t_u('cE')));
-SELECT t_assert('A-12: per-transfer balances: remE 70, peerE 50 (never reduced), xE 40; memo 160',
+SELECT t_assert('A-12: per-transfer balances: remE 70, peerE 50, xE 40; memo 160',
   fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 70 AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 50
   AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 40 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 160);
-SELECT t_assert('A-12: rpc_list_leaver_transfers shows each transfer (moved / remediated / reversed / open) with no person field',
-  (SELECT jsonb_array_length(j) = 3 AND t_ids_free(j)
-          AND (SELECT string_agg(e->>'team' || ':' || trim_scale((e->>'transferred')::numeric)::text || '/' || trim_scale((e->>'remediated')::numeric)::text
-                                 || '/' || trim_scale((e->>'open_balance')::numeric)::text, ',') FROM jsonb_array_elements(j) e)
-              = 'TEAME:100/30/70,TEAME:50/0/50,TEAMX:40/0/40'
+SELECT t_assert('v1.6.19: rpc_list_leaver_transfers is aggregate — 3 leavers (< 10) → one company_total row, no batch, no transfer / team amounts',
+  (SELECT jsonb_array_length(j) = 1 AND t_ids_free(j) AND j->0->>'row_kind' = 'company_total'
+          AND j->0->'transferred' = 'null'::jsonb AND j->0->'open_balance' = 'null'::jsonb
+          AND j->0->>'note_he' = 'עדיין לא הצטברו מספיק עוזבים להצגה'
      FROM t_outputs WHERE label = 'a12_transfers'));
--- The required scenario: debt 100, remediation 30, reversal → the team gets back 70.
+-- FIFO across two transfers: 90 > remE's 70 → remE 70 (oldest) + peerE 20, in ONE remediation.
+SELECT t_as(t_u('hrE'));
+SET ROLE authenticated;
+SELECT t_assert('G-3: a remediation of 90 above the oldest balance (70) is accepted with the same response',
+  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'שינוי סידור משמרות', 90) = fn_remediation_response());
+RESET ROLE;
+SELECT t_assert('G-3 FIFO: the 90 is split oldest first — remE 70 + peerE 20 (2 allocation rows of one remediation event); TEAMX untouched',
+  (SELECT count(*) = 2 AND count(DISTINCT a.remediation_event_id) = 1 AND sum(a.amount) = 90
+          AND sum(a.amount) FILTER (WHERE a.transfer_event_id = (SELECT t_rem FROM t_a12)) = 70
+          AND sum(a.amount) FILTER (WHERE a.transfer_event_id = (SELECT t_peer FROM t_a12)) = 20
+     FROM happiness_debt_remediation_allocation a
+    WHERE a.remediation_event_id = (SELECT e.event_id FROM happiness_debt_events e JOIN remediation_records r ON r.remediation_id = e.remediation_id
+                                     WHERE e.company_id = t_u('cE') AND r.reduction_amount = 90))
+  AND t_alloc((SELECT t_x FROM t_a12)) = 0 AND t_unattributed_e() = 0);
+SELECT t_assert('G-3 FIFO: balances remE 0, peerE 30, xE 40; memo 70',
+  fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 0 AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 30
+  AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 40 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 70);
+-- Reversal with split allocations: remE = 100 − 30 − 70 = 0; peerE = 50 − 20 = 30.
 SELECT t_as(t_u('hrE'));
 SET ROLE authenticated;
 SELECT t_assert('A-12: the CHRO reverses remE''s offboarding', (SELECT employment_ended_at IS NULL FROM rpc_revert_offboarding(t_u('remE'))));
 RESET ROLE;
-SELECT t_assert('A-12: the team gets back 70 (= 100 − 30), not 100 — one leaver_reversal of 70 for TEAME linked to remE''s transfer',
-  (SELECT count(*) = 1 AND sum(amount) = 70 AND min(group_id) = 'TEAME' AND bool_and(reverses_event_id = (SELECT t_rem FROM t_a12))
-     FROM happiness_debt_events WHERE company_id = t_u('cE') AND event_type = 'leaver_reversal'));
-SELECT t_assert('A-12: that transfer''s "יצא עם העוזבים" balance goes to 0 — 100 = 30 remediated + 70 returned, nothing counted twice',
-  fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 0
-  AND (SELECT fn_transfer_remediated(t_rem) + (SELECT amount FROM happiness_debt_events WHERE reverses_event_id = t_rem) FROM t_a12) = 100);
-SELECT t_assert('A-12: the total memo line drops by 70, not by 100 (160 → 90 = peerE 50 + xE 40; a full-amount reversal would give 60)',
-  fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 90
-  AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 50 AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 40);
-SELECT t_as(t_u('hrE'));
-SET ROLE authenticated;
-SELECT t_expect_http('A-12: a reversed transfer takes no further remediation (open 0) → 422',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 1, (SELECT t_rem FROM t_a12))$$, 'remediation_exceeds_transfer', 422);
-SELECT t_assert('A-12: a team-level remediation now goes to the next open transfer of TEAME (peerE, 50 — fully covers it)',
-  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'שינוי סידור משמרות', 50) IS NOT NULL);
-RESET ROLE;
-SELECT t_assert('A-12: peerE''s balance 0, memo 40 (xE only — TEAMX untouched by TEAME remediations)',
-  fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 0 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 40);
--- A fully remediated transfer reversed → a documented 0 reversal; the memo line does not move.
+SELECT t_assert('A-12 split: remE''s transfer was covered by 2 remediations (30 + 70) → its reversal is 0, recorded, linked to remE''s transfer; memo still 70',
+  (SELECT count(*) = 1 AND sum(amount) = 0 AND min(group_id) = 'TEAME' AND bool_and(reverses_event_id = (SELECT t_rem FROM t_a12))
+     FROM happiness_debt_events WHERE company_id = t_u('cE') AND event_type = 'leaver_reversal')
+  AND t_alloc((SELECT t_rem FROM t_a12)) = 100 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 70);
 ALTER TABLE users DISABLE TRIGGER trg_users_leaver_debt_reversal;   -- test only: call the reversal directly to capture its output
 UPDATE users SET employment_ended_at = NULL WHERE user_id = t_u('peerE');
 ALTER TABLE users ENABLE TRIGGER trg_users_leaver_debt_reversal;
-INSERT INTO t_outputs SELECT 'a12_reversal_zero', fn_reverse_leaver_transfer(t_u('peerE'));
-SELECT t_assert('A-12: fully remediated (50 − 50) → reversal amount 0, recorded; memo still 40; output id-free (transferred 50, remediated 50, amount 0, balance after 0)',
-  (SELECT j->>'status' = 'reversed' AND (j->>'transferred')::numeric = 50 AND (j->>'remediated')::numeric = 50
-          AND (j->>'amount')::numeric = 0 AND (j->>'transfer_balance_after')::numeric = 0 AND (j->>'memo_after')::numeric = 40
-          AND t_ids_free(j) FROM t_outputs WHERE label = 'a12_reversal_zero')
+INSERT INTO t_outputs SELECT 'a12_reversal_split', fn_reverse_leaver_transfer(t_u('peerE'));
+SELECT t_assert('A-12 split: peerE''s reversal = 50 − its own allocation 20 = 30 (not 50, not 50 − 90); output status only',
+  (SELECT j = jsonb_build_object('status', 'reversed', 'label_he', 'יצא עם העוזבים') FROM t_outputs WHERE label = 'a12_reversal_split')
+  AND (SELECT amount = 30 FROM happiness_debt_events WHERE reverses_event_id = (SELECT t_peer FROM t_a12)));
+SELECT t_assert('A-12 split: every TEAME transfer is at 0 — 100 = 100 remediated + 0 returned, 50 = 20 remediated + 30 returned; memo 40 (xE)',
+  fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 0 AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 0
+  AND (SELECT fn_transfer_remediated(t_peer) + (SELECT amount FROM happiness_debt_events WHERE reverses_event_id = t_peer) FROM t_a12) = 50
   AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 40);
 INSERT INTO t_outputs SELECT 'a12_second_call', fn_reverse_leaver_transfer(t_u('remE'));
 SELECT t_assert('A-12 idempotent: reversing remE again changes nothing (nothing_to_reverse, memo 40)',
   (SELECT j->>'status' = 'nothing_to_reverse' FROM t_outputs WHERE label = 'a12_second_call')
   AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 40);
+-- Leftover: TEAMX 50 > xE's 40 → xE 40 + an unattributed 10; TEAME (no open transfer) 25 → all unattributed.
+SELECT t_as(t_u('hrE'));
+SET ROLE authenticated;
+SELECT t_assert('G-3 leftover: TEAMX 50 (> all its balances) and TEAME 25 (no open transfer) → the same status response',
+  rpc_record_remediation(t_u('cE'), 'TEAMX', (SELECT today FROM t_a12), 'הוספת תקן', 50) = fn_remediation_response()
+  AND rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'הקלה בעומס', 25) = fn_remediation_response());
+RESET ROLE;
+SELECT t_assert('G-3 leftover: xE gets 40 (balance 0); the 10 leftover and the 25 are team remediations with NO transfer (unattributed 35); TEAME transfers unchanged',
+  t_alloc((SELECT t_x FROM t_a12)) = 40 AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 0
+  AND t_unattributed_e() = 35 AND t_alloc((SELECT t_peer FROM t_a12)) = 20 AND t_alloc((SELECT t_rem FROM t_a12)) = 100
+  AND (SELECT count(*) = 2 AND sum(e.amount) = 50 FROM happiness_debt_events e JOIN remediation_records r ON r.remediation_id = e.remediation_id
+        WHERE e.company_id = t_u('cE') AND r.reduction_amount = 50)
+  AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 0);
+SELECT t_assert('G-3 leftover: the unattributed rows keep their team (TEAMX 10, TEAME 25) and remediation_records keeps the full amounts',
+  (SELECT sum(e.amount) FILTER (WHERE e.group_id = 'TEAMX') = 10 AND sum(e.amount) FILTER (WHERE e.group_id = 'TEAME') = 25
+     FROM happiness_debt_events e WHERE e.company_id = t_u('cE') AND e.event_type = 'remediation'
+      AND NOT EXISTS (SELECT 1 FROM happiness_debt_remediation_allocation a WHERE a.remediation_event_id = e.event_id))
+  AND (SELECT sum(reduction_amount) = 195 FROM remediation_records WHERE company_id = t_u('cE')));
 SELECT t_assert('A-12: a reversal of 0 is the only zero amount in the events',
   (SELECT count(*) = 1 AND bool_and(event_type = 'leaver_reversal') FROM happiness_debt_events WHERE company_id = t_u('cE') AND amount = 0));
 SELECT t_expect_err('A-12: a 0 transfer / remediation event is refused by the CHECK',
@@ -1171,8 +1322,9 @@ SELECT t_expect_http('v3-T18: no prior-period figures (September) → 422 reconc
   $$SELECT rpc_build_board_report(t_u('cA'), '2026-10-01')$$, 'reconciliation_prior_period_missing', 422);
 SELECT period_month FROM rpc_put_board_reconciliation(t_u('cA'), '2026-09-01', 1000000, 500000, true);
 SELECT jsonb_array_length(rpc_put_happiness_debt_split(t_u('cA'), '2026-09-01', 40000, 30000, 20000, 10000)) AS split_lines;
-SELECT rpc_put_metric_assurance(t_u('cA'), 'chr_real_ebitda', 2, 'בדיקה פנימית של טבלת ההתאמה');
-SELECT t_expect_http('assurance: tier 5 → 400', $$SELECT rpc_put_metric_assurance(t_u('cA'), 'chr_real_ebitda', 5)$$, 'invalid_assurance_tier', 400);
+SELECT t_expect_http('v1.6.19 A1: a manual tier is refused — the level is computed → 422 verification_level_is_computed',
+  $$SELECT rpc_put_metric_assurance(t_u('cA'), 'chr_real_ebitda', 2, 'בדיקה פנימית של טבלת ההתאמה')$$, 'verification_level_is_computed', 422);
+SELECT (rpc_put_metric_verification_evidence(t_u('cA'), 'chr_real_ebitda', '2026-10-01', NULL, true, true, true, true, false, 'none', NULL, false, false))->>'tier' AS chr_tier;
 SELECT t_assert('BCR: 13 yes without independent approval (C6–C7 not counted) → "התחייבות אמינה"',
   (SELECT (j->>'yes_count')::int = 13 AND j->>'result_he' = 'התחייבות אמינה'
      FROM (SELECT rpc_put_bcr_check(t_u('cA'), '2026-09-01', jsonb_build_object('B1',true,'B2',true,'B3',true,'B4',true,'C1',true,'C2',true,'C3',true,'C4',true,'C5',true,'C6',true,'C7',true,'R1',true,'R2',true,'R3',true,'R4',true)) j) x));
@@ -1212,12 +1364,15 @@ SELECT t_assert('v3-T16: the 10 % switch changes only the display (14,400 → 12
      FROM t_outputs a, t_outputs b WHERE a.label = 'board_oct_12' AND b.label = 'board_oct_10')
   AND (SELECT deprivation_tax_amount = 14400 FROM shadow_balance_aggregate WHERE org_id = t_u('cA') AND calculated_at = '2026-10-15 12:00+03')
   AND (SELECT value_numeric = 0.12 FROM agent_settings WHERE company_id IS NULL AND setting_key = 'deprivation_tax_rate'));
-SELECT t_assert('board report: memo line "יצא עם העוזבים" = 30,000 (≥ 10 מדווחים בפועל), evidence "בינוני"',
-  (SELECT (j->'exported_on_exit'->>'amount')::numeric = 30000 AND j->'exported_on_exit'->>'label_he' = 'יצא עם העוזבים'
+SELECT t_assert('board report + v1.6.19 J-43: one leaver (< 10) → memo line "יצא עם העוזבים" not yet published (amount null, waiting text)',
+  (SELECT j->'exported_on_exit'->'amount' = 'null'::jsonb AND j->'exported_on_exit'->>'label_he' = 'יצא עם העוזבים'
+          AND j->'exported_on_exit'->>'display_he' = 'עדיין לא הצטברו מספיק עוזבים לעדכון ראשון'
      FROM t_outputs WHERE label = 'board_oct_12'));
-SELECT t_assert('board report: assurance label per metric (chr_real_ebitda tier 2 "בדיקה פנימית מתועדת", others 0 "לא מאומת") and the BCR score',
-  (SELECT j->'assurance_tier'->'chr_real_ebitda'->>'label_he' = 'בדיקה פנימית מתועדת'
-          AND j->'assurance_tier'->'happiness_debt_balance'->>'label_he' = 'לא מאומת'
+SELECT t_assert('board report + v1.6.19: computed level per metric (chr_real_ebitda 2 — reporting-rate control; others 0) and the BCR score',
+  (SELECT (j->'verification_levels'->'chr_real_ebitda'->>'tier')::int = 2
+          AND j->'verification_levels'->'chr_real_ebitda'->>'label_he' LIKE 'רמה 2 —%'
+          AND (j->'verification_levels'->'happiness_debt_balance'->>'tier')::int = 0
+          AND NOT j ? 'assurance_tier'
           AND (j->'bcr_score'->>'yes_count')::int = 10
      FROM t_outputs WHERE label = 'board_oct_12'));
 SELECT t_assert('board report: turnover above baseline "לא הוגדר" while baselines are not set; misleading-margins flag on (payroll ↓ with a leaver, PCQ-12 ↓)',

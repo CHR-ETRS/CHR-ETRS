@@ -1,7 +1,7 @@
-<!-- CHR-ETRS MVP v1 · ADR_GAPS.md · Version: 1.6.18-mvp (2026-10-31) — supersedes the 1.6.17-mvp ADR_GAPS (2026-10-31), the 1.6.16-mvp ADR_GAPS (2026-10-30), the 1.6.13-mvp ADR_GAPS (2026-10-25), the 1.6.12-mvp ADR_GAPS (2026-10-24), the 1.6.11-mvp ADR_GAPS (2026-10-24), the 1.6.10-mvp ADR_GAPS (2026-10-21), the 1.6.9-mvp ADR_GAPS (2026-10-21), the 1.6.8-mvp ADR_GAPS (2026-10-21), the 1.6.7-mvp ADR_GAPS (2026-10-20), the 1.6.6-mvp ADR_GAPS (2026-10-20), the 1.6.5-mvp ADR_GAPS (2026-10-20), the 1.6.4-mvp ADR_GAPS (2026-10-20), the 1.6.3-mvp ADR_GAPS (2026-10-20), the 1.6.2-mvp ADR_GAPS (2026-10-20), the 1.6.1-mvp ADR_GAPS (2026-10-20), the 1.6.0-mvp ADR_GAPS (2026-10-20), the 1.5 ADR_GAPS of 2026-10-20 (morning), the 1.4 ADR_GAPS of 2026-10-06 and the Drive ADR_GAPS of 2026-10-12 -->
-# ADR Gaps — CHR-ETRS MVP v1.6.18 Code Pack
+<!-- CHR-ETRS MVP v1 · ADR_GAPS.md · Version: 1.6.19-mvp (2026-10-31) — supersedes the 1.6.18-mvp ADR_GAPS (2026-10-31), the 1.6.17-mvp ADR_GAPS (2026-10-31), the 1.6.16-mvp ADR_GAPS (2026-10-30), the 1.6.13-mvp ADR_GAPS (2026-10-25), the 1.6.12-mvp ADR_GAPS (2026-10-24), the 1.6.11-mvp ADR_GAPS (2026-10-24), the 1.6.10-mvp ADR_GAPS (2026-10-21), the 1.6.9-mvp ADR_GAPS (2026-10-21), the 1.6.8-mvp ADR_GAPS (2026-10-21), the 1.6.7-mvp ADR_GAPS (2026-10-20), the 1.6.6-mvp ADR_GAPS (2026-10-20), the 1.6.5-mvp ADR_GAPS (2026-10-20), the 1.6.4-mvp ADR_GAPS (2026-10-20), the 1.6.3-mvp ADR_GAPS (2026-10-20), the 1.6.2-mvp ADR_GAPS (2026-10-20), the 1.6.1-mvp ADR_GAPS (2026-10-20), the 1.6.0-mvp ADR_GAPS (2026-10-20), the 1.5 ADR_GAPS of 2026-10-20 (morning), the 1.4 ADR_GAPS of 2026-10-06 and the Drive ADR_GAPS of 2026-10-12 -->
+# ADR Gaps — CHR-ETRS MVP v1.6.19 Code Pack
 
-**Date:** 2026-10-31 · **Pack version:** `1.6.18-mvp` — fix round closing A-12, A-13, A-14 (see *Resolved in v1.6.18*); v1.6.17 closed A-5, A-8, A-11 / J-3 / J-15 (see *Resolved in v1.6.17*). v1.6.16 encodes agents-bot-instructions-v3 (single source of truth for the agents; v3 wins over earlier decisions) and Karin's closed values of 30.10 (see *Resolved in v1.6.16*). Earlier (1.6.13): encodes Karin's locked EverStore expansion, Golden Spoons non-expiration / conversion policy, and time-benefit voucher redemption privacy (`נעילת הפרגוד`) of 2026-10-25.  
+**Date:** 2026-10-31 · **Pack version:** `1.6.19-mvp` (r3: J-80 closed — burnout and board absences from one team input, see *Resolved in v1.6.19-r3*; r2: G-3 closed, A-12 FIFO wording, A-16 closed — see *Resolved in v1.6.19-r2*) — aggregate leaver list + batched memo line, A-3 and A-10 closed, verification levels / 'תיק אימות', report layers, sources (see *Resolved in v1.6.19*); v1.6.18 closed A-12, A-13, A-14 (see *Resolved in v1.6.18*); v1.6.17 closed A-5, A-8, A-11 / J-3 / J-15 (see *Resolved in v1.6.17*). v1.6.16 encodes agents-bot-instructions-v3 (single source of truth for the agents; v3 wins over earlier decisions) and Karin's closed values of 30.10 (see *Resolved in v1.6.16*). Earlier (1.6.13): encodes Karin's locked EverStore expansion, Golden Spoons non-expiration / conversion policy, and time-benefit voucher redemption privacy (`נעילת הפרגוד`) of 2026-10-25.  
 **Rule:** Open items are TODO in schema / rpc / openapi. **Do not invent locked numbers.**  
 **Precedence:** Karin's clarifications of 2026-10-20 override the Drive ADR_GAPS of 2026-10-12 where they differ:
 - team averages are regular data at **N≥5**; only **Cuckoo, Shadow Balance and emergency mode** need **N≥10** (the 12.10 "N≥10 everywhere" is overridden);
@@ -12,7 +12,7 @@
 
 ---
 
-## Closed and encoded (v1.5 + v1.6 + v1.6.1 + v1.6.2 + v1.6.3 + v1.6.4 + v1.6.5 + v1.6.6 + v1.6.7 + v1.6.8 + v1.6.9 + v1.6.10 + v1.6.11 + v1.6.12 + v1.6.13 + v1.6.16 + v1.6.17 + v1.6.18)
+## Closed and encoded (v1.5 + v1.6 + v1.6.1 + v1.6.2 + v1.6.3 + v1.6.4 + v1.6.5 + v1.6.6 + v1.6.7 + v1.6.8 + v1.6.9 + v1.6.10 + v1.6.11 + v1.6.12 + v1.6.13 + v1.6.16 + v1.6.17 + v1.6.18 + v1.6.19)
 
 | Item | Resolution | Where encoded |
 |------|------------|---------------|
@@ -342,11 +342,155 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 | Time-benefit voucher privacy (`נעילת הפרגוד`) | Purchasing/redeeming a `time_benefit` item in EverStore automatically converts through HR into a standard approved absence / refresh time entry (`approved_absence_entry`: `'זמן התרעננות / היעדרות מאושרת'`), so the direct manager coordinates the schedule (`approved_absence_manager_v`, `rpc_coordinate_approved_absence`) without ever seeing that the voucher came from an EverStore purchase, while `shop_purchase` remains strictly hidden from managers (own-rows RLS only) | `shop_purchase`, `approved_absence_entry`, `fn_approved_absence_manager_feed`, `approved_absence_manager_v`, `rpc_everstore_purchase`, `rpc_coordinate_approved_absence` |
 | Stale `TODO` cleanup | Cleaned up all resolved `TODO` comments in `openapi.yaml`, `schema.sql`, and `rpc.sql` (including #6 shop purchase eligibility, O-5 morning/midday check-in scoring, O-1..O-4 turnover/deprivation/salary rules, O-10 farming at ≤3, O-13 ledger chain scope) | `openapi.yaml`, `schema.sql`, `rpc.sql` |
 
+## Resolved in v1.6.19-r3 (Karin 31.10 — J-80 = A, align burnout with the board)
+
+### Karin's decision — recorded as a decision
+
+| # | Decision | Where encoded |
+|---|----------|---------------|
+| J-80 → **closed (A)** | The burnout agent's team-absences signal counts **only sickness + unplanned absence, including early leave that was not pre-approved**. **Not counted:** approved absences (`approved_absence_entry` / refresh time), planned vacation, EverStore time benefits, pre-approved early leave (`early_leave_log`). Source: a manual monthly input of **total days per team per month only** (no per-employee row, no name, no person id), vp_hr only, audited. Until the month's input exists the signal shows 'חסר: team_absence_input' and the agent runs on the other signals. The old system count (`fn_team_month_absences`) is no longer used by the agent (kept; no data deleted). Tested: sick + unplanned + unapproved early leave counted from the team input (30 = 20 + 6 + 4); 4 approved / time-benefit entries and 3 pre-approved early leaves in the same month not counted; missing input → 'חסר' with PCQ-12 / 5th-signal output intact; catalog: no table or function takes absence-day counts next to a person column / argument | `team_absence_input`, `rpc_put_team_absences`, `fn_team_absence_days`, `fn_team_absence_signal`, `fn_absence_definition_he`, `rpc_get_burnout_trend` (`signals.absences`), `fn_board_absences_json`; agents §8 / §8b, board §10 |
+
+### Judgment calls and gaps of v1.6.19-r3 (J-85+; none fixed silently — for Karin / Chief of Drive review)
+
+| # | Type | Call / gap |
+|---|------|-----------|
+| J-85 | call | One source for both consumers: the board total = **Σ team rows** of the month (sickness, unplanned, unapproved early leave), so the board and the burnout agent can never disagree. `rpc_put_board_absences` (r2, cfo / vp_hr, company level) is **dropped**; the table `board_absence_input` and any rows in it are **kept** but no longer read. Consequence: cfo can no longer enter absences (vp_hr only, as instructed). The board shows 'חסר: team_absence_input' (with `teams_missing_count`) until every team with active employees has its row — no partial total |
+| J-86 | call | Missing input → the absence term is **skipped**, not renormalised: `rising_risk` is an OR of the signals (no weights), so there is nothing to renormalise; the skipped term carries `used_in_risk: false` and `rising: false`. B_t (0.41·S + 0.37·O + 0.22·D) has **no absence term** and is unchanged — all existing B_t tests pass untouched. Only absence-term expectations changed in the tests: the key name, and 'חסר' instead of a count while no input exists |
+| J-87 | call | Privacy threshold (≥ 5 active employees, same as the board): the team signal is shown only for a team of ≥ 5; the board total is not shown when the company has < 5 active employees or when the teams below 5 together hold 1–4 employees (their days could otherwise be derived as total − the shown teams) — tested (Mgmt 3 + Board 1 → hidden; after a 5th → shown) |
+| J-88 | call | API change: `signals.approved_absences` is renamed `signals.absences` (approved absences are exactly what is no longer counted); fields `days`, `aggregate_only`, `definition_he` (one shared text, my wording → 'טיוטה'), `used_in_risk`. The full-coverage explanation text (v3 §4.4) now names the new definition; the partial-coverage texts are unchanged |
+| J-89 | call | Only the CURRENT month's input is required to use the term; earlier months without an input are ignored by the 3-month moving average (existing `fn_ma` NULL handling) |
+| J-90 | call | Input rules: each value ≥ 0 with one decimal, none may be NULL (no default 0); the team must have ≥ 1 active employee in the month (400 `invalid_team`); total ≤ team size × days of the month (400 `invalid_amount`). One row per team month, overwritten on re-entry (like `team_movements`), not WORM; the audit row holds company, team and month only (no day values) |
+| J-91 | **gap** | Access is vp_hr only, as instructed (cfo, managers, employees and service calls → 403). Sickness data often sits with payroll / finance; a cfo or payroll role may be needed — **not widened** |
+| J-92 | **gap** | Teams = `users.department`. Employees without a department cannot be entered and are outside the board total (they do not trigger 'חסר' either) |
+| J-93 | **gap** | The system cannot verify the split: pre-approved early leave exists as `early_leave_log` rows, but unapproved early leave, sickness and unplanned absence exist only as vp_hr's manual totals |
+| J-94 | call | `fn_team_month_absences` / `fn_company_month_absences` are kept (no longer used by the agent or the report); no approved-absence or early-leave row is touched. The per-employee flag `early_leave_log.sick_day_deducted` stays locked false (CHECK), so the catalog test looks at absence-day COUNT fields |
+
+## Resolved in v1.6.19-r2 (Karin 31.10, after PR #8)
+
+### Karin's decisions — recorded as decisions
+
+| # | Decision | Where encoded |
+|---|----------|---------------|
+| G-3 → **closed** / A-12 (wording updated) | `rpc_record_remediation` **never returns 422** for an amount above a transfer's balance. The amount is allocated **FIFO (oldest first)** across the team's leaver_transfers with an open balance and a month ≤ the remediation month — one `happiness_debt_remediation_allocation` row per transfer touched (several rows allowed). Any **leftover** becomes a team remediation **not attributed to any transfer** (the J-59 path). The response is **identical in every case**: `{status: 'recorded', label_he: 'יצא עם העוזבים'}` — no amount, balance or count. A reversal returns the transferred amount **minus the allocations to THAT transfer**. Tested: FIFO across 2 transfers (90 → 70 + 20), leftover unattributed (TEAMX 50 → 40 + 10; a team with no open transfer → all unattributed), reversal with split allocations (100 − 30 − 70 = 0; 50 − 20 = 30), byte-identical responses for amount < balance, = balance, > balance, > all balances, a team with no transfer and a date before every transfer | `fn_remediation_fifo_plan`, `fn_assert_remediation_input`, `fn_insert_remediation_event`, `fn_remediation_response`, `rpc_record_remediation`, `fn_pending_adjusted_transfers`; agents §9c, board §1 |
+| A-16 → **closed** · J-65 | The causal note is approved — no 'טיוטה' marking (`causal_note = {note_he}`) | `fn_board_causal_note` |
+| J-70 | The dossier non-reporting text is exactly "מי שלא דיווח לא נספר: אין השלמה או הערכה של נתונים חסרים. הטווח שמוצג ליד הציון מראה כמה הוא יכול להשתנות בגללם." — no 'טיוטה' | `fn_dossier_non_reporting_he`, `fn_build_verification_dossier` |
+| J-52 | Approved; the guard adds **שימוע, שיחת בירור, התראה בכתב, מעקב ביצועים** (existing phrases kept); one test per new phrase | `fn_recommendation_forbidden_pattern`, `fn_recommendation_allowed` |
+| J-53 · שיעור מימוש | = employees who redeemed ≥ 1 item in the period ÷ active employees in the period (overall and per shown category) | `fn_month_redeemers`, `fn_redemption_rate_json`, `fn_board_layer_adoption` |
+| J-53 · תפקיד מפתח | = **roles (not people)** that vp_hr marked in the company settings — new setting, vp_hr only, audited, no person ids; key-role turnover stays the aggregate J-56 input with the ≥ 5 threshold | `company_key_role_setting` (WORM history), `rpc_put_key_roles`, `rpc_get_key_roles`, `fn_key_role_definition_json`, `fn_board_layer_outcomes` |
+| J-53 · היעדרות (board) | = **sickness + unplanned absence only**; planned vacation and EverStore time benefits are NOT counted (**r3:** incl. early leave not pre-approved; source = Σ team rows, J-85) | `board_absence_input`, `rpc_put_board_absences`, `fn_board_absences_json`, `fn_board_layer_outcomes` |
+
+### Judgment calls and gaps of v1.6.19-r2 (J-71+; none fixed silently — for Karin / Chief of Drive review)
+
+| # | Type | Call / gap |
+|---|------|-----------|
+| J-71 | call | `rpc_record_remediation` now returns the status object instead of the remediation uuid (an API change: callers that stored the uuid get none) so that every response is identical; 400s depend only on the input (empty text / bad amount / a named transfer) |
+| J-72 | call | The leftover is a second `remediation` event under the same `remediation_records` row (same team and month, no allocation row). It reduces the memo line but no transfer, and rides with the next batch of any kind (J-59). The memo line is floored at 0 as before |
+| J-73 | call | The "≥ 10 distinct transfers" adjustment rule counts every transfer a split remediation touches; a leftover counts no transfer |
+| J-74 | call | The approved texts (causal note, dossier non-reporting text) drop the `text_status` key entirely rather than carrying a new 'approved' value |
+| J-75 | call | The Hebrew definition texts shown next to the three J-53 metrics are my wording of Karin's definitions, so they carry `text_status` 'טיוטה' |
+| J-76 | call | Redemption rate: "redeemed" = an EverStore purchase with a positive Golden Spoons price on a company-local day of the month; "active" = `fn_team_month_members(company, NULL, month)`, and a redeemer counts only if active in the month. Shown only with ≥ 5 redeemers (`small_category_min_buyers`) and ≥ 5 active employees, else 'אין מספיק מממשים להצגה'. Per category the denominator is the same active population |
+| J-77 | **gap** | Key roles conflict with the existing schema: `org_role` / `app_role` are access tiers, and users have no job-title column, so marked roles cannot be linked to people. Key roles are stored as free role NAMES; the key-role turnover input (exits + headcount, J-56) is still counted by hand against that list — nothing checks it. Board shows 'חסר: company_key_role_setting' until vp_hr marks roles |
+| J-78 | call | `rpc_put_key_roles` is vp_hr only (cfo, managers, employees and service calls → 403), replaces the whole list (history kept, WORM), trims / de-duplicates, refuses an empty list, > 100 names, a name over 80 characters or a name that looks like a person identifier (uuid / e-mail / digits only) → 400 `invalid_key_roles`; audited as `key_roles_put` with the role names only. cfo and vp_hr can read it (`rpc_get_key_roles`) |
+| J-79 | **gap** (updated r3) | **r3:** the source is now the team input `team_absence_input` (`rpc_put_team_absences`, vp_hr) and the board total = Σ team rows (J-85); `board_absence_input` / `rpc_put_board_absences` are no longer used (function dropped, table + rows kept); missing → 'חסר: team_absence_input'. The underlying gap stands: the system itself holds no sickness / unplanned data, so the figures are manual totals. Original r2 text: Board absences conflict with the data and the locks: the system holds **no sickness or unplanned-absence data**; `approved_absence_entry` ('זמן התרעננות / היעדרות מאושרת') cannot separate EverStore time benefits from other approved absences without breaking נעילת הפרגוד, and early leave is locked as a full workday (not a sick day). So the board count comes from a new aggregate cfo / vp_hr input `board_absence_input` (sickness days + unplanned absence days, one decimal) and no system entry is counted. No input → 'חסר: board_absence_input'; fewer than 5 active employees → not shown. The input is overwritten per month (like the other report inputs), not WORM |
+| J-80 | **closed r3 (Karin: A — align)** | ~~The team-level absences signal of the burnout agent (`fn_team_month_absences`, v3 `approved_absences`) is unchanged~~ — the burnout signal now uses the same definition and source as the board (see *Resolved in v1.6.19-r3*) |
+| J-81 | call | J-52 also matches the plural / long forms שיחות בירור, התראות בכתב, מעקב אחר ביצועים |
+| J-82 | call | `fn_company_month_absences` (system absence records) is kept but no longer used by the report |
+| J-83 | call | A remediation dated before every transfer of the team (previously 422) is now recorded as a fully unattributed remediation of that month |
+| J-84 | **gap** | G-2 still holds: a refused call (400 / 403) leaves no audit row |
+
+## Resolved in v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; plan approved 16:26)
+
+### Karin's decisions (31.10) — recorded as decisions, not judgment calls
+
+| # | Decision | Where encoded |
+|---|----------|---------------|
+| J-43 → **הוכרע** | The board-report memo line "יצא עם העוזבים" updates **only after 10 NEW leavers** (distinct employees) have accumulated since the last published value. Until then the previous value is shown with a waiting note (Karin's text, `text_status` 'טיוטה': "מוצג הערך מהעדכון הקודם; העדכון הבא ממתין להצטברות של מספיק עוזבים חדשים (10 לפחות)."). Before the first batch no amount is shown. Tested: 1..9 new leavers → no change; the 10th → update; the difference between two board reports is never one leaver's debt (it is 0 or a sum of ≥ 10 leavers); the leaver list minus the memo line is also 0 | `leaver_memo_snapshot` (WORM), `fn_leaver_memo_try_snapshot`, `fn_leaver_memo_on_event` (triggers), `fn_board_memo_line`, `rpc_build_board_report`; `tests/test_board_v1_6_19.sql` §1 |
+| Threshold per cell | **10 accumulated leavers per cell** (batch and team-in-batch), the same value as the Shadow Balance threshold (J-40) | `fn_leaver_batch_size`, `fn_leaver_batch_teams` |
+| No 2-transfer rule | No "≥ 2 transfers" rule anywhere — the only threshold is 10 | — (nothing encoded; tested with company J) |
+| Complementary rule | A team row is not shown if the rest of the batch could be computed from it: shown teams have ≥ 10 leavers each AND the rest of the batch is 0 or ≥ 10; otherwise the smallest shown team is folded back until that holds. The same rule is used for the adoption layer cells (≥ 5 buyers / reporters there) | `fn_complement_safe_keys`, `fn_leaver_batch_teams`, `fn_board_layer_adoption` |
+| Batching of adjustments | Remediations and reversals move the memo line / list only inside a batch, and only when the pending adjustments touch **≥ 10 distinct transfers**; until then they wait (same note) | `fn_leaver_memo_try_snapshot` (`adjustment_batch` rows) |
+| A-3 (closed) | ILS estimate = **average cost of a redeemed spoon, 3-month moving average** (Σ internal ILS cost ÷ Σ Golden Spoons of the company's EverStore purchases in the current company-local month + the 2 previous); shown only with **≥ 10 purchases**, else exactly 'אין עדיין מספיק מימושים לאומדן'; an item without an internal cost → 'חסר: everstore_item_cost.internal_cost_ils'. **cfo / vp_hr only** (service / anon / others → 403). `liability_method` = `avg_redeemed` (locked). `spoon_cost_ils` is **deprecated and unused** (kept, `not_defined`, locked — not deleted) | `fn_redeemed_spoon_cost_3m`, `rpc_get_redeemed_spoon_cost_estimate`, `rpc_get_open_golden_spoons_liability` (strict), `fn_board_layer_investment` |
+| A-10 (**fully closed**, r1 31.10) | All DOIs checked by Karin; the earlier unverified-DOI note is removed. Karin's binding appendix text (exact, below) is in the published report as `sources_note` next to `sources`, tied to *Does Employee Well-Being Pay?* (doi 10.13140/rg.2.2.35568.62722, 'טיוטה'). The correlation is never shown alone or as a link to profit — it appears only inside this full text, always next to 0.14–0.16 (tested in the report, and in openapi / README / ADR_GAPS by `run_tests.sh`). The B_t burnout weight (0.41·S + 0.37·O + 0.22·D) is a different number, unchanged and not linked to this text | `fn_board_binding_text_he`, `fn_board_sources_note`, `rpc_build_board_report.sources_note`, `fn_board_sources` |
+| Sources (5) | Exactly 5 entries, each with `doi` + `status_he`: IJEB — Tsaban & Shavit (2026), *Corporate happiness responsibility (CHR) – changing the role of corporations*, IJEB 33(1), 123–160, doi 10.1080/13571516.2025.2599785, 'פורסם' (year 2026 in one constant `fn_chr_paper_year()`; the DOI is unchanged) · Oswald, Proto & Sgroi (2015), doi 10.1086/681096, 'פורסם' · Bellet, De Neve & Ward (2024), doi 10.1287/mnsc.2023.4766, 'פורסם' · Tsaban & Shavit (2026), *Unveiling the Value of Happiness: Why Reporting on Corporate Investments in Employee Happiness Matters*, World 7(5), 77, doi 10.3390/world7050077, 'פורסם' (עבר ביקורת עמיתים) · Tsaban (2026), *Does Employee Well-Being Pay?*, doi 10.13140/rg.2.2.35568.62722, 'טיוטה'. Karin's own texts keep `text_status` 'טיוטה' | `fn_chr_paper_year`, `fn_board_sources`, `rpc_build_board_report.sources` |
+| J-54 fix | Cancelled time-benefit absences (A-13) are excluded from every absence count | `fn_team_month_absences`, `fn_company_month_absences` |
+
+**A-10 binding appendix text (Karin 31.10, exact; 'טיוטה'):**
+
+```
+מתאם בין רווחת עובדים לביצועים: r = 0.37 (רווח בר-סמך 95%: 0.26–0.48; יציב בין 0.31 ל-0.39 בבדיקות רגישות).
+הקשר הישיר לרווחיות חלש יותר: 0.14–0.16. המסלול החזק ביותר עובר דרך הלקוחות. (טיוטה)
+```
+
+### Built per the approved plan (sections 2, 2b, 3)
+
+| Area | What | Where encoded |
+|------|------|---------------|
+| Aggregate leaver list (mandatory) | `rpc_list_leaver_transfers(company)` returns **no per-employee or per-transfer row and no id**. Columns: `row_kind` (`batch` · `batch_team` · `adjustment_batch` · `company_total`), `batch_no`, `team`, `period_from`, `period_to`, `leavers_count`, `transferred`, `remediated`, `reversed`, `open_balance`, `label_he` ('יצא עם העוזבים'), `note_he`, `text_status`. cfo / vp_hr only (strict — service / anon → 403), every call audited. `company_total.open_balance` = the published memo line | `rpc_list_leaver_transfers`, OpenAPI `LeaverListRow` |
+| Remediation (2b) | `p_transfer_event_id` can no longer be passed (400 `transfer_selection_not_allowed`); ~~the team's oldest open transfer is used internally; "no open transfer" and "above its open balance" give the same 422 `remediation_not_attributable`~~ — **superseded in r2 (G-3)**: FIFO split across the team's open transfers, leftover unattributed, one status-only response, never 422 | `rpc_record_remediation`, `fn_remediation_fifo_plan` (`fn_remediation_target` dropped in r2) |
+| Reversal output | `{status: 'reversed', label_he: 'יצא עם העוזבים'}` only — no amount, team, id or memo value | `fn_reverse_leaver_transfer` |
+| Verification levels 0–4 (A1) | Computed from evidence only; the manual tier put → 422 `verification_level_is_computed`; an industry comparison is stored but never raises the level; a logged company-side timing / wording change caps the metric month at level 1 (B2) | `metric_verification_evidence`, `rpc_put_metric_verification_evidence`, `fn_board_verification_levels` |
+| 'תיק אימות' (A2) | Per questionnaire metric / month: wording + change vs previous period, population vs payroll + exceptions, timing vs organisational events, Golden Spoons value in effect; built live; a WORM copy is kept with every published report (`last_kept_at`) | `fn_build_verification_dossier`, `rpc_get_verification_dossier`, `fn_keep_board_dossiers` |
+| Pay linkage (A3) | cfo / vp_hr flag a metric as used for pay / manager bonuses (WORM history); a report whose pay-linked metric is below level 2 is not published (422 `pay_linked_metric_below_level_2`) | `rpc_put_metric_pay_linkage`, `fn_assert_pay_linked_levels` |
+| Burnout recommendation (A4) | Only 'לבדוק את תנאי העבודה בצוות' ('טיוטה'), only when the risk rises; a guard refuses texts suggesting more feedback / documentation / an improvement plan / PIP | `fn_burnout_recommendation`, `fn_recommendation_allowed`, `rpc_get_burnout_trend` |
+| Social events (A5) | 'ללא הערכה מקצועית'; no attendance table, no Golden Spoons | `social_event`, `rpc_create_social_event` (vp_hr), `rpc_list_social_events` |
+| Report layers (B1, B3) + measuring body (B2) | (a) investment & activity, (b) adoption & usage under 'אימוץ' (redemption rate — defined in r2, J-53), (c) outcomes, plus governance; each with its verification level; missing input → 'חסר: <field>'; measuring body CHR-ETRS; causal note (approved in r2, J-65); ILS only as a total | `fn_board_layers`, `fn_board_layer_*`, `fn_board_causal_note`, input RPCs `rpc_put_wellbeing_spend` / `_safety_incidents` / `_key_role_turnover` / `_company_governance` / `_payroll_population`, `rpc_add_org_event`, `rpc_put_questionnaire_items` |
+| Board report keys | added `verification_levels`, `layers`, `measuring_body`, `causal_note`, `verification_dossiers`, `sources`, `sources_note` (A-10 binding text); removed `assurance_tier`, `sources_note_he` | `rpc_build_board_report`, OpenAPI |
+
+### Judgment calls of the approved plan (J-40 – J-54; J-43 is now a decision)
+
+| # | Call | Status |
+|---|------|--------|
+| J-40 | The small-cell threshold for leaver data reuses the existing Shadow Balance threshold `shadow_balance` = 10 | **Confirmed by Karin 31.10** (10 per cell) |
+| J-41 | ~~Small cells rolled up team → company month → multi-month company row~~ | **Superseded by Karin 31.10**: cells are batches of 10 new leavers; a team row is shown only inside a batch under the complementary rule; leavers not yet in a batch show no amount (company_total with the waiting note) |
+| J-42 | Remediations and reversals are summed only inside the same cells, never as rows of their own | **Built** as `adjustment_batch` rows inside a batch (≥ 10 distinct transfers, Karin 31.10) |
+| J-43 | Memo line changes only per batch of ≥ 10 new leavers | **הוכרע — Karin 31.10** (see the decisions table) |
+| J-44 | `p_transfer_event_id` removed (400 if passed); the oldest open transfer is used; one 422 for "none" / "above balance". Probing risk reduced, not removed (see G-3) | **Superseded r2** — no 422 at all; G-3 closed |
+| J-45 | The leaver list and the ILS estimate / liability are strictly cfo / vp_hr; service calls get 403 too | Built |
+| J-46 | Verification level computed only from evidence; manual put → 422; industry comparison stored, never counted | Built |
+| J-47 | A pay-linked metric below level 2 blocks publishing the report (422) rather than refusing the flag (a level can drop later) | Built |
+| J-48 | A company-side timing / wording change caps the affected metrics at level 1 for the month of the change | Built (month granularity) |
+| J-49 | Social events keep no attendance at all | Built |
+| J-50 | 'טיוטה' is returned as `text_status` next to every new fixed Hebrew text | Built |
+| J-51 | The B4 EBITDA text 'מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת' is added next to the existing locked definition ('מדד ניהולי חלופי, לא רווח חשבונאי'), not replacing it | Built (`chr_real_ebitda.note_he` + `text_status` 'טיוטה', `fn_real_ebitda_note_he`) |
+| J-52 | Forbidden burnout phrases matched in Hebrew and English (משוב נוסף, תיעוד, תוכנית שיפור, PIP); the Hebrew forms need Karin's confirmation | **Closed r2** — approved 31.10 + שימוע, שיחת בירור, התראה בכתב, מעקב ביצועים |
+| J-53 | Redemption-rate denominator, the "key role" definition and the board "absences" definition stay 'לא הוגדר' until Karin defines them | **Closed r2** — defined by Karin 31.10 (see *Resolved in v1.6.19-r2*; gaps J-77, J-79) |
+| J-54 | Cancelled absences excluded from all absence counts (bug fix) | **Approved 31.10**, built |
+
+### New judgment calls made during the v1.6.19 build (J-55+) — for Karin / Chief of Drive review
+
+| # | Call |
+|---|------|
+| J-55 | `questionnaire_identified` is NULL (not false) for metrics that are not measured by a questionnaire; their level ignores that criterion |
+| J-56 | Voluntary key-role turnover is an aggregate monthly input (exits + key-role headcount), shown only with ≥ 5 key roles — no per-person "voluntary" flag or role catalogue exists |
+| J-57 | On the board, ILS appears only as a total (the EverStore spend estimate); the per-spoon value is never shown next to it |
+| J-58 | The 3-month spoon-cost estimate counts only purchases with a positive Golden Spoons price, dated by the company-local purchase day |
+| J-59 | Legacy (pre-1.6.18) unattributed remediations have no transfer; they ride along with the next batch of any kind |
+| J-60 | "3-month moving average" window = the current company-local month + the 2 previous months, up to the report / request day |
+| J-61 | The questionnaire catalogue is global, so a wording / timing change logged by any company counts for the questionnaire in that month (only the instrument owner CHR-ETRS changes locked ones) |
+| J-62 | A layer's verification level = the lowest level of its metrics in the month |
+| J-63 | Adjustments only join a batch; there is no adjustment-only snapshot unless the pending adjustments touch ≥ 10 distinct transfers |
+| J-64 | In-place upgrade from v1.6.18: a company with ≥ 10 un-batched leavers gets its first batch at upgrade, but held-back adjustments (< 10 transfers) are not in it — so the published memo can be **higher** than the v1.6.18 internal memo (test upgrade: 50,780 published vs 30,780 internal). See G-4 |
+| J-65 | The causal-note wording ('הדוח מציג השקעה, אימוץ ותוצאות זה לצד זה; הוא אינו קובע שההשקעה גרמה לתוצאות.') is mine, marked 'טיוטה' — for Karin to replace — **closed r2: approved 31.10, no 'טיוטה'** |
+| J-66 | A dossier whose questionnaire has its first wording version in the period reports "changed vs previous period" |
+| J-67 | A company-side wording change is logged when name / item_count / scale range of an existing unlocked questionnaire changes; a frequency change is logged as a timing change; service (CHR-ETRS) edits are not logged |
+| J-68 | `rpc_get_verification_dossier` always builds live from current inputs and adds `last_kept_at` (the WORM copy kept with the report stays the record) |
+| J-70 | The dossier's non-reporting text ('מי שלא דיווח לא נספר: אין השלמה או הערכה של נתונים חסרים.') is my wording of the existing rule, marked 'טיוטה' — for Karin — **closed r2: replaced by Karin's exact text, no 'טיוטה'** |
+| J-69 | Test file names: the new suite is `tests/test_board_v1_6_19.sql`; `tests/test_agents_v1_6_16.sql` keeps its name (content v1.6.19); the migration is renamed `migrations/migrate_v1_4_to_v1_6_19.sql` |
+
+### Gaps and conflicts found in the v1.6.19 build (not fixed silently)
+
+| # | Gap |
+|---|-----|
+| G-2 | Failed attempts (403 / 422) cannot be audited: the audit row is rolled back with the failed call (PostgREST runs each call in one transaction) |
+| G-3 | ~~Remediation 422s still leak a little (a caller can learn that a team has / lacks open balance above an amount by trying); reduced by one shared code, not removed~~ — **closed r2**: no 422; one identical status-only response |
+| G-4 | Upgrade memo jump (J-64): the first published memo after upgrade can exceed the pre-upgrade value until ≥ 10 transfers of adjustments accumulate |
+| G-5 | `fn_avg_redeemed_spoon_cost_ils` (v1.6.16) is now unused — kept, not deleted |
+
 ## Resolved in v1.6.18 (Karin 31.10 via Chief of Drive — fix round)
 
 | # | Resolution | Where encoded |
 |---|-----------|---------------|
-| A-12 Reversal amount | A reversed offboarding returns to the team the **moved debt minus the documented remediations already made against that transfer**, never the full amount. Remediations are now **attributed per transfer**: each `rpc_record_remediation` is linked to exactly ONE `leaver_transfer` of its own team (named by the new optional `p_transfer_event_id`, else the team's oldest transfer with an open balance and a month ≤ the remediation month) and may not exceed that transfer's open balance (422 `remediation_exceeds_transfer`; none open → 422 `no_open_leaver_transfer`; wrong team / later month / unknown → 400 `invalid_remediation`) — so a remediation can never reduce another leaver's share. Open balance = moved − attributed remediations − reversal. Tested: debt 100 → remediation 30 → reversal → the team gets back **70**, that transfer's "יצא עם העוזבים" balance is **0** (30 + 70 = 100, no double count), the total memo line drops by **70**, not 100; the other leavers' balances do not move | `happiness_debt_remediation_allocation` (WORM, no person column, closed), `fn_transfer_remediated`, `fn_transfer_open_balance`, `fn_remediation_target`, `rpc_record_remediation(…, p_transfer_event_id)`, `fn_reverse_leaver_transfer`, `rpc_list_leaver_transfers`, CHECK `happiness_debt_events_amount_check`, v1.6.18 back-fill block; agents §9 / §9c |
+| A-12 Reversal amount | A reversed offboarding returns to the team the **moved debt minus the documented remediations already made against that transfer**, never the full amount. Remediations are now **attributed per transfer**: each `rpc_record_remediation` is linked to exactly ONE `leaver_transfer` of its own team (named by the new optional `p_transfer_event_id`, else the team's oldest transfer with an open balance and a month ≤ the remediation month) and may not exceed that transfer's open balance (422 `remediation_exceeds_transfer`; none open → 422 `no_open_leaver_transfer`; wrong team / later month / unknown → 400 `invalid_remediation`) — so a remediation can never reduce another leaver's share. Open balance = moved − attributed remediations − reversal. Tested: debt 100 → remediation 30 → reversal → the team gets back **70**, that transfer's "יצא עם העוזבים" balance is **0** (30 + 70 = 100, no double count), the total memo line drops by **70**, not 100; the other leavers' balances do not move. **Updated v1.6.19-r2 (G-3):** a remediation is no longer limited to one transfer — it is allocated FIFO (oldest first) across the team's open transfers, any leftover is an unattributed team remediation, no 422 for the amount; the reversal returns the transfer minus the allocations to that transfer | `happiness_debt_remediation_allocation` (WORM, no person column, closed), `fn_transfer_remediated`, `fn_transfer_open_balance`, `fn_remediation_target`, `rpc_record_remediation(…, p_transfer_event_id)`, `fn_reverse_leaver_transfer`, `rpc_list_leaver_transfers`, CHECK `happiness_debt_events_amount_check`, v1.6.18 back-fill block; agents §9 / §9c |
 | A-13 Time benefit scheduled after exit | A time benefit bought before leaving but scheduled **after the end of employment** is **cancelled**: its `approved_absence_entry` → `schedule_status 'cancelled'`, `cancel_reason 'employment_ended'`, and the Golden Spoons it cost are **refunded** to the employee, who is then in the 30-day window where only products can be bought (J-15). Runs when the end of employment is recorded or moved (trigger on `users.employment_ended_at`); idempotent (cancelled rows skipped, one WORM refund per absence). A benefit on or before the end day is unaffected. **Nothing is moved earlier automatically**; moving it earlier is only the employee's own regular request (`rpc_request_absence_reschedule`), allowed before the end and refused after it (403). The manager sees the plain HR status only (no purchase, item, price or Golden Spoons field — נעילת הפרגוד) and cannot coordinate a cancelled entry or an ex-employee's entry | `approved_absence_entry` (+ `cancelled_at`, `cancel_reason`, v1.6.18 upgrade block), `time_benefit_absence_link` (closed), `time_benefit_refund` (WORM, closed), `rpc_everstore_purchase` (writes the link), `fn_employment_end_local_date`, `fn_cancel_time_benefits_after_exit`, `trg_users_time_benefit_cancel`, `rpc_request_absence_reschedule`, `rpc_coordinate_approved_absence`; agents §4c |
 | A-14 Questionnaire amounts per company | All three questionnaire amounts are adjustable per company — monthly `golden_spoons_per_questionnaire` (default 10, PCQ-12 + Cantril), short `golden_spoons_per_short_questionnaire` (default 2), quarterly `golden_spoons_per_quarterly_questionnaire` (default 10, TPS-12 + IHS). (1) One value for every employee of the company — the amount is a function of (definition, company) only, never of answers, team or role (tested across two teams and two org roles, lowest vs. highest answers). (2) **1–20** per questionnaire, else **422 `questionnaire_reward_out_of_range`**. (3) **vp_hr only** — cfo's permission removed, including on the quarterly value (cfo → 403 `insufficient_privilege`, also for a reset); every change goes to the WORM `access_audit_log` (value before / after, effective_from) and to the WORM `questionnaire_reward_history` (effective_from = now); it applies from now on only — each submission snapshots `reward_golden_spoons`, `reward_setting_key` and `reward_effective_from`, so earlier submissions provably keep what they earned. (4) Employees see the current value before filling out: computed field `golden_spoons_reward` on `/questionnaire_definition` (OpenAPI) | `agent_settings` seed (unlocked), `fn_is_questionnaire_reward_key`, `fn_assert_questionnaire_reward_change`, `rpc_put_agent_setting`, `questionnaire_reward_history`, `fn_questionnaire_reward_effective_from`, `rpc_submit_questionnaire`, `golden_spoons_reward(questionnaire_definition)`; agents §1 / §3b |
 
@@ -354,7 +498,7 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 
 | # | Call |
 |---|------|
-| J-28 | A-12 attribution design: remediations were **company / team-level only** in v1.6.17, so per-transfer attribution is new — a WORM allocation table (remediation event → leaver_transfer, amount). A new remediation goes to **one** transfer, never split; a remediation larger than the target's open balance is refused (422) — the caller records two remediations instead. Without `p_transfer_event_id` the team's **oldest** open transfer is used (FIFO) |
+| J-28 | A-12 attribution design: remediations were **company / team-level only** in v1.6.17, so per-transfer attribution is new — a WORM allocation table (remediation event → leaver_transfer, amount). A new remediation goes to **one** transfer, never split (**superseded r2: FIFO split, leftover unattributed**); a remediation larger than the target's open balance is refused (422) — the caller records two remediations instead. Without `p_transfer_event_id` the team's **oldest** open transfer is used (FIFO) |
 | J-29 | `rpc_list_leaver_transfers` exposes transfer event ids, team, month and amounts to vp_hr / cfo so they can name a transfer. No person field, but in a small team a transfer can be matched to a known leaver by team + month — management data, not an agent output to employees or the board |
 | J-30 | v1.6.17 → v1.6.18 upgrade: existing team-level remediations are back-filled oldest-transfer-first within their team (may split across transfers; never above a transfer's open balance; never to a later month). A remainder that fits no transfer stays unattributed and keeps reducing the company memo line as before (totals unchanged by the upgrade). v1.6.17 reversals that already returned a full amount are WORM and are not rewritten |
 | J-31 | A fully remediated transfer that is reversed writes a documented **0** `leaver_reversal` (CHECK relaxed for reversals only), so "once per transfer" and the audit trail still hold |
@@ -442,20 +586,18 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 
 The 8 decisions of 30.10 · Golden Spoons per participation (fixed, from settings) · separation of measurement and management · score range gate (one coefficient 12.5 in agent_settings) · CHR Real EBITDA as an alternative measure and the 4-line Shadow Balance · Happiness Debt on exit (`happiness_debt_events`, memo line) · replacement cost above baseline + "שוליים מטעים" flag · sensitivity switch for מס קיפוח · assurance tiers · the 15-question check · deprived employee: two consecutive weeks · optional EPWI inputs · 5th signal at team level (Karin 30.10) · report not published without a reconciliation table · CHR Coins conversion blocked in v1.
 
-## Still open after v1.6.18 (להשלמה — not invented)
+## Still open after v1.6.19 (להשלמה — not invented)
 
 | # | Item |
 |---|------|
 | A-1 | `daily_summary_time` — לא הוגדר (no daily summary until set) — להשלמה |
 | A-2 | `company_timezone` — לא הוגדר (falls back to `companies.timezone`) — להשלמה if a company needs another zone |
-| A-3 | `liability_method` and `spoon_cost_ils` — לא הוגדר (ILS estimate hidden) — להשלמה |
 | A-4 | `turnover_baseline_junior / _mid / _senior` — לא הוגדר (unit assumed: leavers per company month; cost above baseline hidden) — להשלמה |
 | A-6 | `golden_spoons_per_checkin` (midday check-in participation) — לא הוגדר, pays 0 — להשלמה |
 | A-7 | BCR middle band (6–9 yes) label — לא הוגדר in v3 — להשלמה |
 | A-9 | ADR numbers for the v3 §6.5 list above — להשלמה |
-| A-10 | DOI links and the r = 0.37 correlation in the board-report appendix are unverified — check before the board appendix — להשלמה |
 
-_(A-5, A-8 and A-11 were closed in v1.6.17 — see *Resolved in v1.6.17*; A-12, A-13 and A-14 were closed in v1.6.18 — see *Resolved in v1.6.18*.)_
+_(A-5, A-8 and A-11 were closed in v1.6.17 — see *Resolved in v1.6.17*; A-12, A-13 and A-14 were closed in v1.6.18 — see *Resolved in v1.6.18*; A-3 and A-10 were closed in v1.6.19 — see *Resolved in v1.6.19*; A-16 and G-3 were closed in v1.6.19-r2 — see *Resolved in v1.6.19-r2*.)_
 
 ### Still open after v1.6.13 (carried over)
 
@@ -527,4 +669,4 @@ _(A-5, A-8 and A-11 were closed in v1.6.17 — see *Resolved in v1.6.17*; A-12, 
 | Q-K2 | ~~Role-to-tier mapping~~ | **Resolved (Karin, Q8)** — table below, for Karin's review |
 | Q-K3 | Prototype border `--line #E8EBF1` matches the page background (O-27) | No change made |
 
-*End of ADR_GAPS.md — Specs to Code MVP pack v1.6.16-mvp*
+*End of ADR_GAPS.md — Specs to Code MVP pack v1.6.19-mvp*
