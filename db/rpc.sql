@@ -8,12 +8,21 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- v1.6.19-r2 (Karin 31.10, after PR #8):
+--   * G-3 / A-12: rpc_record_remediation never returns 422 for an amount; it is split FIFO (oldest first) over the
+--     team's open transfers (one allocation row per transfer); any leftover is a team remediation not attributed to
+--     any transfer (J-59 path). The response is ALWAYS {status 'recorded', label_he} — no amount / balance / count.
+--     A reversal returns the transfer minus the allocations to THAT transfer.
+--   * A-16 closed: J-65 causal note approved (no 'טיוטה'); J-70 dossier text = Karin's exact text; J-52 guard adds
+--     שימוע / שיחת בירור / התראה בכתב / מעקב ביצועים; J-53 definitions: redemption rate (redeemers ÷ active
+--     employees), key roles (role names marked by vp_hr, rpc_put_key_roles / rpc_get_key_roles, audited), board
+--     absences = sickness + unplanned only (rpc_put_board_absences; time benefits / planned vacation not counted).
 -- New in 1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; full module list in the v1.6.19 section at the end):
 --   * J-43 decided: the memo line "יצא עם העוזבים" and rpc_list_leaver_transfers move only in batches of 10 NEW
 --     leavers (distinct employees); remediations / reversals only as a batch touching ≥ 10 transfers; the list is
 --     aggregate (batch / batch_team with the complementary rule / adjustment_batch / company_total), cfo / vp_hr
 --     only (strict: no service / anon), audited. Reversal output = status only. A remediation can no longer name
---     a transfer (400 transfer_selection_not_allowed); none / above balance → one 422 remediation_not_attributable.
+--     a transfer (400 transfer_selection_not_allowed).
 --   * A-3: ILS estimate = average cost of a redeemed spoon, 3-month moving average, ≥ 10 purchases (else "אין עדיין
 --     מספיק מימושים לאומדן"), cfo / vp_hr only (rpc_get_redeemed_spoon_cost_estimate; liability strict).
 --   * Verification levels 0–4 COMPUTED from evidence (rpc_put_metric_verification_evidence; manual tier → 422),
@@ -5991,82 +6000,128 @@ CREATE TRIGGER trg_users_leaver_debt_reversal
     FOR EACH ROW WHEN (OLD.employment_ended_at IS NOT NULL AND NEW.employment_ended_at IS NULL)
     EXECUTE FUNCTION fn_users_leaver_debt_reversal();
 
--- v1.6.18 (A-12): the leaver_transfer a remediation is attributed to. p_transfer given → it must be a transfer of
--- that company and team (else 400 invalid_remediation); NULL → the team's OLDEST transfer with an open balance and
--- a month ≤ the remediation month (none → 422 no_open_leaver_transfer). Locks the transfer row.
-CREATE OR REPLACE FUNCTION fn_remediation_target(p_company uuid, p_team varchar, p_month date, p_transfer uuid)
-RETURNS happiness_debt_events
+-- v1.6.19-r2 (Karin 31.10, G-3 / A-12): the single-target helper of v1.6.18 is replaced by the FIFO split below.
+DROP FUNCTION IF EXISTS fn_remediation_target(uuid, varchar, date, uuid);
+
+-- v1.6.19-r2 (A-12): FIFO plan of a remediation over the team's transfers — oldest first, each up to its open
+-- balance, only transfers of a month ≤ the remediation month. Locks those transfer rows. INTERNAL; never output.
+CREATE OR REPLACE FUNCTION fn_remediation_fifo_plan(p_company uuid, p_team varchar, p_month date, p_amount numeric)
+RETURNS TABLE (transfer_event_id uuid, amount numeric)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_t happiness_debt_events;
+  t      record;
+  v_left numeric := p_amount;
+  v_open numeric;
 BEGIN
-  IF p_transfer IS NOT NULL THEN
-    SELECT e.* INTO v_t FROM happiness_debt_events e
-     WHERE e.event_id = p_transfer AND e.event_type = 'leaver_transfer'
-       AND e.company_id = p_company AND e.group_id = p_team AND e.period_month <= p_month
-       FOR UPDATE;
-    IF NOT FOUND THEN
-      PERFORM fn_raise_bad_request('invalid_remediation');
-    END IF;
-  ELSE
-    SELECT e.* INTO v_t FROM happiness_debt_events e
-     WHERE e.event_type = 'leaver_transfer' AND e.company_id = p_company AND e.group_id = p_team
-       AND e.period_month <= p_month AND fn_transfer_open_balance(e.event_id) > 0
-     ORDER BY e.created_at, e.event_id
-     LIMIT 1
-       FOR UPDATE;
-    IF NOT FOUND THEN
-      PERFORM fn_raise_unprocessable('remediation_not_attributable');
-    END IF;
-  END IF;
-  RETURN v_t;
+  FOR t IN SELECT e.event_id FROM happiness_debt_events e
+            WHERE e.event_type = 'leaver_transfer' AND e.company_id = p_company AND e.group_id = p_team
+              AND e.period_month <= p_month
+            ORDER BY e.created_at, e.event_id
+              FOR UPDATE LOOP
+    EXIT WHEN v_left <= 0;
+    v_open := fn_transfer_open_balance(t.event_id);
+    CONTINUE WHEN v_open <= 0;
+    transfer_event_id := t.event_id;
+    amount := least(v_open, v_left);
+    v_left := v_left - amount;
+    RETURN NEXT;
+  END LOOP;
 END;
 $$;
-REVOKE ALL ON FUNCTION fn_remediation_target(uuid, varchar, date, uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_remediation_fifo_plan(uuid, varchar, date, numeric) FROM PUBLIC;
 
--- Record a documented fix (vp_hr / cfo): remediation_records row + happiness_debt_events 'remediation'.
--- v1.6.18 (A-12): attributed to exactly ONE leaver_transfer of the team (fn_remediation_target) and never above
--- its open balance (else 422 remediation_exceeds_transfer) — so it can never reduce another leaver's share.
-DROP FUNCTION IF EXISTS rpc_record_remediation(uuid, varchar, date, text, numeric);
-CREATE OR REPLACE FUNCTION rpc_record_remediation(p_company_id uuid, p_team_id varchar, p_remediated_on date,
-                                                  p_what_fixed text, p_reduction_amount numeric,
-                                                  p_transfer_event_id uuid DEFAULT NULL)
+-- v1.6.19-r2: validate a remediation request; every refusal depends on the input only (never on a balance).
+CREATE OR REPLACE FUNCTION fn_assert_remediation_input(p_team varchar, p_on date, p_what text, p_amount numeric,
+                                                       p_transfer uuid)
+RETURNS void
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+BEGIN
+  IF p_team IS NULL OR p_on IS NULL OR p_what IS NULL OR length(btrim(p_what)) = 0
+     OR p_amount IS NULL OR p_amount <= 0 OR p_amount <> round(p_amount, 2) THEN
+    PERFORM fn_raise_bad_request('invalid_remediation');
+  END IF;
+  -- the aggregate list shows no transfer, so none can be chosen
+  IF p_transfer IS NOT NULL THEN
+    PERFORM fn_raise_bad_request('transfer_selection_not_allowed');
+  END IF;
+END;
+$$;
+
+-- v1.6.19-r2: write one 'remediation' event of a remediation record (NULL when the amount is 0).
+CREATE OR REPLACE FUNCTION fn_insert_remediation_event(p_company uuid, p_team varchar, p_month date, p_amount numeric,
+                                                       p_remediation uuid)
 RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_id  uuid;
-  v_ev  uuid;
-  v_t   happiness_debt_events;
+  v_ev uuid;
+BEGIN
+  IF p_amount IS NULL OR p_amount <= 0 THEN
+    RETURN NULL;
+  END IF;
+  INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, remediation_id)
+  VALUES (p_company, p_team, p_month, 'remediation', p_amount, p_remediation)
+  RETURNING event_id INTO v_ev;
+  RETURN v_ev;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_insert_remediation_event(uuid, varchar, date, numeric, uuid) FROM PUBLIC;
+
+-- The one response of rpc_record_remediation (v1.6.19-r2, G-3): identical for every accepted call — no id,
+-- amount, balance or count, so nothing about any single transfer can be learned from it.
+CREATE OR REPLACE FUNCTION fn_remediation_response()
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT jsonb_build_object('status', 'recorded', 'label_he', 'יצא עם העוזבים') $$;
+
+-- Record a documented fix (vp_hr / cfo): one remediation_records row; the amount is split FIFO over the team's
+-- transfers (oldest first, each up to its open balance — happiness_debt_remediation_allocation, several rows
+-- allowed) in ONE attributed 'remediation' event; any leftover is a SECOND 'remediation' event of the same record
+-- with no allocation = a team remediation not attributed to any transfer (the J-59 path). v1.6.19-r2 (Karin 31.10,
+-- G-3): never a 422 for the amount; the response is always fn_remediation_response().
+DROP FUNCTION IF EXISTS rpc_record_remediation(uuid, varchar, date, text, numeric);
+DROP FUNCTION IF EXISTS rpc_record_remediation(uuid, varchar, date, text, numeric, uuid);
+CREATE OR REPLACE FUNCTION rpc_record_remediation(p_company_id uuid, p_team_id varchar, p_remediated_on date,
+                                                  p_what_fixed text, p_reduction_amount numeric,
+                                                  p_transfer_event_id uuid DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_id    uuid;
+  v_ev    uuid;
+  v_month date;
+  v_alloc numeric;
+  v_plan  jsonb;
 BEGIN
   PERFORM fn_assert_finance_viewer(p_company_id);
-  IF p_team_id IS NULL OR p_remediated_on IS NULL OR p_what_fixed IS NULL OR length(btrim(p_what_fixed)) = 0
-     OR p_reduction_amount IS NULL OR p_reduction_amount <= 0 OR p_reduction_amount <> round(p_reduction_amount, 2) THEN
-    PERFORM fn_raise_bad_request('invalid_remediation');
-  END IF;
-  -- v1.6.19: the aggregate list shows no transfer, so none can be chosen (400); the oldest open transfer of the
-  -- team is used, and "none" / "above its balance" give the SAME 422 (J-44).
-  IF p_transfer_event_id IS NOT NULL THEN
-    PERFORM fn_raise_bad_request('transfer_selection_not_allowed');
-  END IF;
-  v_t := fn_remediation_target(p_company_id, p_team_id, fn_month_of(p_remediated_on), NULL);
-  IF p_reduction_amount > fn_transfer_open_balance(v_t.event_id) THEN
-    PERFORM fn_raise_unprocessable('remediation_not_attributable');
-  END IF;
+  PERFORM fn_assert_remediation_input(p_team_id, p_remediated_on, p_what_fixed, p_reduction_amount, p_transfer_event_id);
+  v_month := fn_month_of(p_remediated_on);
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('transfer_event_id', f.transfer_event_id, 'amount', f.amount)), '[]'::jsonb),
+         COALESCE(sum(f.amount), 0)
+    INTO v_plan, v_alloc
+    FROM fn_remediation_fifo_plan(p_company_id, p_team_id, v_month, p_reduction_amount) f;
   INSERT INTO remediation_records (company_id, group_id, remediated_on, what_fixed, approved_by, reduction_amount)
   VALUES (p_company_id, p_team_id, p_remediated_on, btrim(p_what_fixed), auth.uid(), p_reduction_amount)
   RETURNING remediation_id INTO v_id;
-  INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, remediation_id)
-  VALUES (p_company_id, p_team_id, fn_month_of(p_remediated_on), 'remediation', p_reduction_amount, v_id)
-  RETURNING event_id INTO v_ev;
-  INSERT INTO happiness_debt_remediation_allocation (remediation_event_id, transfer_event_id, amount)
-  VALUES (v_ev, v_t.event_id, p_reduction_amount);
-  RETURN v_id;
+  -- leftover first, so that a batch taken by the allocation trigger already sees it (J-59: it rides with any batch)
+  PERFORM fn_insert_remediation_event(p_company_id, p_team_id, v_month, p_reduction_amount - v_alloc, v_id);
+  v_ev := fn_insert_remediation_event(p_company_id, p_team_id, v_month, v_alloc, v_id);
+  IF v_ev IS NOT NULL THEN
+    INSERT INTO happiness_debt_remediation_allocation (remediation_event_id, transfer_event_id, amount)
+    SELECT v_ev, p.transfer_event_id, p.amount FROM jsonb_to_recordset(v_plan) AS p(transfer_event_id uuid, amount numeric);
+  END IF;
+  RETURN fn_remediation_response();
 END;
 $$;
 REVOKE ALL ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric, uuid) FROM PUBLIC;
@@ -6537,7 +6592,8 @@ AS $$
   SELECT COALESCE((SELECT l.user_id::text FROM happiness_debt_leaver_link l WHERE l.event_id = p_transfer), p_transfer::text)
 $$;
 
--- The transfer an adjustment (remediation / reversal) belongs to; NULL for an unattributed (pre-1.6.18) remediation.
+-- A transfer an adjustment (remediation / reversal) belongs to (for a FIFO-split remediation: one of them); NULL for
+-- an unattributed remediation (pre-1.6.18, or the v1.6.19-r2 leftover above every open balance).
 CREATE OR REPLACE FUNCTION fn_adjustment_transfer(p_event uuid)
 RETURNS uuid
 LANGUAGE sql
@@ -6550,6 +6606,27 @@ AS $$
                     WHERE a.remediation_event_id = e.event_id))
     FROM happiness_debt_events e WHERE e.event_id = p_event
 $$;
+
+-- v1.6.19-r2: number of distinct transfers touched by the pending (not yet batched) reversals and attributed
+-- remediations — a remediation split FIFO counts every transfer it was allocated to. INTERNAL; never output.
+CREATE OR REPLACE FUNCTION fn_pending_adjusted_transfers(p_company uuid)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(DISTINCT x.t)::int FROM (
+    SELECT e.reverses_event_id AS t FROM happiness_debt_events e
+     WHERE e.company_id = p_company AND e.event_type = 'leaver_reversal'
+       AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id)
+    UNION ALL
+    SELECT a.transfer_event_id FROM happiness_debt_events e
+      JOIN happiness_debt_remediation_allocation a ON a.remediation_event_id = e.event_id
+     WHERE e.company_id = p_company AND e.event_type = 'remediation'
+       AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id)) x
+$$;
+REVOKE ALL ON FUNCTION fn_pending_adjusted_transfers(uuid) FROM PUBLIC;
 
 -- Take the next memo snapshot of a company when ≥ 10 new leavers are pending. Pending remediations / reversals
 -- are included only when they touch ≥ 10 distinct transfers (Karin 31.10); unattributed pre-1.6.18 remediations
@@ -6571,9 +6648,7 @@ BEGIN
   IF v_new < fn_leaver_batch_min() THEN
     RETURN NULL;
   END IF;
-  SELECT count(DISTINCT fn_adjustment_transfer(e.event_id)) INTO v_adj FROM happiness_debt_events e
-   WHERE e.company_id = p_company AND e.event_type IN ('remediation', 'leaver_reversal')
-     AND NOT EXISTS (SELECT 1 FROM leaver_memo_inclusion i WHERE i.event_id = e.event_id);
+  v_adj := fn_pending_adjusted_transfers(p_company);
   v_take_adj := v_adj >= fn_leaver_batch_min();
   SELECT COALESCE(max(s.batch_no), 0) + 1 INTO v_batch FROM leaver_memo_snapshot s WHERE s.company_id = p_company;
   -- cumulative totals after this snapshot = already included + what this snapshot includes
@@ -7126,6 +7201,13 @@ AS $$
     FROM k
 $$;
 
+-- How non-reporting is handled, shown in every questionnaire dossier (J-70, Karin's exact text 31.10; approved).
+CREATE OR REPLACE FUNCTION fn_dossier_non_reporting_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'מי שלא דיווח לא נספר: אין השלמה או הערכה של נתונים חסרים. הטווח שמוצג ליד הציון מראה כמה הוא יכול להשתנות בגללם.'::text $$;
+
 -- The full 'תיק אימות' of one metric / month. Questionnaire sections only for questionnaire metrics.
 CREATE OR REPLACE FUNCTION fn_build_verification_dossier(p_company uuid, p_metric text, p_month date)
 RETURNS jsonb
@@ -7154,8 +7236,7 @@ BEGIN
     'population', fn_dossier_population(p_company, p_month),
     'timing', fn_dossier_timing(p_company, v_code, p_month),
     'reporting', fn_company_period_score(p_company, v_code, w.w_from, w.w_to)
-                 || jsonb_build_object('non_reporting_handling_he', 'מי שלא דיווח לא נספר: אין השלמה או הערכה של נתונים חסרים.',
-                                       'text_status', fn_text_status_draft()),
+                 || jsonb_build_object('non_reporting_handling_he', fn_dossier_non_reporting_he()),
     'independence', jsonb_build_object('measuring_body', fn_measuring_body(), 'label_he', 'גוף מודד',
                       'company_can_change_timing_or_wording', NOT COALESCE((SELECT d.is_locked FROM questionnaire_definition d WHERE d.code = v_code), false),
                       'company_changes_in_period', fn_measurement_changes(p_company, v_code, p_month),
@@ -7493,14 +7574,24 @@ LANGUAGE sql
 IMMUTABLE
 AS $$ SELECT 'לבדוק את תנאי העבודה בצוות'::text $$;
 
--- False when a recommendation text contains a forbidden suggestion (more feedback / documentation / improvement
--- plan / PIP — Hebrew and English forms, J-52).
+-- The forbidden suggestions of the burnout agent (J-52, approved by Karin 31.10): more feedback, documentation,
+-- improvement plan / PIP, and (v1.6.19-r2) hearing, clarification talk, written warning, performance monitoring.
+CREATE OR REPLACE FUNCTION fn_recommendation_forbidden_pattern()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT ('(משוב|פידבק|תיעוד|לתעד|תוכנית שיפור|תכנית שיפור|תוכנית לשיפור|\mPIP\M|feedback|documentation|document|improvement plan|performance improvement'
+         || '|שימוע|שיחת בירור|שיחות בירור|התראה בכתב|התראות בכתב|מעקב ביצועים|מעקב אחר ביצועים)')::text
+$$;
+
+-- False when a recommendation text contains a forbidden suggestion (fn_recommendation_forbidden_pattern; J-52).
 CREATE OR REPLACE FUNCTION fn_recommendation_allowed(p_text text)
 RETURNS boolean
 LANGUAGE sql
 IMMUTABLE
 AS $$
-  SELECT p_text IS NULL OR p_text !~* '(משוב|פידבק|תיעוד|לתעד|תוכנית שיפור|תכנית שיפור|תוכנית לשיפור|\mPIP\M|feedback|documentation|document|improvement plan|performance improvement)'
+  SELECT p_text IS NULL OR p_text !~* fn_recommendation_forbidden_pattern()
 $$;
 
 -- Recommendation block of a burnout trend: only when the risk rises; refuses a forbidden text (500 → never shipped).
@@ -7654,7 +7745,7 @@ END;
 $$;
 
 -- Layer (b) adoption & usage, shown under 'אימוץ' (never 'הצלחה'): by category buyers and share of redeemed
--- spoons (≥ 5 buyers, complement-safe; redemption RATE לא הוגדר — no denominator decided), coverage by unit
+-- spoons (≥ 5 buyers, complement-safe), redemption rate (J-53: redeemers ÷ active employees), coverage by unit
 -- (מדווחים בפועל ÷ members, ≥ 5 reporters, complement-safe) and the company aggregate.
 CREATE OR REPLACE FUNCTION fn_board_layer_adoption(p_company uuid, p_month date)
 RETURNS jsonb
@@ -7699,9 +7790,10 @@ BEGIN
   RETURN jsonb_build_object(
     'label_he', 'אימוץ',
     'verification_level', fn_layer_level_json(p_company, ARRAY['redemption_by_category', 'coverage_by_unit'], p_month),
-    'redemption_rate_display_he', 'לא הוגדר',
+    'redemption_rate', fn_redemption_rate_json(p_company, p_month, NULL),
     'by_category', (SELECT COALESCE(jsonb_agg(jsonb_build_object('category', r->>'key', 'buyers_count', (r->>'n')::int,
-                                     'share_of_redeemed_pct', CASE WHEN v_spoons > 0 THEN round((r->>'spoons')::numeric * 100 / v_spoons, 1) END)
+                                     'share_of_redeemed_pct', CASE WHEN v_spoons > 0 THEN round((r->>'spoons')::numeric * 100 / v_spoons, 1) END,
+                                     'redemption_rate', fn_redemption_rate_json(p_company, p_month, r->>'key'))
                                      ORDER BY r->>'key'), '[]'::jsonb)
                       FROM jsonb_array_elements(v_cat) r WHERE r->>'key' = ANY (v_cat_keys)),
     'categories_note_he', CASE WHEN cardinality(v_cat_keys) < jsonb_array_length(v_cat) THEN 'קטגוריות עם פחות מ-5 קונים אוחדו ואינן מוצגות בנפרד' END,
@@ -7718,7 +7810,228 @@ BEGIN
 END;
 $$;
 
--- Absences of a company month (approved absence entries + early leave), cancelled entries excluded (J-54).
+-- ---------- J-53 definitions (Karin 31.10, v1.6.19-r2) ----------
+
+-- Active employee of a company in a month (has an employee profile, hired before the month ends, not ended before
+-- it starts) — the population of the redemption rate (J-53). INTERNAL.
+CREATE OR REPLACE FUNCTION fn_active_in_month(p_company uuid, p_user uuid, p_month date)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM users u
+                  WHERE u.user_id = p_user AND u.company_id = p_company AND u.has_employee_profile
+                    AND (u.hire_date IS NULL OR u.hire_date < fn_month_shift(p_month, 1))
+                    AND (u.employment_ended_at IS NULL OR fn_agent_local_ts(p_company, u.employment_ended_at)::date >= p_month))
+$$;
+
+-- Number of active employees who redeemed at least one EverStore item in the company-local month (all categories
+-- when p_category is NULL). INTERNAL; only the aggregate leaves this function.
+CREATE OR REPLACE FUNCTION fn_month_redeemers(p_company uuid, p_month date, p_category text)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(DISTINCT sp.user_id)::int FROM shop_purchase sp JOIN users u ON u.user_id = sp.user_id
+   WHERE u.company_id = p_company AND sp.price_golden_spoons > 0
+     AND (p_category IS NULL OR sp.category::text = p_category)
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date >= p_month
+     AND fn_agent_local_ts(p_company, sp.purchased_at)::date < fn_month_shift(p_month, 1)
+     AND fn_active_in_month(p_company, sp.user_id, p_month)
+$$;
+
+-- Karin's definition of the redemption rate (J-53), in my Hebrew wording (J-74 → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_redemption_rate_definition_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'שיעור מימוש = עובדים שמימשו לפחות פריט אחד בתקופה ÷ עובדים פעילים בתקופה'::text $$;
+
+-- Redemption rate of a month (J-53): redeemers ÷ active employees; shown only with ≥ small_category_min_buyers
+-- redeemers (5) and ≥ 5 active employees, else a display text.
+CREATE OR REPLACE FUNCTION fn_redemption_rate_json(p_company uuid, p_month date, p_category text)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_red int := fn_month_redeemers(p_company, p_month, p_category);
+  v_act int := fn_team_month_members(p_company, NULL, p_month);
+  v_def jsonb := jsonb_build_object('definition_he', fn_redemption_rate_definition_he(), 'text_status', fn_text_status_draft());
+BEGIN
+  IF v_red < fn_agent_setting_num(p_company, 'small_category_min_buyers')::int OR v_act < fn_privacy_min_n('regular') THEN
+    RETURN v_def || jsonb_build_object('display_he', 'אין מספיק מממשים להצגה');
+  END IF;
+  RETURN v_def || jsonb_build_object('redeemers_count', v_red, 'active_employees_count', v_act,
+                                     'rate', round(v_red::numeric / v_act, 4));
+END;
+$$;
+
+-- An active vp_hr of the company is the caller (else 403 insufficient_privilege; service calls refused too).
+CREATE OR REPLACE FUNCTION fn_assert_vp_hr(p_company uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR NOT EXISTS (SELECT 1 FROM users u
+                                        WHERE u.user_id = auth.uid() AND u.company_id = p_company
+                                          AND u.employment_ended_at IS NULL AND u.app_role = 'vp_hr') THEN
+    PERFORM fn_raise_business('insufficient_privilege');
+  END IF;
+END;
+$$;
+
+-- Clean list of key-role names: trimmed, distinct, 1–100 names of 1–80 characters; a name that looks like a person
+-- identifier (uuid / e-mail / digits only) is refused — key roles are roles, never people (J-53). 400 invalid_key_roles.
+CREATE OR REPLACE FUNCTION fn_clean_key_roles(p_names text[])
+RETURNS text[]
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v text[];
+BEGIN
+  SELECT array_agg(DISTINCT btrim(n) ORDER BY btrim(n)) INTO v FROM unnest(COALESCE(p_names, '{}')) n WHERE n IS NOT NULL;
+  IF v IS NULL OR cardinality(v) > 100
+     OR EXISTS (SELECT 1 FROM unnest(v) n
+                 WHERE length(n) = 0 OR length(n) > 80 OR n ~ '@' OR n ~ '^[0-9 ]+$'
+                    OR n ~* '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}') THEN
+    PERFORM fn_raise_bad_request('invalid_key_roles');
+  END IF;
+  RETURN v;
+END;
+$$;
+
+-- The key roles in effect for a company (latest setting), NULL when vp_hr has not marked any.
+CREATE OR REPLACE FUNCTION fn_key_roles(p_company uuid)
+RETURNS text[]
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT s.role_names FROM company_key_role_setting s WHERE s.company_id = p_company ORDER BY s.set_at DESC, s.setting_id LIMIT 1
+$$;
+
+-- Karin's definition of a key role (J-53) + the marked role names (no people), my Hebrew wording (J-74 → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_key_role_definition_json(p_company uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object('key_role_definition_he', 'תפקיד מפתח = תפקידים (לא אנשים) שסומנו על ידי vp_hr בהגדרות החברה',
+                            'key_roles', to_jsonb(fn_key_roles(p_company)), 'text_status', fn_text_status_draft())
+$$;
+
+-- vp_hr marks the company's key roles (role names only; replaces the previous list; history kept WORM; audited).
+CREATE OR REPLACE FUNCTION rpc_put_key_roles(p_company_id uuid, p_role_names text[])
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v text[];
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  v := fn_clean_key_roles(p_role_names);
+  INSERT INTO company_key_role_setting (company_id, role_names) VALUES (p_company_id, v);
+  PERFORM fn_audit_view('key_roles_put', jsonb_build_object('company_id', p_company_id, 'key_roles', to_jsonb(v)));
+  RETURN jsonb_build_object('status', 'saved', 'key_roles', to_jsonb(v));
+END;
+$$;
+
+-- cfo / vp_hr read the company's key roles and their definition (role names only).
+CREATE OR REPLACE FUNCTION rpc_get_key_roles(p_company_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  RETURN fn_key_role_definition_json(p_company_id);
+END;
+$$;
+
+-- cfo / vp_hr enter the board absences of a month (J-53): sickness days + unplanned absence days (aggregate only).
+CREATE OR REPLACE FUNCTION rpc_put_board_absences(p_company_id uuid, p_month date, p_sickness_days numeric,
+                                                  p_unplanned_absence_days numeric)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  IF p_month IS NULL OR p_sickness_days IS NULL OR p_unplanned_absence_days IS NULL OR p_sickness_days < 0
+     OR p_unplanned_absence_days < 0 OR p_sickness_days <> round(p_sickness_days, 1)
+     OR p_unplanned_absence_days <> round(p_unplanned_absence_days, 1) THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO board_absence_input (company_id, period_month, sickness_days, unplanned_absence_days)
+  VALUES (p_company_id, fn_month_of(p_month), p_sickness_days, p_unplanned_absence_days)
+  ON CONFLICT (company_id, period_month) DO UPDATE SET sickness_days = EXCLUDED.sickness_days,
+    unplanned_absence_days = EXCLUDED.unplanned_absence_days, entered_at = clock_timestamp();
+  RETURN jsonb_build_object('period_month', fn_month_of(p_month), 'status', 'saved');
+END;
+$$;
+
+-- Karin's definition of board absences (J-53), my Hebrew wording (J-74 → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_board_absence_definition_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'היעדרות לדוח = ימי מחלה + היעדרות לא מתוכננת בלבד; חופשה מתוכננת והטבות זמן מ-EverStore אינן נספרות'::text $$;
+
+-- Board absences of a month (J-53): sickness + unplanned absence days from board_absence_input only — approved
+-- absence / refresh entries (incl. EverStore time benefits) and early leave are NOT counted. Missing → 'חסר: …';
+-- fewer than 5 active employees → not shown.
+CREATE OR REPLACE FUNCTION fn_board_absences_json(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  b   board_absence_input;
+  v_d jsonb := jsonb_build_object('definition_he', fn_board_absence_definition_he(), 'text_status', fn_text_status_draft());
+BEGIN
+  SELECT * INTO b FROM board_absence_input x WHERE x.company_id = p_company AND x.period_month = p_month;
+  IF b.company_id IS NULL THEN
+    RETURN v_d || jsonb_build_object('display_he', 'חסר: board_absence_input');
+  END IF;
+  IF fn_team_month_members(p_company, NULL, p_month) < fn_privacy_min_n('regular') THEN
+    RETURN v_d || jsonb_build_object('display_he', 'אין מספיק עובדים להצגה');
+  END IF;
+  RETURN v_d || jsonb_build_object('days', b.sickness_days + b.unplanned_absence_days,
+                                   'sickness_days', b.sickness_days, 'unplanned_absence_days', b.unplanned_absence_days);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_active_in_month(uuid, uuid, date), fn_month_redeemers(uuid, date, text),
+                       fn_redemption_rate_json(uuid, date, text), fn_assert_vp_hr(uuid), fn_key_roles(uuid),
+                       fn_key_role_definition_json(uuid), fn_board_absences_json(uuid, date) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid),
+                       rpc_put_board_absences(uuid, date, numeric, numeric) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid),
+                          rpc_put_board_absences(uuid, date, numeric, numeric) TO authenticated, service_role;
+
+-- System absence records of a company month (approved absence entries + early leave), cancelled entries excluded
+-- (J-54). v1.6.19-r2: no longer the board absences (J-53 → fn_board_absences_json); kept, unused by the report.
 CREATE OR REPLACE FUNCTION fn_company_month_absences(p_company uuid, p_month date)
 RETURNS int
 LANGUAGE sql
@@ -7757,13 +8070,13 @@ BEGIN
                                               'key_role_turnover', 'absences', 'safety_incidents'], p_month),
     'pcq12', fn_company_month_pcq(p_company, p_month),
     'ihs', v_ihs, 'tps12', v_tps,
-    'key_role_turnover', CASE
+    'key_role_turnover', fn_key_role_definition_json(p_company) || CASE
+       WHEN fn_key_roles(p_company) IS NULL THEN jsonb_build_object('display_he', 'חסר: company_key_role_setting')
        WHEN k.company_id IS NULL THEN jsonb_build_object('display_he', 'חסר: key_role_turnover_input')
        WHEN k.key_role_headcount < fn_privacy_min_n('regular') THEN jsonb_build_object('display_he', 'אין מספיק בעלי תפקידי מפתח להצגה')
        ELSE jsonb_build_object('voluntary_exits', k.voluntary_key_role_exits, 'key_role_headcount', k.key_role_headcount,
                                'rate', round(k.voluntary_key_role_exits::numeric / k.key_role_headcount, 4)) END,
-    'absences', jsonb_build_object('count', fn_company_month_absences(p_company, p_month),
-                                   'definition_he', 'הגדרת היעדרות לדוח: לא הוגדר. כרגע נספרות היעדרויות מאושרות וזמן התרעננות (ללא רשומות שבוטלו) ויציאות מוקדמות.'),
+    'absences', fn_board_absences_json(p_company, p_month),
     'safety_incidents', CASE WHEN s.company_id IS NULL THEN jsonb_build_object('display_he', 'חסר: safety_incident_monthly.incident_count')
                              ELSE jsonb_build_object('count', s.incident_count) END);
 END;
@@ -7863,14 +8176,14 @@ LANGUAGE sql
 IMMUTABLE
 AS $$ SELECT 'מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת'::text $$;
 
--- The causal-claim note of the report (Part B; Karin's text → 'טיוטה'): the report shows links, not causes.
+-- The causal-claim note of the report (Part B): the report shows links, not causes. Approved by Karin 31.10 (J-65),
+-- so it carries no 'טיוטה' marking.
 CREATE OR REPLACE FUNCTION fn_board_causal_note()
 RETURNS jsonb
 LANGUAGE sql
 IMMUTABLE
 AS $$
-  SELECT jsonb_build_object('note_he', 'הדוח מציג השקעה, אימוץ ותוצאות זה לצד זה; הוא אינו קובע שההשקעה גרמה לתוצאות.',
-                            'text_status', fn_text_status_draft())
+  SELECT jsonb_build_object('note_he', 'הדוח מציג השקעה, אימוץ ותוצאות זה לצד זה; הוא אינו קובע שההשקעה גרמה לתוצאות.')
 $$;
 
 -- The memo line "יצא עם העוזבים" for the report: published batch value (J-43), behind the shadow-balance threshold.

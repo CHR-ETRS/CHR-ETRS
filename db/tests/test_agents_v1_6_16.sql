@@ -966,7 +966,7 @@ SELECT t_assert('v3-T13: memo line through October = 50,000', fn_leaver_memo(t_u
 SELECT t_as(t_u('cfoA'));
 SET ROLE authenticated;
 SELECT t_assert('remediation: a documented fix (what, when, who approved, amount) reduces the memo line (50,000 − 20,000)',
-  rpc_record_remediation(t_u('cA'), 'REST', '2026-10-20', 'הקטנת עומס משמרות', 20000) IS NOT NULL);
+  rpc_record_remediation(t_u('cA'), 'REST', '2026-10-20', 'הקטנת עומס משמרות', 20000) = fn_remediation_response());
 SELECT t_expect_http('remediation: missing description → 400', $$SELECT rpc_record_remediation(t_u('cA'), 'REST', '2026-10-20', ' ', 1)$$, 'invalid_remediation', 400);
 RESET ROLE;
 SELECT t_assert('remediation: memo line = 30,000; remediation_records keeps who approved (cfo)',
@@ -1059,7 +1059,7 @@ SELECT t_assert('A-8 privacy: crypto-shredding an employee removes the internal 
   NOT EXISTS (SELECT 1 FROM happiness_debt_leaver_link WHERE user_id = t_u('otherD'))
   AND fn_leaver_memo(t_u('cD'), (SELECT far FROM t_a8)) = 5000);
 
--- ============ 9c. v1.6.18 A-12 (Karin 31.10) · reversal returns the transfer minus its documented remediations ============
+-- ============ 9c. A-12 / G-3 (Karin 31.10, v1.6.19-r2) · FIFO remediation, leftover unattributed, reversal per transfer ============
 -- Company E: remE (100) and peerE (50) leave TEAME, xE (40) leaves TEAMX, in that order, 2 days before the run.
 INSERT INTO employee_value_asset (user_id, company_id, annual_salary) VALUES (t_u('remE'), t_u('cE'), 100000), (t_u('peerE'), t_u('cE'), 100000), (t_u('xE'), t_u('cE'), 100000);
 UPDATE employee_value_asset SET happiness_debt_liability = 100 WHERE user_id = t_u('remE');
@@ -1074,28 +1074,58 @@ CREATE TEMP TABLE t_a12 AS
          (SELECT l.event_id FROM happiness_debt_leaver_link l WHERE l.user_id = t_u('peerE')) AS t_peer,
          (SELECT l.event_id FROM happiness_debt_leaver_link l WHERE l.user_id = t_u('xE')) AS t_x;
 GRANT SELECT ON t_a12 TO authenticated;
+-- Call rpc_record_remediation and roll it back; returns everything the caller could observe (SQLSTATE, message,
+-- detail, body) so that responses can be compared byte for byte.
+CREATE OR REPLACE FUNCTION t_rem_probe(p_team varchar, p_on date, p_amount numeric) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE v_detail text;
+BEGIN
+  RAISE EXCEPTION 'probe' USING DETAIL = rpc_record_remediation(t_u('cE'), p_team, p_on, 'ניסיון', p_amount)::text;
+EXCEPTION WHEN OTHERS THEN
+  GET STACKED DIAGNOSTICS v_detail = PG_EXCEPTION_DETAIL;
+  RETURN SQLSTATE || '|' || SQLERRM || '|' || COALESCE(v_detail, '');
+END $$;
+GRANT EXECUTE ON FUNCTION t_rem_probe(varchar, date, numeric) TO authenticated;
+-- An allocation of a transfer (sum over every remediation of it).
+CREATE OR REPLACE FUNCTION t_alloc(p_transfer uuid) RETURNS numeric LANGUAGE sql AS $$
+  SELECT COALESCE(sum(a.amount), 0) FROM happiness_debt_remediation_allocation a WHERE a.transfer_event_id = p_transfer
+$$;
+-- Unattributed remediation amount of company E (remediation events with no allocation row).
+CREATE OR REPLACE FUNCTION t_unattributed_e() RETURNS numeric LANGUAGE sql AS $$
+  SELECT COALESCE(sum(e.amount), 0) FROM happiness_debt_events e
+   WHERE e.company_id = t_u('cE') AND e.event_type = 'remediation'
+     AND NOT EXISTS (SELECT 1 FROM happiness_debt_remediation_allocation a WHERE a.remediation_event_id = e.event_id)
+$$;
 SELECT t_assert('A-12: three transfers (100 + 50 + 40) → memo line "יצא עם העוזבים" 190',
   fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 190);
 SELECT t_as(t_u('hrE'));
 SET ROLE authenticated;
-SELECT t_assert('A-12: a documented remediation of 30 for TEAME (vp_hr) is recorded',
-  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'צמצום שעות נוספות בצוות', 30) IS NOT NULL);
+INSERT INTO t_outputs SELECT 'g3_probe_' || k, to_jsonb(t_rem_probe(team, (SELECT today FROM t_a12), amt))
+  FROM (VALUES ('lt', 'TEAME', 30), ('eq', 'TEAME', 100), ('gt', 'TEAME', 120), ('gt_all', 'TEAME', 500),
+               ('no_transfer', 'NOPE', 5)) v(k, team, amt);
+INSERT INTO t_outputs SELECT 'g3_probe_before_months', to_jsonb(t_rem_probe('TEAME', DATE '2026-01-15', 5));
+RESET ROLE;
+SELECT t_assert('G-3: the response (status, message, body) is identical for amount < balance, = balance, > balance, > all balances, a team with no transfer and a date before every transfer — never 422',
+  (SELECT count(DISTINCT j) = 1 AND count(*) = 6 FROM t_outputs WHERE label LIKE 'g3_probe_%')
+  AND (SELECT j #>> '{}' = 'P0001|probe|' || fn_remediation_response()::text FROM t_outputs WHERE label = 'g3_probe_gt_all'));
+SELECT t_assert('G-3: the response is status only — no amount, balance or count',
+  fn_remediation_response() = jsonb_build_object('status', 'recorded', 'label_he', 'יצא עם העוזבים')
+  AND t_ids_free(fn_remediation_response()));
+SELECT t_assert('G-3: the probes were rolled back (no remediation row, memo still 190)',
+  NOT EXISTS (SELECT 1 FROM remediation_records WHERE company_id = t_u('cE')) AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 190);
+SELECT t_as(t_u('hrE'));
+SET ROLE authenticated;
+SELECT t_assert('A-12: a documented remediation of 30 for TEAME (vp_hr) → the status response',
+  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'צמצום שעות נוספות בצוות', 30) = fn_remediation_response());
 INSERT INTO t_outputs SELECT 'a12_transfers', jsonb_agg(to_jsonb(x)) FROM rpc_list_leaver_transfers(t_u('cE')) x;
-SELECT t_expect_http('A-12 + v1.6.19: a remediation above the attributed transfer''s open balance (80 > 70) → 422 remediation_not_attributable',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 80)$$, 'remediation_not_attributable', 422);
 SELECT t_expect_http('v1.6.19: a transfer can no longer be named (the list shows no transfer) → 400 transfer_selection_not_allowed',
   $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 60, (SELECT t_peer FROM t_a12))$$, 'transfer_selection_not_allowed', 400);
 SELECT t_expect_http('v1.6.19: …also a transfer of another team → 400 transfer_selection_not_allowed',
   $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 5, (SELECT t_x FROM t_a12))$$, 'transfer_selection_not_allowed', 400);
-SELECT t_expect_http('A-12 + v1.6.19: a team with no open transfer → the same 422 remediation_not_attributable',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'NOPE', (SELECT today FROM t_a12), 'ניסיון', 5)$$, 'remediation_not_attributable', 422);
-SELECT t_expect_http('A-12 + v1.6.19: a remediation dated before every transfer''s month → the same 422 remediation_not_attributable',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', DATE '2026-01-15', 'ניסיון', 5)$$, 'remediation_not_attributable', 422);
 RESET ROLE;
-SELECT t_assert('A-12: the remediation is attributed to ONE transfer — the team''s oldest open one (remE''s), 30',
+SELECT t_assert('A-12: 30 (< the oldest balance) → one allocation, to the team''s oldest transfer (remE''s)',
   (SELECT count(*) = 1 AND bool_and(a.transfer_event_id = (SELECT t_rem FROM t_a12) AND a.amount = 30)
      FROM happiness_debt_remediation_allocation a JOIN happiness_debt_events e ON e.event_id = a.remediation_event_id WHERE e.company_id = t_u('cE')));
-SELECT t_assert('A-12: per-transfer balances: remE 70, peerE 50 (never reduced), xE 40; memo 160',
+SELECT t_assert('A-12: per-transfer balances: remE 70, peerE 50, xE 40; memo 160',
   fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 70 AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 50
   AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 40 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 160);
 SELECT t_assert('v1.6.19: rpc_list_leaver_transfers is aggregate — 3 leavers (< 10) → one company_total row, no batch, no transfer / team amounts',
@@ -1103,43 +1133,65 @@ SELECT t_assert('v1.6.19: rpc_list_leaver_transfers is aggregate — 3 leavers (
           AND j->0->'transferred' = 'null'::jsonb AND j->0->'open_balance' = 'null'::jsonb
           AND j->0->>'note_he' = 'עדיין לא הצטברו מספיק עוזבים להצגה'
      FROM t_outputs WHERE label = 'a12_transfers'));
--- The required scenario: debt 100, remediation 30, reversal → the team gets back 70.
+-- FIFO across two transfers: 90 > remE's 70 → remE 70 (oldest) + peerE 20, in ONE remediation.
+SELECT t_as(t_u('hrE'));
+SET ROLE authenticated;
+SELECT t_assert('G-3: a remediation of 90 above the oldest balance (70) is accepted with the same response',
+  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'שינוי סידור משמרות', 90) = fn_remediation_response());
+RESET ROLE;
+SELECT t_assert('G-3 FIFO: the 90 is split oldest first — remE 70 + peerE 20 (2 allocation rows of one remediation event); TEAMX untouched',
+  (SELECT count(*) = 2 AND count(DISTINCT a.remediation_event_id) = 1 AND sum(a.amount) = 90
+          AND sum(a.amount) FILTER (WHERE a.transfer_event_id = (SELECT t_rem FROM t_a12)) = 70
+          AND sum(a.amount) FILTER (WHERE a.transfer_event_id = (SELECT t_peer FROM t_a12)) = 20
+     FROM happiness_debt_remediation_allocation a
+    WHERE a.remediation_event_id = (SELECT e.event_id FROM happiness_debt_events e JOIN remediation_records r ON r.remediation_id = e.remediation_id
+                                     WHERE e.company_id = t_u('cE') AND r.reduction_amount = 90))
+  AND t_alloc((SELECT t_x FROM t_a12)) = 0 AND t_unattributed_e() = 0);
+SELECT t_assert('G-3 FIFO: balances remE 0, peerE 30, xE 40; memo 70',
+  fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 0 AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 30
+  AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 40 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 70);
+-- Reversal with split allocations: remE = 100 − 30 − 70 = 0; peerE = 50 − 20 = 30.
 SELECT t_as(t_u('hrE'));
 SET ROLE authenticated;
 SELECT t_assert('A-12: the CHRO reverses remE''s offboarding', (SELECT employment_ended_at IS NULL FROM rpc_revert_offboarding(t_u('remE'))));
 RESET ROLE;
-SELECT t_assert('A-12: the team gets back 70 (= 100 − 30), not 100 — one leaver_reversal of 70 for TEAME linked to remE''s transfer',
-  (SELECT count(*) = 1 AND sum(amount) = 70 AND min(group_id) = 'TEAME' AND bool_and(reverses_event_id = (SELECT t_rem FROM t_a12))
-     FROM happiness_debt_events WHERE company_id = t_u('cE') AND event_type = 'leaver_reversal'));
-SELECT t_assert('A-12: that transfer''s "יצא עם העוזבים" balance goes to 0 — 100 = 30 remediated + 70 returned, nothing counted twice',
-  fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 0
-  AND (SELECT fn_transfer_remediated(t_rem) + (SELECT amount FROM happiness_debt_events WHERE reverses_event_id = t_rem) FROM t_a12) = 100);
-SELECT t_assert('A-12: the total memo line drops by 70, not by 100 (160 → 90 = peerE 50 + xE 40; a full-amount reversal would give 60)',
-  fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 90
-  AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 50 AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 40);
-SELECT t_as(t_u('hrE'));
-SET ROLE authenticated;
-SELECT t_expect_http('A-12: a remediation above the team''s next open transfer (peerE 50) → 422 remediation_not_attributable',
-  $$SELECT rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'ניסיון', 51)$$, 'remediation_not_attributable', 422);
-SELECT t_assert('A-12: a team-level remediation now goes to the next open transfer of TEAME (peerE, 50 — fully covers it)',
-  rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'שינוי סידור משמרות', 50) IS NOT NULL);
-RESET ROLE;
-SELECT t_assert('A-12: peerE''s balance 0, memo 40 (xE only — TEAMX untouched by TEAME remediations)',
-  fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 0 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 40);
--- A fully remediated transfer reversed → a documented 0 reversal; the memo line does not move.
+SELECT t_assert('A-12 split: remE''s transfer was covered by 2 remediations (30 + 70) → its reversal is 0, recorded, linked to remE''s transfer; memo still 70',
+  (SELECT count(*) = 1 AND sum(amount) = 0 AND min(group_id) = 'TEAME' AND bool_and(reverses_event_id = (SELECT t_rem FROM t_a12))
+     FROM happiness_debt_events WHERE company_id = t_u('cE') AND event_type = 'leaver_reversal')
+  AND t_alloc((SELECT t_rem FROM t_a12)) = 100 AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 70);
 ALTER TABLE users DISABLE TRIGGER trg_users_leaver_debt_reversal;   -- test only: call the reversal directly to capture its output
 UPDATE users SET employment_ended_at = NULL WHERE user_id = t_u('peerE');
 ALTER TABLE users ENABLE TRIGGER trg_users_leaver_debt_reversal;
-INSERT INTO t_outputs SELECT 'a12_reversal_zero', fn_reverse_leaver_transfer(t_u('peerE'));
-SELECT t_assert('A-12: fully remediated (50 − 50) → reversal amount 0, recorded; internal memo still 40; output status only',
-  (SELECT j = jsonb_build_object('status', 'reversed', 'label_he', 'יצא עם העוזבים') FROM t_outputs WHERE label = 'a12_reversal_zero')
-  AND (SELECT amount = 0 FROM happiness_debt_events WHERE reverses_event_id = (SELECT t_peer FROM t_a12))
-  AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 0
+INSERT INTO t_outputs SELECT 'a12_reversal_split', fn_reverse_leaver_transfer(t_u('peerE'));
+SELECT t_assert('A-12 split: peerE''s reversal = 50 − its own allocation 20 = 30 (not 50, not 50 − 90); output status only',
+  (SELECT j = jsonb_build_object('status', 'reversed', 'label_he', 'יצא עם העוזבים') FROM t_outputs WHERE label = 'a12_reversal_split')
+  AND (SELECT amount = 30 FROM happiness_debt_events WHERE reverses_event_id = (SELECT t_peer FROM t_a12)));
+SELECT t_assert('A-12 split: every TEAME transfer is at 0 — 100 = 100 remediated + 0 returned, 50 = 20 remediated + 30 returned; memo 40 (xE)',
+  fn_transfer_open_balance((SELECT t_rem FROM t_a12)) = 0 AND fn_transfer_open_balance((SELECT t_peer FROM t_a12)) = 0
+  AND (SELECT fn_transfer_remediated(t_peer) + (SELECT amount FROM happiness_debt_events WHERE reverses_event_id = t_peer) FROM t_a12) = 50
   AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 40);
 INSERT INTO t_outputs SELECT 'a12_second_call', fn_reverse_leaver_transfer(t_u('remE'));
 SELECT t_assert('A-12 idempotent: reversing remE again changes nothing (nothing_to_reverse, memo 40)',
   (SELECT j->>'status' = 'nothing_to_reverse' FROM t_outputs WHERE label = 'a12_second_call')
   AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 40);
+-- Leftover: TEAMX 50 > xE's 40 → xE 40 + an unattributed 10; TEAME (no open transfer) 25 → all unattributed.
+SELECT t_as(t_u('hrE'));
+SET ROLE authenticated;
+SELECT t_assert('G-3 leftover: TEAMX 50 (> all its balances) and TEAME 25 (no open transfer) → the same status response',
+  rpc_record_remediation(t_u('cE'), 'TEAMX', (SELECT today FROM t_a12), 'הוספת תקן', 50) = fn_remediation_response()
+  AND rpc_record_remediation(t_u('cE'), 'TEAME', (SELECT today FROM t_a12), 'הקלה בעומס', 25) = fn_remediation_response());
+RESET ROLE;
+SELECT t_assert('G-3 leftover: xE gets 40 (balance 0); the 10 leftover and the 25 are team remediations with NO transfer (unattributed 35); TEAME transfers unchanged',
+  t_alloc((SELECT t_x FROM t_a12)) = 40 AND fn_transfer_open_balance((SELECT t_x FROM t_a12)) = 0
+  AND t_unattributed_e() = 35 AND t_alloc((SELECT t_peer FROM t_a12)) = 20 AND t_alloc((SELECT t_rem FROM t_a12)) = 100
+  AND (SELECT count(*) = 2 AND sum(e.amount) = 50 FROM happiness_debt_events e JOIN remediation_records r ON r.remediation_id = e.remediation_id
+        WHERE e.company_id = t_u('cE') AND r.reduction_amount = 50)
+  AND fn_leaver_memo(t_u('cE'), (SELECT far FROM t_a12)) = 0);
+SELECT t_assert('G-3 leftover: the unattributed rows keep their team (TEAMX 10, TEAME 25) and remediation_records keeps the full amounts',
+  (SELECT sum(e.amount) FILTER (WHERE e.group_id = 'TEAMX') = 10 AND sum(e.amount) FILTER (WHERE e.group_id = 'TEAME') = 25
+     FROM happiness_debt_events e WHERE e.company_id = t_u('cE') AND e.event_type = 'remediation'
+      AND NOT EXISTS (SELECT 1 FROM happiness_debt_remediation_allocation a WHERE a.remediation_event_id = e.event_id))
+  AND (SELECT sum(reduction_amount) = 195 FROM remediation_records WHERE company_id = t_u('cE')));
 SELECT t_assert('A-12: a reversal of 0 is the only zero amount in the events',
   (SELECT count(*) = 1 AND bool_and(event_type = 'leaver_reversal') FROM happiness_debt_events WHERE company_id = t_u('cE') AND amount = 0));
 SELECT t_expect_err('A-12: a 0 transfer / remediation event is refused by the CHECK',

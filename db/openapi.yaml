@@ -11,7 +11,8 @@ info:
     \ AGGREGATE (cfo / vp_hr only; service / anon refused; audited): rows batch / batch_team (≥ 10 leavers and the\
     \ rest of the batch 0 or ≥ 10 — complementary rule) / adjustment_batch / company_total (open_balance = the published\
     \ memo line). No person, transfer or event id.\n- `/rpc/rpc_record_remediation`: no transfer can be named (400\
-    \ transfer_selection_not_allowed); no open transfer / above its balance → 422 remediation_not_attributable.\
+    \ transfer_selection_not_allowed). v1.6.19-r2 (G-3): the amount is split FIFO over the team's open transfers;\
+    \ any leftover is an unattributed team remediation; the response is always status only (never 422).\
     \ A reversal returns status only.\n- A-3: ILS estimate = average cost of a redeemed spoon, 3-month moving average\
     \ (`/rpc/rpc_get_redeemed_spoon_cost_estimate`, cfo / vp_hr only); fewer than 10 purchases → \"אין עדיין מספיק\
     \ מימושים לאומדן\"; missing input → \"חסר: <field>\". spoon_cost_ils is deprecated (kept, unused). No employee\
@@ -25,7 +26,10 @@ info:
     \ `/rpc/rpc_add_org_event`, `/rpc/rpc_put_questionnaire_items`. Sources: 5 entries with doi + status_he.\n-\
     \ Burnout: the only recommendation is \"לבדוק את תנאי העבודה בצוות\" (טיוטה). Social events (`/rpc/rpc_create_social_event`,\
     \ `/rpc/rpc_list_social_events`) are \"ללא הערכה מקצועית\": no attendance, no Golden Spoons. Cancelled absences\
-    \ are not absences (J-54).\n\nPostgREST reads + RPC writes. Version 1.6.19-mvp (2026-10-31) — supersedes 1.6.18-mvp\
+    \ are not absences (J-54).\n- v1.6.19-r2 (A-16 closed): redemption rate = redeemers ÷ active employees; key\
+    \ roles = role names marked by vp_hr (`/rpc/rpc_put_key_roles`, `/rpc/rpc_get_key_roles`); board absences = sickness\
+    \ + unplanned only (`/rpc/rpc_put_board_absences`); burnout guard adds שימוע / שיחת בירור / התראה בכתב / מעקב\
+    \ ביצועים.\n\nPostgREST reads + RPC writes. Version 1.6.19-mvp (2026-10-31) — supersedes 1.6.18-mvp\
     \ (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were\
     \ planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp\
     \ (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20),\
@@ -3736,10 +3740,12 @@ paths:
       - agents
       summary: Documented fix (group, date, what was fixed, approver, amount) — reduces the memo line "יצא עם העוזבים"
         (vp_hr / cfo)
-      description: 'v1.6.19: the remediation is attributed to the team''s oldest leaver_transfer with an open balance
-        and a month ≤ the remediation month (A-12 kept). A transfer can no longer be named — the aggregate list
-        shows none (400 transfer_selection_not_allowed). No open transfer, or an amount above its open balance →
-        one 422 remediation_not_attributable. It moves the published memo line only in a batch touching ≥ 10 transfers.'
+      description: 'v1.6.19-r2 (G-3 / A-12): the amount is allocated FIFO (oldest first) across the team''s
+        leaver_transfers with an open balance and a month ≤ the remediation month — one allocation per transfer;
+        any leftover becomes a team remediation not attributed to any transfer (J-59 path). Never 422 for the
+        amount: the response is identical in every case (status only — no amount, balance or count). A transfer
+        cannot be named (400 transfer_selection_not_allowed). It moves the published memo line only in a batch
+        touching ≥ 10 transfers.'
       requestBody:
         required: true
         content:
@@ -3770,21 +3776,25 @@ paths:
               - p_reduction_amount
       responses:
         '200':
-          description: OK
+          description: 'Always {"status": "recorded", "label_he": "יצא עם העוזבים"} — the same body for any amount.'
           content:
             application/json:
               schema:
-                type: string
-                format: uuid
+                type: object
+                additionalProperties: false
+                properties:
+                  status:
+                    type: string
+                    enum:
+                    - recorded
+                  label_he:
+                    type: string
+                required:
+                - status
+                - label_he
         '403': *id018
         '400':
-          description: invalid_remediation | transfer_selection_not_allowed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
-        '422':
-          description: remediation_not_attributable
+          description: invalid_remediation | transfer_selection_not_allowed (input only, never the amount vs a balance)
           content:
             application/json:
               schema:
@@ -3952,7 +3962,7 @@ paths:
         shadow_balance[4], exported_on_exit (published batch value, J-43: amount, batch_no, label_he, display_he,
         waiting_note_he, text_status, evidence_he; behind 10 מדווחים בפועל), verification_levels (17 metrics, computed,
         with used_for_pay / used_for_manager_bonus), layers {investment_activity, adoption_usage ("אימוץ"), outcomes,
-        governance, measuring_body, structure_source_doi}, measuring_body (גוף מודד CHR-ETRS), causal_note (טיוטה),
+        governance, measuring_body, structure_source_doi}, measuring_body (גוף מודד CHR-ETRS), causal_note (approved 31.10, J-65 — no טיוטה),
         verification_dossiers (kept), bcr_score, deprivation_tax (12 % / 10 % display switch), turnover_above_baseline,
         misleading_margins_flag, sources[5] {topic_he, source, citation, doi, status_he}, sources_note {text_he (Karin''s exact
         A-10 binding appendix text, two lines), source, citation, doi 10.13140/rg.2.2.35568.62722, status_he טיוטה, text_status}.'
@@ -4370,7 +4380,8 @@ paths:
       tags:
       - agents
       summary: B1c — voluntary key-role exits and key-role headcount of a month (cfo / vp_hr)
-      description: Aggregate input (J-56); shown only with ≥ 5 key roles.
+      description: 'Aggregate input (J-56); shown only with ≥ 5 key roles. v1.6.19-r2 (J-53) — key roles are the role
+        names marked by vp_hr (`/rpc/rpc_put_key_roles`); none marked → "חסר: company_key_role_setting".'
       requestBody:
         required: true
         content:
@@ -4394,6 +4405,113 @@ paths:
       responses:
         '200':
           description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_key_roles:
+    post:
+      tags:
+      - agents
+      summary: J-53 — vp_hr marks the company's key ROLES (role names, never people); audited, WORM history
+      description: 'vp_hr of the company only (cfo / manager / employee / service → 403). Names are trimmed and
+        de-duplicated; an empty list, more than 100 names, a name over 80 characters or a name that looks like a
+        person identifier (uuid / e-mail / digits only) → 400 invalid_key_roles. Replaces the previous list.
+        Audited (key_roles_put, role names only).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_role_names:
+                  type: array
+                  items:
+                    type: string
+                    maxLength: 80
+                  minItems: 1
+                  maxItems: 100
+              required:
+              - p_company_id
+              - p_role_names
+      responses:
+        '200':
+          description: '{status: saved, key_roles: [role names]}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_key_roles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_get_key_roles:
+    post:
+      tags:
+      - agents
+      summary: J-53 — the company's key roles and their definition (cfo / vp_hr)
+      description: '{key_role_definition_he, key_roles (role names or null), text_status טיוטה}. No person data.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+              required:
+              - p_company_id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+  /rpc/rpc_put_board_absences:
+    post:
+      tags:
+      - agents
+      summary: J-53 — board absences of a month = sickness days + unplanned absence days (cfo / vp_hr)
+      description: 'Aggregate day counts (≥ 0, one decimal). Planned vacation and EverStore time benefits are not
+        counted and have no field. The board shows the sum; no input → "חסר: board_absence_input"; fewer than 5
+        active employees → not shown.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_month: *id027
+                p_sickness_days:
+                  type: number
+                  minimum: 0
+                p_unplanned_absence_days:
+                  type: number
+                  minimum: 0
+              required:
+              - p_company_id
+              - p_month
+              - p_sickness_days
+              - p_unplanned_absence_days
+      responses:
+        '200':
+          description: '{period_month, status: saved}'
           content:
             application/json:
               schema:
@@ -4773,6 +4891,7 @@ components:
           - remediation_exceeds_transfer
           - no_open_leaver_transfer
           - invalid_requested_date
+          - invalid_key_roles
         message:
           type: string
           description: 'Must equal code (or human text WITHOUT spoon/HRV numbers). Glass Box.

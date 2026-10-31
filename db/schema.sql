@@ -3,6 +3,9 @@
 -- Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
+-- v1.6.19-r2 (Karin 31.10, after PR #8): happiness_debt_remediation_allocation may hold several rows per remediation
+--   (FIFO split, G-3); company_key_role_setting (key role NAMES marked by vp_hr, WORM history, no person column) and
+--   board_absence_input (sickness + unplanned absence days per month; no vacation / time-benefit column) — J-53.
 -- New in 1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77):
 --   * Leaver list + memo line in batches (leaver_memo_snapshot / leaver_memo_inclusion, WORM): updates only after
 --     10 NEW leavers; remediations / reversals only as a batch touching ≥ 10 transfers (Karin 31.10).
@@ -4197,8 +4200,9 @@ CREATE TABLE IF NOT EXISTS happiness_debt_leaver_link (
 CREATE INDEX IF NOT EXISTS idx_hdll_user ON happiness_debt_leaver_link (user_id);
 
 -- happiness_debt_remediation_allocation — v1.6.18 (A-12): which leaver_transfer a documented remediation was made
--- against, and how much of it. A new remediation is attributed to exactly ONE transfer of its own team and never
--- exceeds that transfer's open balance, so it can never reduce another leaver's share. Open balance of a transfer
+-- against, and how much of it. v1.6.19-r2 (Karin 31.10): a remediation is split FIFO over its own team's transfers
+-- (oldest first, several rows per remediation), each part never above that transfer's open balance, so it can
+-- never reduce another leaver's share; a leftover is a separate unattributed remediation event (no row here). Open balance of a transfer
 -- = amount − Σ allocations − its reversal. WORM, no person column, closed to clients.
 CREATE TABLE IF NOT EXISTS happiness_debt_remediation_allocation (
     remediation_event_id uuid NOT NULL REFERENCES happiness_debt_events(event_id) ON DELETE CASCADE,
@@ -4559,13 +4563,36 @@ CREATE TABLE IF NOT EXISTS company_governance (
     updated_at                    timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
+-- company_key_role_setting — v1.6.19-r2 (Karin 31.10, J-53): the company's key roles = ROLES (role names, never
+-- people) that vp_hr marked in the company settings. Append-only history; the latest row of a company counts. No
+-- person column (who set it is in access_audit_log). Key-role turnover stays an aggregate input (J-56).
+CREATE TABLE IF NOT EXISTS company_key_role_setting (
+    setting_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id   uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    role_names   text[] NOT NULL CHECK (cardinality(role_names) BETWEEN 1 AND 100),
+    set_at       timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_ckrs_company ON company_key_role_setting (company_id, set_at DESC);
+
+-- board_absence_input — v1.6.19-r2 (Karin 31.10, J-53): board absences = sickness + unplanned absence only, as
+-- aggregate monthly day counts entered by cfo / vp_hr (the system holds no sickness / unplanned-absence data;
+-- planned vacation and EverStore time benefits are not counted and have no column here).
+CREATE TABLE IF NOT EXISTS board_absence_input (
+    company_id              uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    period_month            date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    sickness_days           numeric(10, 1) NOT NULL CHECK (sickness_days >= 0),
+    unplanned_absence_days  numeric(10, 1) NOT NULL CHECK (unplanned_absence_days >= 0),
+    entered_at              timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (company_id, period_month)
+);
+
 -- WORM tables of v1.6.19.
 DO $$
 DECLARE t text;
 BEGIN
   FOREACH t IN ARRAY ARRAY['leaver_memo_snapshot', 'leaver_memo_inclusion', 'metric_verification_evidence',
                            'verification_dossier', 'questionnaire_item_version', 'measurement_change_log',
-                           'metric_pay_linkage'] LOOP
+                           'metric_pay_linkage', 'company_key_role_setting'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', 'trg_' || t || '_worm', t);
     EXECUTE format('CREATE TRIGGER %I BEFORE UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION fn_worm_immutable(%L)',
                    'trg_' || t || '_worm', t, 'ledger_immutable');
@@ -4580,7 +4607,7 @@ BEGIN
                            'verification_dossier', 'questionnaire_item_version', 'measurement_change_log',
                            'org_event', 'payroll_population_input', 'metric_pay_linkage', 'social_event',
                            'wellbeing_spend_input', 'safety_incident_monthly', 'key_role_turnover_input',
-                           'company_governance'] LOOP
+                           'company_governance', 'company_key_role_setting', 'board_absence_input'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
     EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC, anon, authenticated', t);

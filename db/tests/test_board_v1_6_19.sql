@@ -205,13 +205,12 @@ SELECT t_assert('J-43: the 10th new leaver → batch 2; memo = 21,000; the chang
 SELECT t_as(t_u('cfoG'));
 SET ROLE authenticated;
 SELECT t_assert('batching: a documented remediation of 50 for TA is recorded (attributed to the oldest open transfer)',
-  rpc_record_remediation(t_u('cG'), 'TA', (SELECT today FROM t_m), 'הפחתת עומס', 50) IS NOT NULL);
+  rpc_record_remediation(t_u('cG'), 'TA', (SELECT today FROM t_m), 'הפחתת עומס', 50) = fn_remediation_response());
 SELECT t_expect_http('v1.6.19: naming a transfer → 400 transfer_selection_not_allowed',
   $$SELECT rpc_record_remediation(t_u('cG'), 'TA', (SELECT today FROM t_m), 'x', 1, gen_random_uuid())$$, 'transfer_selection_not_allowed', 400);
-SELECT t_expect_http('v1.6.19: a team with no transfer → 422 remediation_not_attributable',
-  $$SELECT rpc_record_remediation(t_u('cG'), 'NOPE', (SELECT today FROM t_m), 'x', 1)$$, 'remediation_not_attributable', 422);
-SELECT t_expect_http('v1.6.19: above the attributed transfer''s balance → the same 422 remediation_not_attributable',
-  $$SELECT rpc_record_remediation(t_u('cG'), 'TA', (SELECT today FROM t_m), 'x', 51)$$, 'remediation_not_attributable', 422);
+SELECT t_assert('v1.6.19-r2 G-3: no 422 any more — the error code remediation_not_attributable is gone from every function',
+  NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+               WHERE n.nspname = 'public' AND p.prosrc ~ 'remediation_not_attributable'));
 RESET ROLE;
 ALTER TABLE users DISABLE TRIGGER trg_users_leaver_debt_reversal;   -- test only: call the reversal directly to capture its output
 UPDATE users SET employment_ended_at = NULL WHERE user_id = t_u('gL2');
@@ -229,7 +228,7 @@ SELECT t_assert('batching: batch 3 (10 new leavers) leaves the 2-transfer adjust
 -- 9 more remediations: gL1 (rest 50) and gL3..gL10 in full → 10 distinct transfers adjusted (with gL2's reversal)
 SELECT t_as(t_u('cfoG'));
 SET ROLE authenticated;
-SELECT rpc_record_remediation(t_u('cG'), 'TA', (SELECT today FROM t_m), 'שינוי סידור עבודה', a) IS NOT NULL AS rem
+SELECT rpc_record_remediation(t_u('cG'), 'TA', (SELECT today FROM t_m), 'שינוי סידור עבודה', a) = fn_remediation_response() AS rem
   FROM unnest(ARRAY[50, 300, 400, 500, 600, 700, 800, 900, 1000]) a;
 RESET ROLE;
 SELECT t_assert('batching: 10 distinct transfers adjusted but no new leaver batch → the memo still shows 46,500',
@@ -497,7 +496,7 @@ SELECT t_assert('A2: the dossier holds the questionnaire wording (version 1, 12 
      FROM t_outputs WHERE label = 'dossier_pcq'));
 SELECT t_assert('A2: reporting (מדווחים בפועל 12, rate, range; non-reporters not imputed), independence (גוף מודד CHR-ETRS), scoring, Golden Spoons value (10)',
   (SELECT (j->'reporting'->>'reporters_count')::int = 12 AND (j->'reporting'->>'response_rate')::numeric > 0
-          AND j->'reporting' ? 'range_low' AND j->'reporting'->>'text_status' = 'טיוטה'
+          AND j->'reporting' ? 'range_low' AND NOT (j->'reporting') ? 'text_status'
           AND j->'independence'->>'measuring_body' = 'CHR-ETRS' AND j->'independence'->>'label_he' = 'גוף מודד'
           AND NOT (j->'independence'->>'company_can_change_timing_or_wording')::boolean
           AND (j->'independence'->>'counts_as_control')::boolean
@@ -510,6 +509,10 @@ SELECT t_assert('A2: a questionnaire without entered wording → "להשלמה: 
   fn_dossier_wording(t_u('cG'), 'IHS', (SELECT m FROM t_m))->>'display_he' = 'להשלמה: נוסח השאלות לא הוזן');
 SELECT t_as(t_u('empG1'));
 SET ROLE authenticated;
+SELECT t_assert('J-70 (Karin''s exact text 31.10): the dossier''s non-reporting text, with no "טיוטה" marking',
+  (SELECT j->'reporting'->>'non_reporting_handling_he'
+            = 'מי שלא דיווח לא נספר: אין השלמה או הערכה של נתונים חסרים. הטווח שמוצג ליד הציון מראה כמה הוא יכול להשתנות בגללם.'
+          AND NOT (j->'reporting') ? 'text_status' FROM t_outputs WHERE label = 'dossier_pcq'));
 SELECT t_expect_http('A2: employee → 403 on the dossier', $$SELECT rpc_get_verification_dossier(t_u('cG'), 'pcq12_company', (SELECT m FROM t_m))$$, 'insufficient_privilege', 403);
 RESET ROLE;
 
@@ -547,8 +550,9 @@ SELECT t_assert('report: layers investment / adoption / outcomes / governance wi
           AND j->'layers'->>'structure_source_doi' = '10.3390/world7050077'
           AND j->'measuring_body'->>'name' = 'CHR-ETRS' AND j->'measuring_body'->>'label_he' = 'גוף מודד'
      FROM t_outputs WHERE label = 'board_r5'));
-SELECT t_assert('report: the causal note (טיוטה) and "מדד ניהולי חלופי, לא רווח חשבונאי" kept',
-  (SELECT j->'causal_note'->>'text_status' = 'טיוטה' AND j->'chr_real_ebitda'->>'definition_he' = 'מדד ניהולי חלופי, לא רווח חשבונאי'
+SELECT t_assert('J-65 (approved 31.10): the causal note has no "טיוטה" marking; "מדד ניהולי חלופי, לא רווח חשבונאי" kept',
+  (SELECT j->'causal_note' = jsonb_build_object('note_he', 'הדוח מציג השקעה, אימוץ ותוצאות זה לצד זה; הוא אינו קובע שההשקעה גרמה לתוצאות.')
+          AND NOT (j->'causal_note') ? 'text_status' AND j->'chr_real_ebitda'->>'definition_he' = 'מדד ניהולי חלופי, לא רווח חשבונאי'
      FROM t_outputs WHERE label = 'board_r5'));
 SELECT t_assert('report B4: CHR Real EBITDA carries Karin''s text "מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת" (טיוטה)',
   (SELECT j->'chr_real_ebitda'->>'note_he' = 'מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת'
@@ -630,6 +634,14 @@ SELECT t_assert('A4: the guard refuses more feedback / documentation / an improv
   AND NOT fn_recommendation_allowed('לבנות תוכנית שיפור') AND NOT fn_recommendation_allowed('open a PIP')
   AND NOT fn_recommendation_allowed('more feedback') AND NOT fn_recommendation_allowed('performance improvement plan')
   AND fn_recommendation_allowed(fn_burnout_recommendation_he()));
+-- J-52 (approved 31.10): one test per new forbidden phrase; the old phrases stay forbidden (above).
+SELECT t_assert('J-52: "שימוע" is refused', NOT fn_recommendation_allowed('לזמן את העובד לשימוע'));
+SELECT t_assert('J-52: "שיחת בירור" is refused', NOT fn_recommendation_allowed('לקיים שיחת בירור עם העובדים'));
+SELECT t_assert('J-52: "התראה בכתב" is refused', NOT fn_recommendation_allowed('לתת התראה בכתב'));
+SELECT t_assert('J-52: "מעקב ביצועים" is refused', NOT fn_recommendation_allowed('להדק מעקב ביצועים'));
+SELECT t_assert('J-52: the agent''s own recommendation is still allowed and the guard is the one the agent uses',
+  fn_recommendation_allowed('לבדוק את תנאי העבודה בצוות')
+  AND (SELECT prosrc ~ 'fn_recommendation_forbidden_pattern' FROM pg_proc WHERE proname = 'fn_recommendation_allowed'));
 SELECT t_assert('A4: the burnout trend RPC carries the recommendation block',
   (SELECT prosrc ~ 'fn_burnout_recommendation\(v_rising\)' FROM pg_proc WHERE proname = 'rpc_get_burnout_trend'));
 
@@ -676,22 +688,38 @@ SELECT t_assert('B1a: EverStore spend in ILS = month spoons (175) × the 3-month
           AND j->'investment_activity'->>'reconciliation_display_he' = 'לא הוגדר' FROM t_lay));
 SELECT t_assert('B1a: the layer shows the ILS total only — no per-spoon value or key',
   (SELECT (j->'investment_activity')::text !~* '(per_spoon|ils_per|"value")' FROM t_lay));
-SELECT t_assert('B1b: adoption by category — 5+ buyers, complement-safe (gift_card 5 shown; learning 5 folded with the 1-buyer concert so the rest is 6); rate "לא הוגדר"',
+SELECT t_assert('B1b: adoption by category — 5+ buyers, complement-safe (gift_card 5 shown; learning 5 folded with the 1-buyer concert so the rest is 6)',
   (SELECT jsonb_array_length(j->'adoption_usage'->'by_category') = 1 AND j->'adoption_usage'->'by_category'->0->>'category' = 'gift_card'
           AND (j->'adoption_usage'->'by_category'->0->>'buyers_count')::int = 5
           AND j->'adoption_usage'->>'categories_note_he' IS NOT NULL
-          AND j->'adoption_usage'->>'redemption_rate_display_he' = 'לא הוגדר' FROM t_lay));
+          AND NOT (j->'adoption_usage') ? 'redemption_rate_display_he' FROM t_lay));
+SELECT t_assert('J-53 redemption rate: the definition text (טיוטה) replaces "לא הוגדר"',
+  (SELECT j->'adoption_usage'->'redemption_rate'->>'definition_he' = 'שיעור מימוש = עובדים שמימשו לפחות פריט אחד בתקופה ÷ עובדים פעילים בתקופה'
+          AND j->'adoption_usage'->'redemption_rate'->>'text_status' = 'טיוטה' FROM t_lay));
+SELECT t_assert('J-53 redemption rate: 11 active employees redeemed ≥ 1 item this month (empS1–11; empS12''s purchase is 4 months old) ÷ active employees',
+  (SELECT (j->'adoption_usage'->'redemption_rate'->>'redeemers_count')::int = 11
+          AND (j->'adoption_usage'->'redemption_rate'->>'active_employees_count')::int = fn_team_month_members(t_u('cS'), NULL, (SELECT m FROM t_m))
+          AND (j->'adoption_usage'->'redemption_rate'->>'rate')::numeric = round(11::numeric / fn_team_month_members(t_u('cS'), NULL, (SELECT m FROM t_m)), 4)
+     FROM t_lay));
+SELECT t_assert('J-53 redemption rate: a person with 2 purchases counts once; per category gift_card = 5 redeemers; < 5 redeemers → not shown',
+  fn_month_redeemers(t_u('cS'), (SELECT m FROM t_m), 'learning') = 5
+  AND (SELECT (j->'adoption_usage'->'by_category'->0->'redemption_rate'->>'redeemers_count')::int = 5 FROM t_lay)
+  AND fn_redemption_rate_json(t_u('cS'), (SELECT m FROM t_m), 'experience')->>'display_he' = 'אין מספיק מממשים להצגה'
+  AND NOT fn_redemption_rate_json(t_u('cS'), (SELECT m FROM t_m), 'experience') ? 'rate');
 SELECT t_assert('B1b: coverage by unit — OPS 6 מדווחים בפועל; company coverage shown',
   (SELECT (SELECT (e->>'reporters_count')::int FROM jsonb_array_elements(j->'adoption_usage'->'coverage_by_unit') e WHERE e->>'unit' = 'OPS') = 6
           AND (j->'adoption_usage'->'coverage_company'->>'reporters_count')::int = 6 FROM t_lay));
 SELECT t_assert('B1c: outcomes — PCQ-12, IHS / TPS-12 below 5 reporters say so; missing safety / key-role inputs say "חסר: …"',
   (SELECT j->'outcomes'->'safety_incidents'->>'display_he' = 'חסר: safety_incident_monthly.incident_count'
-          AND j->'outcomes'->'key_role_turnover'->>'display_he' = 'חסר: key_role_turnover_input'
+          AND j->'outcomes'->'key_role_turnover'->>'display_he' = 'חסר: company_key_role_setting'
           AND j->'outcomes'->'ihs'->>'display_he' = 'אין מספיק מדווחים בפועל להצגה' FROM t_lay));
-SELECT t_assert('J-54: a cancelled absence is not an absence (company 1, team OPS 1 — of 2 rows)',
-  (SELECT (j->'outcomes'->'absences'->>'count')::int = 1 FROM t_lay)
-  AND fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 1
+SELECT t_assert('J-54: a cancelled absence is not an absence (team OPS 1 — of 2 rows; team level unchanged)',
+  fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 1
   AND fn_company_month_absences(t_u('cS'), (SELECT m FROM t_m)) = 1);
+SELECT t_assert('J-53 absences: no board input → "חסר: board_absence_input" with the definition (טיוטה); the approved refresh entry is NOT counted',
+  (SELECT j->'outcomes'->'absences'->>'display_he' = 'חסר: board_absence_input'
+          AND j->'outcomes'->'absences'->>'definition_he' = 'היעדרות לדוח = ימי מחלה + היעדרות לא מתוכננת בלבד; חופשה מתוכננת והטבות זמן מ-EverStore אינן נספרות'
+          AND j->'outcomes'->'absences'->>'text_status' = 'טיוטה' AND NOT (j->'outcomes'->'absences') ? 'days' FROM t_lay));
 SELECT t_assert('B3: governance missing → "חסר: …" / "לא הוגדר"',
   (SELECT j->'governance'->>'accountable_exec_display_he' = 'חסר: company_governance.accountable_exec_role_name'
           AND j->'governance'->>'exec_pay_display_he' = 'לא הוגדר'
@@ -701,14 +729,75 @@ SET ROLE authenticated;
 SELECT jsonb_typeof(rpc_put_wellbeing_spend(t_u('cS'), (SELECT m FROM t_m), 1000, 2000, 'הוצאות רווחה')) AS spend;
 SELECT jsonb_typeof(rpc_put_safety_incidents(t_u('cS'), (SELECT m FROM t_m), 2)) AS safety;
 SELECT jsonb_typeof(rpc_put_key_role_turnover(t_u('cS'), (SELECT m FROM t_m), 1, 4)) AS keyrole_small;
+SELECT t_expect_http('J-53 key roles: only vp_hr marks key roles (cfo → 403)', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY['מנהל משמרת'])$$, 'insufficient_privilege', 403);
+INSERT INTO t_outputs SELECT 'absences_put', rpc_put_board_absences(t_u('cS'), (SELECT m FROM t_m), 6, 2.5);
+SELECT t_expect_http('J-53 absences: negative days → 400 invalid_amount', $$SELECT rpc_put_board_absences(t_u('cS'), (SELECT m FROM t_m), -1, 0)$$, 'invalid_amount', 400);
 INSERT INTO t_outputs SELECT 'governance_put', rpc_put_company_governance(t_u('cS'), 'סמנכ"ל משאבי אנוש', true, 4.5);
 SELECT t_expect_http('B1c: more exits than key roles → 400', $$SELECT rpc_put_key_role_turnover(t_u('cS'), (SELECT m FROM t_m), 5, 4)$$, 'invalid_amount', 400);
 RESET ROLE;
-SELECT t_assert('B1: after the inputs — reconciliation difference 2,000 − 700 − 1,000 = 300; safety 2; key-role headcount 4 < 5 → not shown',
+SELECT t_assert('B1: after the inputs — reconciliation difference 2,000 − 700 − 1,000 = 300; safety 2; key roles not marked yet → "חסר: company_key_role_setting"',
   (SELECT (j->'investment_activity'->>'reconciliation_difference_ils')::numeric = 300
           AND (j->'outcomes'->'safety_incidents'->>'count')::int = 2
-          AND j->'outcomes'->'key_role_turnover'->>'display_he' = 'אין מספיק בעלי תפקידי מפתח להצגה'
+          AND j->'outcomes'->'key_role_turnover'->>'display_he' = 'חסר: company_key_role_setting'
      FROM (SELECT fn_board_layers(t_u('cS'), (SELECT m FROM t_m)) j) x));
+-- J-53 key roles: vp_hr marks ROLES (names), audited; people / ids refused.
+SELECT t_as(t_u('hrS'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'key_roles_put', rpc_put_key_roles(t_u('cS'), ARRAY[' מנהל משמרת ', 'מהנדס בטיחות', 'מנהל משמרת']);
+SELECT t_expect_http('J-53 key roles: an e-mail is not a role → 400', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY['empS1@board.test'])$$, 'invalid_key_roles', 400);
+SELECT t_expect_http('J-53 key roles: a uuid is not a role → 400', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY[t_u('empS1')::text])$$, 'invalid_key_roles', 400);
+SELECT t_expect_http('J-53 key roles: an empty list → 400', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY[' '])$$, 'invalid_key_roles', 400);
+INSERT INTO t_outputs SELECT 'key_roles_get_hr', rpc_get_key_roles(t_u('cS'));
+RESET ROLE;
+SELECT t_as(t_u('cfoS'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'key_roles_get_cfo', rpc_get_key_roles(t_u('cS'));
+RESET ROLE;
+SELECT t_as(t_u('empS1'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-53 key roles: employee → 403 on put', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY['x'])$$, 'insufficient_privilege', 403);
+SELECT t_expect_http('J-53 key roles: employee → 403 on get', $$SELECT rpc_get_key_roles(t_u('cS'))$$, 'insufficient_privilege', 403);
+SELECT t_expect_http('J-53 absences: employee → 403 on the input', $$SELECT rpc_put_board_absences(t_u('cS'), CURRENT_DATE, 1, 1)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_expect_http('J-53 key roles: a service call (no caller) → 403 (vp_hr only)', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY['x'])$$, 'insufficient_privilege', 403);
+SELECT t_assert('J-53 key roles: stored as 2 distinct trimmed role names (no person id), vp_hr and cfo read the same list',
+  (SELECT j = jsonb_build_object('status', 'saved', 'key_roles', jsonb_build_array('מהנדס בטיחות', 'מנהל משמרת')) FROM t_outputs WHERE label = 'key_roles_put')
+  AND (SELECT j->'key_roles' = jsonb_build_array('מהנדס בטיחות', 'מנהל משמרת')
+          AND j->>'key_role_definition_he' = 'תפקיד מפתח = תפקידים (לא אנשים) שסומנו על ידי vp_hr בהגדרות החברה'
+          AND j->>'text_status' = 'טיוטה' FROM t_outputs WHERE label = 'key_roles_get_cfo')
+  AND (SELECT a.j = b.j FROM t_outputs a, t_outputs b WHERE a.label = 'key_roles_get_hr' AND b.label = 'key_roles_get_cfo')
+  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'company_key_role_setting'
+                   AND column_name ~* '(person|user|employee|pseudonym)'));
+SELECT t_assert('J-53 key roles: the change is audited (action key_roles_put, role names only, no person id)',
+  (SELECT count(*) = 1 AND bool_and(t_ids_free(a.scope) AND a.subject_user_id IS NULL AND a.viewer_id = t_u('hrS')
+                                 AND a.scope->'key_roles' = jsonb_build_array('מהנדס בטיחות', 'מנהל משמרת'))
+     FROM access_audit_log a WHERE a.action = 'key_roles_put'));
+SELECT t_expect_err('J-53 key roles: the setting history is WORM', $$UPDATE company_key_role_setting SET role_names = '{x}'$$, 'ledger_immutable');
+SELECT t_assert('J-53 key roles: the turnover input stays aggregate with the ≥ 5 threshold — headcount 4 < 5 → not shown (with the definition)',
+  (SELECT j->'outcomes'->'key_role_turnover'->>'display_he' = 'אין מספיק בעלי תפקידי מפתח להצגה'
+          AND j->'outcomes'->'key_role_turnover'->'key_roles' = jsonb_build_array('מהנדס בטיחות', 'מנהל משמרת')
+          AND NOT (j->'outcomes'->'key_role_turnover') ? 'rate'
+     FROM (SELECT fn_board_layers(t_u('cS'), (SELECT m FROM t_m)) j) x));
+SELECT t_as(t_u('cfoS'));
+SET ROLE authenticated;
+SELECT jsonb_typeof(rpc_put_key_role_turnover(t_u('cS'), (SELECT m FROM t_m), 1, 5)) AS keyrole_five;
+RESET ROLE;
+SELECT t_assert('J-53 key roles: headcount 5 → the aggregate rate is shown (1 / 5)',
+  (SELECT (j->'outcomes'->'key_role_turnover'->>'rate')::numeric = 0.2 FROM (SELECT fn_board_layers(t_u('cS'), (SELECT m FROM t_m)) j) x));
+-- J-53 absences: sickness + unplanned only. An EverStore time benefit / approved refresh entry and an early leave do not count.
+INSERT INTO approved_absence_entry (user_id, company_id, requested_date, schedule_status)
+VALUES (t_u('empS3'), t_u('cS'), (SELECT m FROM t_m) + 5, 'coordinated');
+SELECT t_assert('J-53 absences: board days = sickness 6 + unplanned 2.5 = 8.5; the 2 approved refresh / time-benefit entries (incl. a new one) are not added',
+  (SELECT (j->'outcomes'->'absences'->>'days')::numeric = 8.5 AND (j->'outcomes'->'absences'->>'sickness_days')::numeric = 6
+          AND (j->'outcomes'->'absences'->>'unplanned_absence_days')::numeric = 2.5
+     FROM (SELECT fn_board_layers(t_u('cS'), (SELECT m FROM t_m)) j) x)
+  AND fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 2);
+SELECT t_assert('J-53 absences: planned vacation and time benefits have no input field at all (only sickness / unplanned columns)',
+  (SELECT array_agg(column_name::text ORDER BY column_name::text) FROM information_schema.columns
+    WHERE table_name = 'board_absence_input' AND column_name ~ '_days$') = ARRAY['sickness_days', 'unplanned_absence_days']
+  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'board_absence_input' AND column_name ~* '(vacation|benefit|refresh|^planned)'));
+SELECT t_assert('J-53 absences: the input output is status only',
+  (SELECT j->>'status' = 'saved' AND t_ids_free(j) FROM t_outputs WHERE label = 'absences_put'));
 SELECT t_assert('B3: governance = role name only (no person), exec pay tied, complaint time 4.5 days',
   (SELECT j->>'accountable_exec_role_name' = 'סמנכ"ל משאבי אנוש' AND (j->>'exec_pay_tied_to_metrics')::boolean
           AND (j->>'mean_complaint_handling_days')::numeric = 4.5 AND t_ids_free(j) FROM t_outputs WHERE label = 'governance_put'));
@@ -727,12 +816,13 @@ SELECT t_assert('privacy: every v1.6.19 table is closed (RLS forced, no client g
      FROM pg_class c WHERE c.relname IN ('leaver_memo_snapshot', 'leaver_memo_inclusion', 'metric_verification_evidence',
        'verification_dossier', 'questionnaire_item_version', 'measurement_change_log', 'org_event', 'payroll_population_input',
        'metric_pay_linkage', 'social_event', 'wellbeing_spend_input', 'safety_incident_monthly', 'key_role_turnover_input',
-       'company_governance'))
+       'company_governance', 'company_key_role_setting', 'board_absence_input'))
   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
                    AND table_name IN ('leaver_memo_snapshot', 'leaver_memo_inclusion', 'metric_verification_evidence',
                      'verification_dossier', 'questionnaire_item_version', 'measurement_change_log', 'org_event',
                      'payroll_population_input', 'metric_pay_linkage', 'social_event', 'wellbeing_spend_input',
-                     'safety_incident_monthly', 'key_role_turnover_input', 'company_governance')
+                     'safety_incident_monthly', 'key_role_turnover_input', 'company_governance', 'company_key_role_setting',
+                     'board_absence_input')
                    AND column_name ~* '(person|user|employee_id|pseudonym)'));
 -- The four rejected glossary terms are assembled from pieces so that the pack itself greps clean for them.
 SELECT t_assert('forbidden terms: none of the 4 rejected glossary terms (standalone spoon plural included) in any report or function text',
