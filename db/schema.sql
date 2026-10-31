@@ -1,8 +1,10 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.19 · schema.sql
--- Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- CHR-ETRS MVP v1.6.20 · schema.sql
+-- Version: 1.6.20-mvp (2026-10-31 IL) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
+-- New in 1.6.20 (Karin 31.10): no schema change except comments — the 'ללא מחלקה' absence row (J-92) is a
+--   team_absence_input row with team_id 'ללא מחלקה' (rules in rpc.sql).
 -- v1.6.19-r3 (Karin 31.10, J-80 = A): team_absence_input (total days per team per month: sickness + unplanned +
 --   early leave not pre-approved; vp_hr; no person column) is the only absence source for burnout AND the board
 --   (board = Σ team rows); board_absence_input is no longer used (kept, rows kept).
@@ -4594,6 +4596,8 @@ CREATE TABLE IF NOT EXISTS board_absence_input (
 -- the board. TOTAL days per team per month, entered by vp_hr: sickness + unplanned absence + early leave that was
 -- NOT pre-approved. Approved absences / refresh time, planned vacation, EverStore time benefits and pre-approved
 -- early leave are not counted and have no column. No per-employee row, no person column (aggregate only).
+-- v1.6.20 (J-92): team_id 'ללא מחלקה' = the company-level total of the active employees without a department
+-- (never a team; only part of the board total).
 CREATE TABLE IF NOT EXISTS team_absence_input (
     company_id                   uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
     team_id                      varchar(255) NOT NULL CHECK (length(btrim(team_id)) > 0),

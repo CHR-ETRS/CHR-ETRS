@@ -1,6 +1,6 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.19 · rpc.sql
--- Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- CHR-ETRS MVP v1.6.20 · rpc.sql
+-- Version: 1.6.20-mvp (2026-10-31 IL) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -8,6 +8,13 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- New in 1.6.20 (Karin 31.10, after PR #8 merged as 4f676aa):
+--   * J-92: rpc_put_team_absences accepts the 'ללא מחלקה' row (fn_no_department_key) — the company-level monthly
+--     total of the active employees without a department (NULL / blank / 'ללא מחלקה'); same validation and audit,
+--     vp_hr only. It is part of the board total (required when such employees exist, J-95; small-group hiding
+--     J-87 applies to it), never shown separately, and never a burnout team (rpc_get_burnout_trend → 400
+--     invalid_team). J-91: the input stays vp_hr only (decision). J-88: Karin's exact absence definition (3 lines),
+--     approved — no 'טיוטה' on the burnout or board absences.
 -- v1.6.19-r3 (Karin 31.10, J-80 = A): the burnout absences signal and the board absences both come ONLY from
 --   rpc_put_team_absences (vp_hr; total days per team per month: sickness + unplanned + early leave not
 --   pre-approved). Missing month → 'חסר: team_absence_input' and the signal is skipped (other signals unchanged);
@@ -5718,12 +5725,15 @@ $$;
 
 -- ---------- v1.6.19-r3 (Karin 31.10, J-80 = A): team absences = sickness + unplanned (incl. unapproved early leave) ----------
 
--- The one absence definition of the burnout agent AND the board (J-80 = A; my Hebrew wording → 'טיוטה').
+-- The one absence definition of the burnout agent AND the board (J-80 = A). v1.6.20: Karin's EXACT approved text
+-- (J-88 closed, 31.10) — three lines, no 'טיוטה' marking.
 CREATE OR REPLACE FUNCTION fn_absence_definition_he()
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
-AS $$ SELECT 'היעדרות = ימי מחלה + היעדרות לא מתוכננת (כולל יציאה מוקדמת שלא אושרה מראש) בלבד; היעדרויות מאושרות וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש אינן נספרות'::text $$;
+AS $$ SELECT 'היעדרויות = סך ימי המחלה וההיעדרות הלא מתוכננת בצוות בחודש, כולל יציאה מוקדמת שלא אושרה מראש.
+לא נספרים: היעדרות מאושרת וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש.
+המקור: הזנה חודשית של vp_hr, בלי פירוט לפי עובד.'::text $$;
 
 -- Total absence days of a team month from team_absence_input (sickness + unplanned + unapproved early leave);
 -- NULL when vp_hr has not entered the month (never 0 by default — 'חסר').
@@ -5736,6 +5746,38 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT x.sickness_days + x.unplanned_absence_days + x.unapproved_early_leave_days
     FROM team_absence_input x WHERE x.company_id = p_company AND x.team_id = p_team AND x.period_month = p_month
+$$;
+
+-- v1.6.20 (Karin 31.10, J-92): the key of the 'ללא מחלקה' absence row — one company-level monthly total for the
+-- active employees without a department. It is not a team: never shown separately, never a burnout team.
+CREATE OR REPLACE FUNCTION fn_no_department_key()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'ללא מחלקה'::text $$;
+
+-- True for a department value that means "no department" (J-96): NULL, blank, or literally 'ללא מחלקה'.
+CREATE OR REPLACE FUNCTION fn_is_no_department(p_department text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT NULLIF(btrim(p_department), '') IS NULL OR btrim(p_department) = fn_no_department_key() $$;
+
+-- Active employees of an absence-input group in a month: a real team (fn_team_month_members), or, for the
+-- 'ללא מחלקה' key, the active employees without a department (same population rules).
+CREATE OR REPLACE FUNCTION fn_absence_group_members(p_company uuid, p_group varchar, p_month date)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT CASE WHEN fn_is_no_department(p_group) THEN
+           (SELECT count(*)::int FROM users u
+             WHERE u.company_id = p_company AND fn_is_no_department(u.department) AND u.has_employee_profile
+               AND (u.hire_date IS NULL OR u.hire_date < fn_month_shift(p_month, 1))
+               AND (u.employment_ended_at IS NULL OR fn_agent_local_ts(p_company, u.employment_ended_at)::date >= p_month))
+         ELSE fn_team_month_members(p_company, p_group, p_month) END
 $$;
 
 -- The burnout absences signal (J-80 = A). The month's input missing → 'חסר: team_absence_input' and the signal is
@@ -5751,8 +5793,7 @@ SET search_path = pg_catalog, public
 AS $$
 DECLARE
   v_n int := cardinality(p_vals);
-  v_d jsonb := jsonb_build_object('definition_he', fn_absence_definition_he(), 'text_status', fn_text_status_draft(),
-                                  'aggregate_only', true);
+  v_d jsonb := jsonb_build_object('definition_he', fn_absence_definition_he(), 'aggregate_only', true);   -- J-88 approved
 BEGIN
   IF p_vals[v_n] IS NULL THEN
     RETURN v_d || jsonb_build_object('display_he', 'חסר: team_absence_input', 'rising', false, 'used_in_risk', false);
@@ -5766,7 +5807,8 @@ END;
 $$;
 
 -- vp_hr enters the TOTAL absence days of one team month (J-80 = A): sickness, unplanned absence, early leave that
--- was not pre-approved. Aggregate only — no employee, no name. Each value ≥ 0 with one decimal; the team must have
+-- was not pre-approved. v1.6.20 (J-92): p_team_id 'ללא מחלקה' = the company total of the employees without a
+-- department (same columns, validation and audit; it is not a team). Aggregate only — no employee, no name. Each value ≥ 0 with one decimal; the team must have
 -- active employees in the month (else 400 invalid_team) and the total cannot exceed team size × days of the month
 -- (else 400 invalid_amount). Replaces that month's row; audited (team + month only).
 CREATE OR REPLACE FUNCTION rpc_put_team_absences(p_company_id uuid, p_team_id varchar, p_month date,
@@ -5782,10 +5824,11 @@ DECLARE
   v_members int;
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
-  IF p_month IS NULL OR p_team_id IS NULL OR length(btrim(p_team_id)) = 0 THEN
+  IF p_month IS NULL OR p_team_id IS NULL OR length(btrim(p_team_id)) = 0
+     OR (fn_is_no_department(p_team_id) AND p_team_id <> fn_no_department_key()) THEN
     PERFORM fn_raise_bad_request('invalid_team');
   END IF;
-  v_members := fn_team_month_members(p_company_id, p_team_id, v_m);
+  v_members := fn_absence_group_members(p_company_id, p_team_id, v_m);   -- J-92: 'ללא מחלקה' = no-department employees
   IF v_members = 0 THEN
     PERFORM fn_raise_bad_request('invalid_team');
   END IF;
@@ -5809,6 +5852,7 @@ BEGIN
 END;
 $$;
 
+REVOKE ALL ON FUNCTION fn_absence_group_members(uuid, varchar, date) FROM PUBLIC;
 REVOKE ALL ON FUNCTION fn_team_absence_days(uuid, varchar, date),
                        fn_team_absence_signal(uuid, numeric[], int, int, int) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) FROM PUBLIC;
@@ -5840,6 +5884,9 @@ DECLARE
   v_na constant text := 'אין מספיק מדווחים בפועל להצגה';
   v_rising boolean;
 BEGIN
+  IF p_team_id IS NULL OR fn_is_no_department(p_team_id) THEN
+    PERFORM fn_raise_bad_request('invalid_team');   -- v1.6.20 (J-92): 'ללא מחלקה' is never a burnout team
+  END IF;
   IF NOT fn_may_read_team_agent(p_company_id, p_team_id) THEN
     PERFORM fn_raise_business('insufficient_privilege');
   END IF;
@@ -8076,7 +8123,8 @@ IMMUTABLE
 AS $$ SELECT fn_absence_definition_he() $$;   -- r3: one definition for the board and the burnout agent (J-80 = A)
 
 -- Board absences of a month (J-53, r3 J-85): the SUM of the month's team_absence_input rows (sickness + unplanned
--- + unapproved early leave) — approved absence / refresh entries, time benefits, vacation and pre-approved early
+-- + unapproved early leave; v1.6.20 J-92: incl. the 'ללא מחלקה' row, which is never shown on its own — only the
+-- total; teams_count counts real teams only) — approved absence / refresh entries, time benefits, vacation and pre-approved early
 -- leave are NOT counted. A team with active employees but no row → 'חסר: team_absence_input' (+ how many teams);
 -- fewer than 5 active employees in the company, or teams of < 5 employees whose combined size is 1–4 (their days
 -- could be derived from the total minus the shown teams) → not shown.
@@ -8088,21 +8136,23 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_d jsonb := jsonb_build_object('definition_he', fn_board_absence_definition_he(), 'text_status', fn_text_status_draft());
+  v_d jsonb := jsonb_build_object('definition_he', fn_board_absence_definition_he());   -- J-88 approved: no 'טיוטה'
   r record;
 BEGIN
-  WITH teams AS (
-    SELECT d.department AS team, fn_team_month_members(p_company, d.department, p_month) AS members
+  WITH teams AS (   -- real teams + (J-92) the 'ללא מחלקה' group, required when it has active employees (J-95)
+    SELECT d.department AS team, fn_team_month_members(p_company, d.department, p_month) AS members, false AS no_dept
       FROM (SELECT DISTINCT u.department FROM users u
-             WHERE u.company_id = p_company AND u.department IS NOT NULL AND u.has_employee_profile) d)
+             WHERE u.company_id = p_company AND NOT fn_is_no_department(u.department) AND u.has_employee_profile) d
+    UNION ALL
+    SELECT fn_no_department_key(), fn_absence_group_members(p_company, fn_no_department_key(), p_month), true)
   SELECT count(*) FILTER (WHERE t.members > 0 AND x.team_id IS NULL) AS missing,
          COALESCE(sum(t.members) FILTER (WHERE x.team_id IS NOT NULL AND t.members < fn_privacy_min_n('regular')), 0) AS small_members,
          sum(x.sickness_days) AS sick, sum(x.unplanned_absence_days) AS unplanned,
-         sum(x.unapproved_early_leave_days) AS early, count(x.team_id) AS teams
+         sum(x.unapproved_early_leave_days) AS early, count(x.team_id) FILTER (WHERE NOT t.no_dept) AS teams, count(x.team_id) AS rows_in
     INTO r
     FROM teams t LEFT JOIN team_absence_input x
       ON x.company_id = p_company AND x.team_id = t.team AND x.period_month = p_month;
-  IF r.missing > 0 OR r.teams = 0 THEN
+  IF r.missing > 0 OR r.rows_in = 0 THEN
     RETURN v_d || jsonb_build_object('display_he', 'חסר: team_absence_input', 'teams_missing_count', r.missing);
   END IF;
   IF fn_team_month_members(p_company, NULL, p_month) < fn_privacy_min_n('regular')

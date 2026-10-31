@@ -1,9 +1,9 @@
-# CHR-ETRS MVP v1.6.19 · openapi.yaml
-# Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
+# CHR-ETRS MVP v1.6.20 · openapi.yaml
+# Version: 1.6.20-mvp (2026-10-31 IL) — supersedes 1.6.19-mvp (2026-10-31 IL), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
-  version: 1.6.19-mvp
+  version: 1.6.20-mvp
   description: "**v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77):**\n\
     - J-43 (decided): the memo line \"יצא עם העוזבים\" updates only after 10 NEW leavers (distinct employees) since\
     \ the last value; until then the previous value is shown with a waiting note (טיוטה). Remediations and reversals\
@@ -29,7 +29,9 @@ info:
     \ are not absences (J-54).\n- v1.6.19-r2 (A-16 closed): redemption rate = redeemers ÷ active employees; key\
     \ roles = role names marked by vp_hr (`/rpc/rpc_put_key_roles`, `/rpc/rpc_get_key_roles`); board absences = sickness\
     \ + unplanned only (r3: Σ `/rpc/rpc_put_team_absences` rows, also the burnout source); burnout guard adds שימוע / שיחת בירור / התראה בכתב / מעקב\
-    \ ביצועים.\n\nPostgREST reads + RPC writes. Version 1.6.19-mvp (2026-10-31) — supersedes 1.6.18-mvp\
+    \ ביצועים.\n- v1.6.20: the absence input `/rpc/rpc_put_team_absences` takes a \"ללא מחלקה\" row (company total\
+    \ of employees without a department; only inside the board total, never shown alone, never a burnout team);\
+    \ vp_hr only (J-91); the absence definition is Karin's approved text (J-88).\n\nPostgREST reads + RPC writes. Version 1.6.20-mvp (2026-10-31) — supersedes 1.6.19-mvp (2026-10-31), 1.6.18-mvp\
     \ (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were\
     \ planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp\
     \ (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20),\
@@ -3637,7 +3639,8 @@ paths:
         (J-80 = A): signals.absences (was approved_absences) = total team days from /rpc/rpc_put_team_absences
         (sickness + unplanned + unapproved early leave; approved / refresh / time benefits / vacation / pre-approved
         early leave not counted); month input missing → display_he "חסר: team_absence_input", used_in_risk false
-        (the term is skipped, the other signals run unchanged); < 5 active employees → not shown.'
+        (the term is skipped, the other signals run unchanged); < 5 active employees → not shown. v1.6.20: definition_he
+        = Karin''s approved 3-line text (J-88, no טיוטה); p_team_id "ללא מחלקה" or blank → 400 invalid_team (J-92).'
       requestBody:
         required: true
         content:
@@ -3663,6 +3666,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/AgentJson'
         '403': *id018
+        '400':
+          description: invalid_team (v1.6.20, J-92 — "ללא מחלקה" / blank is not a team)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_put_team_movements:
     post:
       tags:
@@ -4496,7 +4505,11 @@ paths:
         counted and have no field. No employee, no name. The team must have active employees in the month (400
         invalid_team); the total may not exceed team size × days of the month (400 invalid_amount). Replaces
         that month''s row; audited (team + month only). Board absences = Σ team rows (no row for a team with
-        employees → "חסר: team_absence_input"). Replaces /rpc/rpc_put_board_absences (removed in r3).'
+        employees → "חסר: team_absence_input"). Replaces /rpc/rpc_put_board_absences (removed in r3). v1.6.20
+        (J-92): p_team_id "ללא מחלקה" = the company-level total of the active employees without a department (blank
+        or "ללא מחלקה" department) — same fields, validation, audit and vp_hr-only access (J-91); it is part of the
+        board total (required when such employees exist), never shown separately and never a burnout team. With no
+        such employee it is refused (400 invalid_team).'
       requestBody:
         required: true
         content:

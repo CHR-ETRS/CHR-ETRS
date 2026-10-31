@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# CHR-ETRS MVP v1.6.19 · migrations/run_migration.sh — runner for migrate_v1_4_to_v1_6_19.sql (supersedes the 1.6.18, 1.6.17,
-# 1.6.16 and 1.6.13 runners; v1.6.19: only the file name and the backup prefix change).
+# CHR-ETRS MVP v1.6.20 · migrations/run_migration.sh — runner for migrate_v1_4_to_v1_6_20.sql (supersedes the 1.6.19, 1.6.18, 1.6.17,
+# 1.6.16 and 1.6.13 runners; v1.6.19 / v1.6.20: only the file name and the backup prefix change).
 #   usage: run_migration.sh [--source-tz <zone>] {dry-run|apply|guard|rollback} <db>
 #   dry-run  <db> : timezone preflight, run the migration, print the counts, ROLLBACK (nothing changes);
 #                   reports which legacy protection apply would install (guard or fallback)
@@ -19,7 +19,7 @@
 set -euo pipefail
 unset PGTZ
 HERE="$(cd "$(dirname "$0")" && pwd)"
-MIG="$HERE/migrate_v1_4_to_v1_6_19.sql"
+MIG="$HERE/migrate_v1_4_to_v1_6_20.sql"
 PREFLIGHT="$HERE/preflight_tz.sql"
 GUARD="$HERE/legacy_ddl_guard.sql"
 FALLBACK="$HERE/legacy_lockdown_fallback.sql"
@@ -50,7 +50,7 @@ guard_psql() { if [ -n "$GUARD_USER" ]; then psql -X -U "$GUARD_USER" -d "$DB" "
 is_superuser() { [ "$(guard_psql -qAt -c 'SELECT rolsuper FROM pg_roles WHERE rolname = current_user' 2>/dev/null)" = "t" ]; }
 
 # newest_backup: path of the newest backup of $DB (empty when none)
-newest_backup() { ls -1t "$BACKUP_DIR/${DB}_pre_v1_6_19_"*.dump 2>/dev/null | head -n 1 || true; }
+newest_backup() { ls -1t "$BACKUP_DIR/${DB}_pre_v1_6_20_"*.dump 2>/dev/null | head -n 1 || true; }
 
 # do_preflight: source timezone check (stops on non-UTC without --source-tz); changes nothing
 do_preflight() { app_psql -q -1 -f "$PREFLIGHT"; }
@@ -81,7 +81,7 @@ do_guard() {
 do_apply() {
   do_preflight
   mkdir -p "$BACKUP_DIR"
-  local f="$BACKUP_DIR/${DB}_pre_v1_6_19_$(date +%Y%m%d%H%M%S%N).dump"
+  local f="$BACKUP_DIR/${DB}_pre_v1_6_20_$(date +%Y%m%d%H%M%S%N).dump"
   pg_dump -Fc -d "$DB" -f "$f"
   echo "backup: $f"
   app_psql -v dry_run=0 -f "$MIG"

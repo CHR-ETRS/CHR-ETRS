@@ -1,7 +1,7 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.19 · tests/test_board_v1_6_19.sql — v1.6.19 board report, leaver batching, ILS estimate,
 -- verification levels, 'תיק אימות', pay linkage, social events, layers + governance, sources (PostgreSQL 17)
--- Version: 1.6.19-mvp (2026-10-31; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
+-- Version: 1.6.20-mvp (2026-10-31; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_board_v1_6_19.sql
 -- Every check prints "PASS <name>"; any failure aborts. Dates are relative to the run (current company month)
 -- because leaver batches are stamped with the real clock.
@@ -120,7 +120,8 @@ INSERT INTO companies (company_id, company_name, country, week_start_dow, last_w
   (t_u('cG'), 'Board G', 'IL', 0, 4, 'Asia/Jerusalem'),
   (t_u('cH'), 'Board H', 'IL', 0, 4, 'Asia/Jerusalem'),
   (t_u('cJ'), 'Board J', 'IL', 0, 4, 'Asia/Jerusalem'),
-  (t_u('cS'), 'Board S', 'IL', 0, 4, 'Asia/Jerusalem');
+  (t_u('cS'), 'Board S', 'IL', 0, 4, 'Asia/Jerusalem'),
+  (t_u('cN'), 'Board N', 'IL', 0, 4, 'Asia/Jerusalem');   -- v1.6.20 J-92 (no-department group)
 DO $$
 DECLARE i int; c text;
 BEGIN
@@ -716,12 +717,21 @@ SELECT t_assert('B1c: outcomes — PCQ-12, IHS / TPS-12 below 5 reporters say so
 SELECT t_assert('J-54: a cancelled absence is not an absence (team OPS 1 — of 2 rows; team level unchanged)',
   fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 1
   AND fn_company_month_absences(t_u('cS'), (SELECT m FROM t_m)) = 1);
-SELECT t_assert('J-53 / r3: no team input → "חסר: team_absence_input" (3 teams missing) with the shared definition (טיוטה); the approved refresh entry is NOT counted',
+-- J-88 (Karin 31.10, approved): the exact 3-line absence definition, letter for letter, with no 'טיוטה'.
+CREATE TEMP TABLE t_absdef AS SELECT 'היעדרויות = סך ימי המחלה וההיעדרות הלא מתוכננת בצוות בחודש, כולל יציאה מוקדמת שלא אושרה מראש.' || chr(10) || 'לא נספרים: היעדרות מאושרת וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש.' || chr(10) || 'המקור: הזנה חודשית של vp_hr, בלי פירוט לפי עובד.' AS txt;
+SELECT t_assert('J-88: fn_absence_definition_he returns Karin''s approved text exactly — 3 lines, letter for letter, no "טיוטה"',
+  fn_absence_definition_he() = (SELECT txt FROM t_absdef)
+  AND array_length(string_to_array(fn_absence_definition_he(), chr(10)), 1) = 3
+  AND md5(fn_absence_definition_he()) = md5((SELECT txt FROM t_absdef))
+  AND length(fn_absence_definition_he()) = length((SELECT txt FROM t_absdef))
+  AND position('טיוטה' IN fn_absence_definition_he()) = 0
+  AND fn_board_absence_definition_he() = fn_absence_definition_he());
+SELECT t_assert('J-53 / r3: no team input → "חסר: team_absence_input" (3 teams missing) with the approved definition (no text_status / "טיוטה"); the approved refresh entry is NOT counted',
   (SELECT j->'outcomes'->'absences'->>'display_he' = 'חסר: team_absence_input'
           AND (j->'outcomes'->'absences'->>'teams_missing_count')::int = 3
-          AND j->'outcomes'->'absences'->>'definition_he' = 'היעדרות = ימי מחלה + היעדרות לא מתוכננת (כולל יציאה מוקדמת שלא אושרה מראש) בלבד; היעדרויות מאושרות וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש אינן נספרות'
-          AND j->'outcomes'->'absences'->>'definition_he' = fn_absence_definition_he()
-          AND j->'outcomes'->'absences'->>'text_status' = 'טיוטה' AND NOT (j->'outcomes'->'absences') ? 'days' FROM t_lay));
+          AND j->'outcomes'->'absences'->>'definition_he' = (SELECT txt FROM t_absdef)
+          AND NOT (j->'outcomes'->'absences') ? 'text_status' AND (j->'outcomes'->'absences')::text !~ 'טיוטה'
+          AND NOT (j->'outcomes'->'absences') ? 'days' FROM t_lay));
 SELECT t_assert('B3: governance missing → "חסר: …" / "לא הוגדר"',
   (SELECT j->'governance'->>'accountable_exec_display_he' = 'חסר: company_governance.accountable_exec_role_name'
           AND j->'governance'->>'exec_pay_display_he' = 'לא הוגדר'
@@ -825,6 +835,83 @@ SELECT t_assert('r3 J-85: the company-level input RPC is gone (board = Σ teams)
   AND EXISTS (SELECT 1 FROM pg_class WHERE relname = 'board_absence_input'));
 SELECT t_assert('J-53 / r3: the input output is team + month + status only',
   (SELECT j->>'status' = 'saved' AND j->>'team' = 'OPS' AND t_ids_free(j) FROM t_outputs WHERE label = 'absences_put'));
+-- ============ v1.6.20 J-92 (Karin 31.10): the 'ללא מחלקה' absence row ============
+-- users.department is NOT NULL (default 'General'), so "without a department" = blank or literally 'ללא מחלקה' (J-97).
+SELECT t_mk(t_u('cS'), 'nodeptS1', '', 'employee', 'employee', 'mgrS') IS NOT NULL AS nd1,
+       t_mk(t_u('cS'), 'nodeptS2', 'ללא מחלקה', 'employee', 'employee', 'mgrS') IS NOT NULL AS nd2;
+INSERT INTO t_outputs SELECT 'board_abs_nodept_missing', fn_board_absences_json(t_u('cS'), (SELECT m FROM t_m));
+SELECT t_assert('J-92 / J-95: active employees without a department and no "ללא מחלקה" row → the board says "חסר" (1 group missing), no partial total',
+  (SELECT j->>'display_he' = 'חסר: team_absence_input' AND (j->>'teams_missing_count')::int = 1 AND NOT j ? 'days'
+     FROM t_outputs WHERE label = 'board_abs_nodept_missing')
+  AND fn_absence_group_members(t_u('cS'), fn_no_department_key(), (SELECT m FROM t_m)) = 2);
+SELECT t_as(t_u('hrS'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'nodept_put', rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 2, 0.5, 0);
+SELECT t_expect_http('J-92: the no-department row has the same validation (negative → 400)', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), -1, 0, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('J-92: …and the same size cap (2 employees × days of the month)', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 60, 10, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('J-92: a padded / variant key is refused (only the exact key "ללא מחלקה") → 400 invalid_team', $$SELECT rpc_put_team_absences(t_u('cS'), ' ללא מחלקה ', (SELECT m FROM t_m), 1, 0, 0)$$, 'invalid_team', 400);
+SELECT t_expect_http('J-92: the burnout agent never treats "ללא מחלקה" as a team → 400 invalid_team', $$SELECT rpc_get_burnout_trend(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m))$$, 'invalid_team', 400);
+SELECT t_expect_http('J-92: …nor a blank team (the no-department group) → 400 invalid_team', $$SELECT rpc_get_burnout_trend(t_u('cS'), '', (SELECT m FROM t_m))$$, 'invalid_team', 400);
+INSERT INTO t_outputs SELECT 'trend_ops_j92', rpc_get_burnout_trend(t_u('cS'), 'OPS', (SELECT m FROM t_m));
+RESET ROLE;
+INSERT INTO t_outputs SELECT 'board_abs_nodept', fn_board_absences_json(t_u('cS'), (SELECT m FROM t_m));
+INSERT INTO t_outputs SELECT 'layers_nodept', fn_board_layers(t_u('cS'), (SELECT m FROM t_m));
+SELECT t_assert('J-92: company total = Σ all team rows + the no-department row = 11.5 + 2.5 = 14 (sickness 7 + 2, unplanned 3.5 + 0.5, early 1)',
+  (SELECT (j->>'days')::numeric = 14 AND (j->>'sickness_days')::numeric = 9 AND (j->>'unplanned_absence_days')::numeric = 4
+          AND (j->>'unapproved_early_leave_days')::numeric = 1 FROM t_outputs WHERE label = 'board_abs_nodept')
+  AND (SELECT (j->>'days')::numeric FROM t_outputs WHERE label = 'board_abs_nodept')
+      = (SELECT sum(x.sickness_days + x.unplanned_absence_days + x.unapproved_early_leave_days) FROM team_absence_input x
+          WHERE x.company_id = t_u('cS') AND x.period_month = (SELECT m FROM t_m)));
+SELECT t_assert('J-92: the no-department row is never shown separately — no key, label, count or own figure in the board absences or the whole layers output; teams_count = real teams only (3)',
+  (SELECT j::text !~ 'ללא מחלקה' AND j::text !~* 'no_dep' AND (j->>'teams_count')::int = 3
+          AND NOT EXISTS (SELECT 1 FROM jsonb_each(j) e WHERE e.value = '2.5'::jsonb OR e.value = '2'::jsonb)
+     FROM t_outputs WHERE label = 'board_abs_nodept')
+  AND (SELECT j::text !~ 'ללא מחלקה' AND j->'outcomes'->'absences' = (SELECT j FROM t_outputs WHERE label = 'board_abs_nodept')
+         FROM t_outputs WHERE label = 'layers_nodept'));
+SELECT t_assert('J-92: burnout output has no entry for the no-department group (OPS trend does not mention it)',
+  (SELECT j::text !~ 'ללא מחלקה' FROM t_outputs WHERE label = 'trend_ops_j92'));
+SELECT t_assert('J-92: the no-department input is audited like a team row (team key + month only, no person) and returns team + month + status',
+  (SELECT count(*) = 1 AND bool_and(t_ids_free(a.scope) AND a.subject_user_id IS NULL AND NOT a.scope ? 'sickness_days')
+     FROM access_audit_log a WHERE a.action = 'team_absences_put' AND a.scope->>'team' = 'ללא מחלקה')
+  AND (SELECT j->>'status' = 'saved' AND t_ids_free(j) FROM t_outputs WHERE label = 'nodept_put'));
+SELECT t_as(t_u('cfoS'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-91 / J-92: cfo → 403 on the no-department row (vp_hr only)', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('mgrS'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-92: manager → 403 on the no-department row', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('empS1'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-92: employee → 403 on the no-department row', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_expect_http('J-92: service call → 403 on the no-department row', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+-- J-87 for the no-department group: company N = team NA (8 incl. vp_hr) + 2 employees without a department.
+DO $$
+DECLARE i int;
+BEGIN
+  PERFORM t_mk(t_u('cN'), 'hrN', 'NA', 'vp_hr', 'vp');
+  FOR i IN 1..7 LOOP PERFORM t_mk(t_u('cN'), 'naN' || i, 'NA'); END LOOP;
+END $$;
+SELECT t_as(t_u('hrN'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-92: no employee without a department → the "ללא מחלקה" row is refused (400 invalid_team)', $$SELECT rpc_put_team_absences(t_u('cN'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'invalid_team', 400);
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cN'), 'NA', (SELECT m FROM t_m), 4, 1, 0)) AS na;
+RESET ROLE;
+SELECT t_assert('J-95: no employee without a department → the no-department row is NOT required (NA alone → total 5)',
+  (fn_board_absences_json(t_u('cN'), (SELECT m FROM t_m))->>'days')::numeric = 5);
+SELECT t_mk(t_u('cN'), 'ndN' || i, '', 'employee', 'employee') IS NOT NULL AS nd FROM generate_series(1, 2) i;
+SELECT t_as(t_u('hrN'));
+SET ROLE authenticated;
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cN'), 'ללא מחלקה', (SELECT m FROM t_m), 3, 0, 0)) AS nd_row;
+RESET ROLE;
+SELECT t_assert('J-87 + J-92: a no-department group of 2 (1–4) could be derived (total − NA) → the board total is not shown',
+  (SELECT j->>'display_he' = 'אין מספיק עובדים להצגה' AND NOT j ? 'days' FROM (SELECT fn_board_absences_json(t_u('cN'), (SELECT m FROM t_m)) j) x));
+SELECT t_mk(t_u('cN'), 'ndN' || i, 'ללא מחלקה', 'employee', 'employee') IS NOT NULL AS nd FROM generate_series(3, 5) i;
+SELECT t_assert('J-87 + J-92: with 5 employees without a department the total is shown (NA 5 + no-dept 3 = 8), still no separate figure',
+  (SELECT (j->>'days')::numeric = 8 AND j::text !~ 'ללא מחלקה' AND (j->>'teams_count')::int = 1
+     FROM (SELECT fn_board_absences_json(t_u('cN'), (SELECT m FROM t_m)) j) x));
 SELECT t_assert('B3: governance = role name only (no person), exec pay tied, complaint time 4.5 days',
   (SELECT j->>'accountable_exec_role_name' = 'סמנכ"ל משאבי אנוש' AND (j->>'exec_pay_tied_to_metrics')::boolean
           AND (j->>'mean_complaint_handling_days')::numeric = 4.5 AND t_ids_free(j) FROM t_outputs WHERE label = 'governance_put'));

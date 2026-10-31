@@ -1,12 +1,18 @@
-<!-- CHR-ETRS MVP v1 · README.md · Version: 1.6.19-mvp (2026-10-31) — supersedes 1.6.18-mvp (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20) and 1.4.0-mvp (2026-10-06) -->
-# CHR-ETRS MVP v1.6.19 — Code Pack
+<!-- CHR-ETRS MVP v1 · README.md · Version: 1.6.20-mvp (2026-10-31) — supersedes 1.6.19-mvp (2026-10-31), 1.6.18-mvp (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20) and 1.4.0-mvp (2026-10-06) -->
+# CHR-ETRS MVP v1.6.20 — Code Pack
 
 **SoT / מקור האמת:** [ADR index](https://docs.google.com/document/d/1U-u5844C4J1Y6WWv59wrX3xJwY8seDbHDDbULAdnGRg/edit) + Karin's approved locks of 2026-10-20  
 **Related:** [N-1–N-3 + API v2](https://docs.google.com/document/d/14BGHkebrXyzn9vAlJGB5oGJ9jA9v-AfsRBazmBeJH2Y/edit) · [Catalog N-2](https://docs.google.com/document/d/1w6V2IeVs-K2X7L_fS34nk60yO84qfH6N7280KJ8X948/edit) · [051 v4](https://docs.google.com/document/d/1sowWT4hrEp7gtuZE8GNC3dFJ23_dQpWB2-7mm9XUOwM/edit) · [070 v5](https://docs.google.com/document/d/1FgUAHnVKTJS0Sd9lA41fMm7NoLbPHBkvQeTSNEsSjE8/edit)  
 **NLM / NotebookLM:** archived — **not SoT** / בארכיון — אינו מקור האמת.  
-**Pack version:** `1.6.19-mvp`  
+**Pack version:** `1.6.20-mvp`  
 **Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
 
+> **v1.6.20 (2026-10-31, on top of merged PR #8 / 4f676aa):** Karin closed J-91, J-92 and J-88:
+> - **J-91:** the absence input stays **vp_hr only** (cfo / payroll not added; 403 tests kept).
+> - **J-92:** `rpc_put_team_absences(p_team_id => 'ללא מחלקה', …)` — the company-level monthly total of the employees without a department (blank or 'ללא מחלקה' department). Same fields, validation and audit; part of the board total (required when such employees exist, J-95), **never shown separately**, never a burnout team (`rpc_get_burnout_trend` → 400 `invalid_team`, J-97); J-87 hiding applies to it (J-99).
+> - **J-88:** `fn_absence_definition_he()` = Karin's exact approved 3-line text; no 'טיוטה' / `text_status` on the burnout or board absences.
+> - Migration renamed `migrate_v1_4_to_v1_6_20.sql` (J-69 convention). How to run the tests: `TESTING.md`.
+>
 > **v1.6.19-r3 (2026-10-31):** Karin closed J-80 (A — align): the burnout agent's team-absences signal and the board absences use ONE definition and ONE source — `rpc_put_team_absences` (vp_hr only, audited): **total days per team per month** of sickness + unplanned absence + early leave that was not pre-approved; approved absences / refresh time, planned vacation, EverStore time benefits and pre-approved early leave are not counted. Missing month → 'חסר: team_absence_input' and the term is skipped (the other signals and B_t unchanged). Board = Σ team rows; `rpc_put_board_absences` removed; `signals.approved_absences` renamed `signals.absences`. J-85 – J-94 in `ADR_GAPS.md`.
 >
 > **v1.6.19-r2 (2026-10-31, after PR #8):** Karin closed G-3 and A-16:
