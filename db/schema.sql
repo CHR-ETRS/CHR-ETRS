@@ -1,8 +1,17 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.18 · schema.sql
--- Version: 1.6.18-mvp (2026-10-31 IL) — supersedes 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- CHR-ETRS MVP v1.6.19 · schema.sql
+-- Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
+-- New in 1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77):
+--   * Leaver list + memo line in batches (leaver_memo_snapshot / leaver_memo_inclusion, WORM): updates only after
+--     10 NEW leavers; remediations / reversals only as a batch touching ≥ 10 transfers (Karin 31.10).
+--   * Verification levels 0–4 computed from evidence (metric_verification_evidence), 'תיק אימות'
+--     (verification_dossier, questionnaire_item_version, org_event, payroll_population_input), pay / bonus
+--     linkage (metric_pay_linkage), measuring body changes (measurement_change_log), social events without
+--     attendance (social_event), report inputs (wellbeing_spend_input, safety_incident_monthly,
+--     key_role_turnover_input, company_governance). All closed, no person column.
+--   * A-3: liability_method locked to avg_redeemed (3-month moving average); spoon_cost_ils deprecated / unused.
 -- Requires ref_country_calendar.sql (GENERATED from CLDR + IANA tz by tools/gen_ref_country_calendar.py)
 --   to be loaded BEFORE this file.
 -- New in 1.6.18 (Karin 31.10 via Chief of Drive — fix round closing A-12, A-13, A-14):
@@ -4027,8 +4036,10 @@ COMMENT ON TABLE agent_settings IS
 INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, value_text, value_status, is_locked, source_note) VALUES
   (NULL, 'company_timezone',            'timezone', NULL, NULL, 'not_defined', false, 'v3 §1.7: falls back to companies.timezone until set'),
   (NULL, 'daily_summary_time',          'time',     NULL, NULL, 'not_defined', false, 'v3 §3.4: לא הוגדר — להשלמה'),
-  (NULL, 'liability_method',            'method',   NULL, NULL, 'not_defined', false, 'v3 §3.2: fixed_cost | avg_redeemed — לא הוגדר'),
-  (NULL, 'spoon_cost_ils',              'numeric',  NULL, NULL, 'not_defined', false, 'v3 §3.2: internal ILS cost per Golden Spoon — לא הוגדר'),
+  -- v1.6.19 (A-3, Karin 31.10): the ILS estimate is the AVERAGE COST OF A REDEEMED SPOON, 3-month moving average;
+  -- locked. spoon_cost_ils (fixed cost) is DEPRECATED and unused — kept (never deleted), locked, not_defined.
+  (NULL, 'liability_method',            'method',   NULL, 'avg_redeemed', 'set', true, 'A-3 (Karin 31.10): avg_redeemed = average cost of a redeemed spoon, 3-month moving average; fixed cost not used'),
+  (NULL, 'spoon_cost_ils',              'numeric',  NULL, NULL, 'not_defined', true,  'DEPRECATED (A-3, Karin 31.10): unused — no fixed ILS cost per spoon; kept for history only'),
   (NULL, 'exit_redemption_days',        'numeric',  30,   NULL, 'set',         true,  'v3 §3.3 decision 4 (Karin 30.10)'),
   (NULL, 'small_category_min_buyers',   'numeric',  5,    NULL, 'set',         true,  'v3 §3.5 decision 5 (Karin 30.10); never lowered'),
   (NULL, 'budget_threshold_low_pct',    'numeric',  75,   NULL, 'set',         false, 'v3 §3.1 / decision 6'),
@@ -4376,3 +4387,202 @@ DROP TRIGGER IF EXISTS trg_time_benefit_refund_worm ON time_benefit_refund;
 CREATE TRIGGER trg_time_benefit_refund_worm
     BEFORE UPDATE OR DELETE ON time_benefit_refund
     FOR EACH ROW EXECUTE FUNCTION fn_worm_immutable('ledger_immutable');
+
+-- =============================================================================
+-- v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77)
+-- Every table below is CLOSED to clients (RLS forced, no grants; SECURITY DEFINER RPCs only) and has NO
+-- person column (person_id / user_id / pseudonym). Inputs are aggregate counts or amounts per company period.
+-- =============================================================================
+
+-- leaver_memo_snapshot — Karin 31.10 (J-43 decided): the memo line "יצא עם העוזבים" and the leaver list move
+-- only in BATCHES: a snapshot is taken once ≥ 10 NEW leavers (distinct departed employees with a transfer) have
+-- accumulated since the last one. Remediations and reversals ride along only as a batch touching ≥ 10 distinct
+-- transfers. WORM.
+CREATE TABLE IF NOT EXISTS leaver_memo_snapshot (
+    snapshot_id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id          uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    batch_no            int NOT NULL CHECK (batch_no >= 1),
+    taken_at            timestamptz NOT NULL DEFAULT clock_timestamp(),
+    new_leavers         int NOT NULL CHECK (new_leavers >= 10),
+    adjusted_transfers  int NOT NULL DEFAULT 0 CHECK (adjusted_transfers = 0 OR adjusted_transfers >= 10),
+    transferred_total   numeric(14, 2) NOT NULL,   -- cumulative Σ included leaver_transfer
+    remediated_total    numeric(14, 2) NOT NULL,   -- cumulative Σ included remediations
+    reversed_total      numeric(14, 2) NOT NULL,   -- cumulative Σ included reversals
+    memo_amount         numeric(14, 2) NOT NULL CHECK (memo_amount >= 0),
+    UNIQUE (company_id, batch_no)
+);
+-- leaver_memo_inclusion — which happiness_debt_events a snapshot included (each event exactly once). WORM.
+CREATE TABLE IF NOT EXISTS leaver_memo_inclusion (
+    event_id     uuid PRIMARY KEY REFERENCES happiness_debt_events(event_id) ON DELETE CASCADE,
+    snapshot_id  uuid NOT NULL REFERENCES leaver_memo_snapshot(snapshot_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_lmi_snapshot ON leaver_memo_inclusion (snapshot_id);
+
+-- metric_verification_evidence — Part A1: the evidence a verification level 0–4 is computed from (append-only;
+-- the latest row of a company / metric / month counts). industry_comparison is stored and NEVER raises a level.
+-- questionnaire_identified NULL = not a questionnaire metric (J-55).
+CREATE TABLE IF NOT EXISTS metric_verification_evidence (
+    evidence_id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id                uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    metric_key                text NOT NULL CHECK (metric_key ~ '^[a-z][a-z0-9_]*$'),
+    period_month              date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    questionnaire_identified  boolean,
+    population_identified     boolean NOT NULL DEFAULT false,
+    timing_identified         boolean NOT NULL DEFAULT false,
+    scoring_identified        boolean NOT NULL DEFAULT false,
+    ctl_reporting_rate        boolean NOT NULL DEFAULT false,
+    ctl_confidentiality       boolean NOT NULL DEFAULT false,
+    audit_scope               text NOT NULL DEFAULT 'none' CHECK (audit_scope IN ('none', 'limited', 'full')),
+    audit_standard            text,
+    audit_applies_to_metric   boolean NOT NULL DEFAULT false,
+    industry_comparison       boolean NOT NULL DEFAULT false,
+    entered_at                timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_mve_lookup ON metric_verification_evidence (company_id, metric_key, period_month, entered_at DESC);
+
+-- verification_dossier — Part A2: the auto-generated 'תיק אימות' of a metric and month, kept with every
+-- published board report. WORM.
+CREATE TABLE IF NOT EXISTS verification_dossier (
+    dossier_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id    uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    metric_key    text NOT NULL,
+    period_month  date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    dossier       jsonb NOT NULL,
+    built_at      timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_vd_lookup ON verification_dossier (company_id, metric_key, period_month, built_at DESC);
+
+-- questionnaire_item_version — Part A2: question wording per version (to show changes vs the previous period).
+-- Wording of the locked instruments is entered by CHR-ETRS (the measuring body); texts not entered = להשלמה.
+CREATE TABLE IF NOT EXISTS questionnaire_item_version (
+    questionnaire_code  varchar(32) NOT NULL REFERENCES questionnaire_definition(code),
+    version_no          int NOT NULL CHECK (version_no >= 1),
+    item_no             int NOT NULL CHECK (item_no >= 1),
+    text_he             text NOT NULL CHECK (length(btrim(text_he)) > 0),
+    effective_from      timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (questionnaire_code, version_no, item_no)
+);
+
+-- measurement_change_log — Part B2: every change of measurement timing or question wording made from the
+-- COMPANY side (vp_hr). A logged change caps the affected metric at level 1 for that period. WORM.
+CREATE TABLE IF NOT EXISTS measurement_change_log (
+    change_id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id          uuid REFERENCES companies(company_id) ON DELETE SET NULL,
+    questionnaire_code  varchar(32) NOT NULL,
+    change_kind         text NOT NULL CHECK (change_kind IN ('timing', 'wording')),
+    changed_at          timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_mcl_code ON measurement_change_log (questionnaire_code, changed_at);
+
+-- org_event — Part A2: organisational events (date + description) the measurement timing is compared with.
+CREATE TABLE IF NOT EXISTS org_event (
+    org_event_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id      uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    event_date      date NOT NULL,
+    description_he  text NOT NULL CHECK (length(btrim(description_he)) > 0),
+    created_at      timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+-- payroll_population_input — Part A2: payroll headcount of a month and the exceptions by reason (counts only),
+-- to compare the measured population with payroll.
+CREATE TABLE IF NOT EXISTS payroll_population_input (
+    company_id         uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    period_month       date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    payroll_headcount  int NOT NULL CHECK (payroll_headcount >= 0),
+    exceptions         jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(exceptions) = 'object'),
+    entered_at         timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (company_id, period_month)
+);
+
+-- metric_pay_linkage — Part A3: whether a metric is used for pay or for manager bonuses (history; latest counts).
+-- A linked metric must be at level ≥ 2 or the board report is not published. WORM.
+CREATE TABLE IF NOT EXISTS metric_pay_linkage (
+    linkage_id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id              uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    metric_key              text NOT NULL CHECK (metric_key ~ '^[a-z][a-z0-9_]*$'),
+    used_for_pay            boolean NOT NULL,
+    used_for_manager_bonus  boolean NOT NULL,
+    effective_from          timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_mpl_lookup ON metric_pay_linkage (company_id, metric_key, effective_from DESC);
+
+-- social_event — Part A5: a social event is always 'ללא הערכה מקצועית'. There is deliberately NO attendance
+-- table: no attendance is recorded, nothing for managers to see, and no Golden Spoons for attending (J-49).
+CREATE TABLE IF NOT EXISTS social_event (
+    social_event_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id           uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    title_he             text NOT NULL CHECK (length(btrim(title_he)) > 0),
+    event_date           date NOT NULL,
+    evaluation_label_he  text NOT NULL DEFAULT 'ללא הערכה מקצועית' CHECK (evaluation_label_he = 'ללא הערכה מקצועית'),
+    created_at           timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+-- wellbeing_spend_input — Part B1(a): other wellbeing spend and the audited expense line (ILS) of a month.
+-- NULL = not entered (חסר / לא הוגדר) — nothing is invented.
+CREATE TABLE IF NOT EXISTS wellbeing_spend_input (
+    company_id                 uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    period_month               date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    other_wellbeing_spend_ils  numeric(14, 2) CHECK (other_wellbeing_spend_ils IS NULL OR other_wellbeing_spend_ils >= 0),
+    audited_expense_line_ils   numeric(14, 2) CHECK (audited_expense_line_ils IS NULL OR audited_expense_line_ils >= 0),
+    audited_line_name          text,
+    entered_at                 timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (company_id, period_month)
+);
+
+-- safety_incident_monthly — Part B1(c): number of safety incidents of a month (count only).
+CREATE TABLE IF NOT EXISTS safety_incident_monthly (
+    company_id      uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    period_month    date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    incident_count  int NOT NULL CHECK (incident_count >= 0),
+    entered_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (company_id, period_month)
+);
+
+-- key_role_turnover_input — Part B1(c): voluntary exits from key roles and the key-role headcount of a month
+-- (aggregate input; the role catalogue is global and no per-person "voluntary" flag exists — J-56).
+CREATE TABLE IF NOT EXISTS key_role_turnover_input (
+    company_id                 uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    period_month               date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    voluntary_key_role_exits   int NOT NULL CHECK (voluntary_key_role_exits >= 0),
+    key_role_headcount         int NOT NULL CHECK (key_role_headcount >= 0),
+    entered_at                 timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (company_id, period_month)
+);
+
+-- company_governance — Part B3: accountable senior executive (ROLE NAME only, never a person), whether executive
+-- pay is tied to the metrics, mean complaint handling time (days). NULL = לא הוגדר / להשלמה.
+CREATE TABLE IF NOT EXISTS company_governance (
+    company_id                    uuid PRIMARY KEY REFERENCES companies(company_id) ON DELETE CASCADE,
+    accountable_exec_role_name    text CHECK (accountable_exec_role_name IS NULL OR length(btrim(accountable_exec_role_name)) > 0),
+    exec_pay_tied_to_metrics      boolean,
+    mean_complaint_handling_days  numeric(8, 2) CHECK (mean_complaint_handling_days IS NULL OR mean_complaint_handling_days >= 0),
+    updated_at                    timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+-- WORM tables of v1.6.19.
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['leaver_memo_snapshot', 'leaver_memo_inclusion', 'metric_verification_evidence',
+                           'verification_dossier', 'questionnaire_item_version', 'measurement_change_log',
+                           'metric_pay_linkage'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %I', 'trg_' || t || '_worm', t);
+    EXECUTE format('CREATE TRIGGER %I BEFORE UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION fn_worm_immutable(%L)',
+                   'trg_' || t || '_worm', t, 'ledger_immutable');
+  END LOOP;
+END $$;
+
+-- Lock every v1.6.19 table: RLS on + forced, no client privileges.
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['leaver_memo_snapshot', 'leaver_memo_inclusion', 'metric_verification_evidence',
+                           'verification_dossier', 'questionnaire_item_version', 'measurement_change_log',
+                           'org_event', 'payroll_population_input', 'metric_pay_linkage', 'social_event',
+                           'wellbeing_spend_input', 'safety_incident_monthly', 'key_role_turnover_input',
+                           'company_governance'] LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC, anon, authenticated', t);
+  END LOOP;
+END $$;

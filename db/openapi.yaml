@@ -1,77 +1,99 @@
-# CHR-ETRS MVP v1.6.18 · openapi.yaml
-# Version: 1.6.18-mvp (2026-10-31 IL) — supersedes 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
+# CHR-ETRS MVP v1.6.19 · openapi.yaml
+# Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
-  version: 1.6.18-mvp
-  description: "PostgREST reads + RPC writes. Version 1.6.17-mvp (2026-10-31) — supersedes 1.6.16-mvp (2026-10-30),\
-    \ 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24),\
-    \ 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp\
-    \ (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20),\
-    \ 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20, morning) and 1.4.0-mvp (2026-10-06).\n\
-    SoT = ADR index + Karin's approved locks of 2026-10-20. NLM archived — not SoT.\n\n**Timezone (N-4 revised):**\
-    \ NOT NULL, no DEFAULT; signup requires valid IANA; missing → 400 `timezone_required`;\ninvalid update → 400\
-    \ `invalid_timezone`. Periods (questionnaires, spoons) use the employee's timezone.\n\n**Turnover cost (locked):**\
-    \ % of annual salary by tier — junior 30–50, mid 100–150, senior 200–400.\nResults include min/max ranges +\
-    \ midpoint point estimate (junior 40%, mid 125%, senior 300%; O-1). Tier defaults automatically from org_role.tier\
-    \ with CHRO override (O-2).\n\n**Deprivation Tax (locked):** system-computed only.\n`deprivation_tax_amount\
-    \ = deprived_count × avg_annual_salary × 0.12`.\nSources: Oswald et al. JLE 2015 doi:10.1086/681096; Bellet/De\
-    \ Neve/Ward MS 2024 doi:10.1287/mnsc.2023.4766.\nNo fixed currency amount. No 13–14%. Deprived in a week = weekly\
-    \ avg available spoons < 5 OR weekly B_t >= 0.65 (O-3). avg_annual_salary = company-wide average annual salary\
-    \ of that turnover tier group (O-4).\n\n**Privacy thresholds (lock #3, O-11):** N = distinct employees whose\
-    \ data ACTUALLY feeds the aggregate in that period —\nnever team size or membership. Regular N≥5; Cuckoo, Shadow\
-    \ Balance and emergency N≥10; project manager N≥5; board N≥20.\nBelow → 403 `aggregation_privacy_threshold`.\n\
-    \n**Spoons:** 12 = hard daily max. 4–5 remaining → Fighting tasks blocked (403 `circuit_breaker_active`).\n\
-    ≤3 → employee goes home; logged only as 'יציאה מוקדמת מאושרת' + time; counts as a full workday, no sick day.\n\
-    The Circuit Breaker never locks questionnaires or the shop. Morning check-in (`/rpc/rpc_morning_checkin` / `/rpc/rpc_submit_morning_checkin`):\
-    \ simple average of 0–10 scales with half-points floored in the employee's favor, setting `reported_at`. Midday\
-    \ check-in (`/rpc/rpc_midday_checkin` / `/rpc/rpc_submit_midday_checkin`): open 12:00–15:00 employee-local time,\
-    \ integer delta −4..+4 clamped to 0..12 (O-5).\n\n**Cuckoo:** employee first; 60-second veto window; then the\
-    \ direct manager sees the pseudonym only\n(`/cuckoo_alert_manager_v`). The real user id is never visible to\
-    \ the manager.\n\n**Currencies:** golden spoons are fractional (one decimal). One-way conversion 1 golden spoon\
-    \ = 50 CHR Coins;\nno reverse. In v1 only Golden Spoons are active, given for participation only at fixed amounts\
-    \ from `agent_settings` (completed monthly questionnaire incl. PCQ-12 = 10, weekly / short = 2, morning shift\
-    \ check-in 2, signup 10; never from answers or scores) and never expiring while active (30 days to redeem after\
-    \ the end of employment). CHR Coins are deferred to v2 (O-16); `/rpc/rpc_convert_golden_to_chr` stays defined\
-    \ for v2 but is BLOCKED in v1: every call → HTTP 422 `chr_coins_deferred_to_v2` (no balance change, no row).\n\
-    \n**Write rule:** ALL writes via `POST /rpc/<function_name>` with `rpc_*` names.\nDo not POST/PATCH/DELETE entity\
-    \ tables directly.\n\n**Glass Box:** Error messages MUST NOT include spoon counts or HRV numbers.\n\n**HTTP\
-    \ 403 business codes (locked):**\n- `circuit_breaker_active`\n- `anti_get_blocked` (distinct from CB)\n- `ledger_immutable`\
-    \ (WORM)\n- `aggregation_privacy_threshold`\n- `questionnaire_immutable` (WORM answers)\n\n**SQL → HTTP mapping:**\
-    \ RPCs/triggers raise with SQLSTATE `42501` (insufficient_privilege),\n`MESSAGE`/`HINT` = business code, `DETAIL`\
-    \ = `http_hint=403;code=<code>`.\nPostgREST maps `42501` → HTTP **403**, `22023`/`22004` → **400**, `23505`\
-    \ → **409**.\n\n**New in 1.6.0 (Karin's locks of 2026-10-20):**\n- Red team alert (team avg spoons < 3) — team-level\
-    \ trend only; shown only when ≥5 employees actually\n  reported spoons today (`/rpc/rpc_team_spoon_alert`);\
-    \ fewer → 403 `aggregation_privacy_threshold`.\n- Shop / golden→CHR open to every user with an employee profile\
-    \ (managers, CEO, VPs included);\n  governance-only users (board_chair / board_member / owner_shareholder without\
-    \ a profile) → 403.\n- Crypto-shredding only by the employee herself or automatically on offboarding; HR / managers\
-    \ / CEO → 403\n  `crypto_shred_forbidden`.\n- Pseudonyms assigned by the system (random colour + animal), unique\
-    \ per company, immutable\n  (`pseudonym_immutable`). The self-set RPC is removed.\n- TPS-12 30-day rule counts\
-    \ from `team_joined_at` (current team); reset on internal transfer.\n\n\n**New in 1.6.1-mvp (2026-10-20):**\n\
-    - Lock #1 (O-10): at ≤3 spoons ALL tasks are blocked, Farming included.\n- Lock #3 (O-11): every threshold counts\
-    \ actual contributors (`contributor_count`), not team size.\n- B1 role tree: `/org_role` (tiers 1–5, 14 seeded\
-    \ roles); users.`reports_to` (solid) + optional `dotted_line_to`;\n  subtree access follows the solid line only\
-    \ (recursive). Cycles / cross-company → 400 `reporting_line_invalid`.\n- B2 access: employees no management\
-    \ access; managers their solid subtree (`rpc_subtree_summary`); CEO and owners\n  averages only (`rpc_company_averages`);\
-    \ direct managers pseudonyms only (`rpc_direct_reports_pseudonyms`); CHRO\n  named data only with a reason (`rpc_chro_named_view`,\
-    \ 400 `reason_required`). Every view is audited (WORM).\n- B3 project manager: `rpc_project_load` — load index\
-    \ (NULL until a formula is locked) + burnout alert only, N≥5 contributors, audited.\n- B4 board: `rpc_board_macro_trends`\
-    \ — quarter/year, company or division, closed periods only, N≥20, no drill-down.\n- B5 emergency: only the safety\
-    \ & emergency manager declares / ends (3 types locked 13.10: `health_or_life_danger`,\n  `work_stopping_disaster`,\
-    \ `war_or_security`); immediate roster while ACTIVE;\n  CHRO HR review afterwards (JUSTIFIED | MISUSE); access\
-    \ after the end refused (`emergency_not_active`).\n- B6 distress button: `rpc_distress_press` (employee, manual)\
-    \ → 60 s grace (`rpc_distress_cancel` → silent log,\n  nothing sent) → dispatch to the safety manager (name,\
-    \ phone, last location, time) + CHRO awareness (no PII) →\n  `rpc_distress_close` by the safety manager only\
-    \ (threat_removed | referred_to_external_help | pressed_by_mistake):\n  PII removed, record read-only (403 `distress_record_immutable`),\
-    \ audit row, CHRO silent notice; false alarms\n  excluded from analytics.\n\n**New in 1.6.2-mvp (2026-10-20):**\n\
-    - Emergency types named per Karin's lock of 13.10: `health_or_life_danger` (danger to an employee's health or\
-    \ life),\n  `work_stopping_disaster` (fault / disaster that stops work: fire, flood, systems down), `war_or_security`.\n\
-    - `rpc_project_load.load_index` returns NULL: Karin defined the idea (perceived load vs. hours capacity) but\
-    \ no\n  formula is locked (TODO להשלמה). `burnout_alert` = average reported spoons < 3 — the locked red team\
-    \ alert rule (#4).\n\n**New in 1.6.3-mvp (2026-10-20, Karin's locks of 20.10 + Q5 / Q6):**\n- Project workload\
-    \ module. Employee self-report (`/rpc/rpc_submit_workload_self_report`, weekly, WORM) is the only v1 source.\n\
-    \  Personal indices EPWI_time = Σ(T_standard×D)/W_effective, EPWI_cognitive = EPWI_time/(1−L(P)) with L = 0/20/40/60/75\
-    \ %\n  for P = 1–5, B_t (1.6.3: sigmoid, removed in 1.6.4) are returned ONLY to the employee (`/rpc/rpc_my_workload_indices`;\n\
+  version: 1.6.19-mvp
+  description: "**v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77):**\n\
+    - J-43 (decided): the memo line \"יצא עם העוזבים\" updates only after 10 NEW leavers (distinct employees) since\
+    \ the last value; until then the previous value is shown with a waiting note (טיוטה). Remediations and reversals\
+    \ move it only as a batch touching ≥ 10 transfers. No 2-transfer rule.\n- `/rpc/rpc_list_leaver_transfers` is\
+    \ AGGREGATE (cfo / vp_hr only; service / anon refused; audited): rows batch / batch_team (≥ 10 leavers and the\
+    \ rest of the batch 0 or ≥ 10 — complementary rule) / adjustment_batch / company_total (open_balance = the published\
+    \ memo line). No person, transfer or event id.\n- `/rpc/rpc_record_remediation`: no transfer can be named (400\
+    \ transfer_selection_not_allowed); no open transfer / above its balance → 422 remediation_not_attributable.\
+    \ A reversal returns status only.\n- A-3: ILS estimate = average cost of a redeemed spoon, 3-month moving average\
+    \ (`/rpc/rpc_get_redeemed_spoon_cost_estimate`, cfo / vp_hr only); fewer than 10 purchases → \"אין עדיין מספיק\
+    \ מימושים לאומדן\"; missing input → \"חסר: <field>\". spoon_cost_ils is deprecated (kept, unused). No employee\
+    \ API returns an ILS-per-spoon value.\n- Verification levels 0–4 are COMPUTED (`/rpc/rpc_put_metric_verification_evidence`);\
+    \ `/rpc/rpc_put_metric_assurance` → 422 verification_level_is_computed. 'תיק אימות' per metric (`/rpc/rpc_get_verification_dossier`),\
+    \ kept with every published report. A metric used for pay / manager bonuses (`/rpc/rpc_put_metric_pay_linkage`)\
+    \ below level 2 blocks the report (422 pay_linked_metric_below_level_2). Measuring body (גוף מודד) = CHR-ETRS;\
+    \ company-side timing / wording changes are logged and cap the metric at level 1.\n- Board report layers: investment\
+    \ & activity, adoption & usage (\"אימוץ\"), outcomes, governance — with inputs `/rpc/rpc_put_wellbeing_spend`,\
+    \ `/rpc/rpc_put_safety_incidents`, `/rpc/rpc_put_key_role_turnover`, `/rpc/rpc_put_company_governance`, `/rpc/rpc_put_payroll_population`,\
+    \ `/rpc/rpc_add_org_event`, `/rpc/rpc_put_questionnaire_items`. Sources: 5 entries with doi + status_he.\n-\
+    \ Burnout: the only recommendation is \"לבדוק את תנאי העבודה בצוות\" (טיוטה). Social events (`/rpc/rpc_create_social_event`,\
+    \ `/rpc/rpc_list_social_events`) are \"ללא הערכה מקצועית\": no attendance, no Golden Spoons. Cancelled absences\
+    \ are not absences (J-54).\n\nPostgREST reads + RPC writes. Version 1.6.19-mvp (2026-10-31) — supersedes 1.6.18-mvp\
+    \ (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were\
+    \ planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp\
+    \ (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20),\
+    \ 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp\
+    \ (2026-10-20), 1.5.0-mvp (2026-10-20, morning) and 1.4.0-mvp (2026-10-06).\nSoT = ADR index + Karin's approved\
+    \ locks of 2026-10-20. NLM archived — not SoT.\n\n**Timezone (N-4 revised):** NOT NULL, no DEFAULT; signup requires\
+    \ valid IANA; missing → 400 `timezone_required`;\ninvalid update → 400 `invalid_timezone`. Periods (questionnaires,\
+    \ spoons) use the employee's timezone.\n\n**Turnover cost (locked):** % of annual salary by tier — junior 30–50,\
+    \ mid 100–150, senior 200–400.\nResults include min/max ranges + midpoint point estimate (junior 40%, mid 125%,\
+    \ senior 300%; O-1). Tier defaults automatically from org_role.tier with CHRO override (O-2).\n\n**Deprivation\
+    \ Tax (locked):** system-computed only.\n`deprivation_tax_amount = deprived_count × avg_annual_salary × 0.12`.\n\
+    Sources: Oswald et al. JLE 2015 doi:10.1086/681096; Bellet/De Neve/Ward MS 2024 doi:10.1287/mnsc.2023.4766.\n\
+    No fixed currency amount. No 13–14%. Deprived in a week = weekly avg available spoons < 5 OR weekly B_t >= 0.65\
+    \ (O-3). avg_annual_salary = company-wide average annual salary of that turnover tier group (O-4).\n\n**Privacy\
+    \ thresholds (lock #3, O-11):** N = distinct employees whose data ACTUALLY feeds the aggregate in that period\
+    \ —\nnever team size or membership. Regular N≥5; Cuckoo, Shadow Balance and emergency N≥10; project manager\
+    \ N≥5; board N≥20.\nBelow → 403 `aggregation_privacy_threshold`.\n\n**Spoons:** 12 = hard daily max. 4–5 remaining\
+    \ → Fighting tasks blocked (403 `circuit_breaker_active`).\n≤3 → employee goes home; logged only as 'יציאה מוקדמת\
+    \ מאושרת' + time; counts as a full workday, no sick day.\nThe Circuit Breaker never locks questionnaires or\
+    \ the shop. Morning check-in (`/rpc/rpc_morning_checkin` / `/rpc/rpc_submit_morning_checkin`): simple average\
+    \ of 0–10 scales with half-points floored in the employee's favor, setting `reported_at`. Midday check-in (`/rpc/rpc_midday_checkin`\
+    \ / `/rpc/rpc_submit_midday_checkin`): open 12:00–15:00 employee-local time, integer delta −4..+4 clamped to\
+    \ 0..12 (O-5).\n\n**Cuckoo:** employee first; 60-second veto window; then the direct manager sees the pseudonym\
+    \ only\n(`/cuckoo_alert_manager_v`). The real user id is never visible to the manager.\n\n**Currencies:** golden\
+    \ spoons are fractional (one decimal). One-way conversion 1 golden spoon = 50 CHR Coins;\nno reverse. In v1\
+    \ only Golden Spoons are active, given for participation only at fixed amounts from `agent_settings` (completed\
+    \ monthly questionnaire incl. PCQ-12 = 10, weekly / short = 2, morning shift check-in 2, signup 10; never from\
+    \ answers or scores) and never expiring while active (30 days to redeem after the end of employment). CHR Coins\
+    \ are deferred to v2 (O-16); `/rpc/rpc_convert_golden_to_chr` stays defined for v2 but is BLOCKED in v1: every\
+    \ call → HTTP 422 `chr_coins_deferred_to_v2` (no balance change, no row).\n\n**Write rule:** ALL writes via\
+    \ `POST /rpc/<function_name>` with `rpc_*` names.\nDo not POST/PATCH/DELETE entity tables directly.\n\n**Glass\
+    \ Box:** Error messages MUST NOT include spoon counts or HRV numbers.\n\n**HTTP 403 business codes (locked):**\n\
+    - `circuit_breaker_active`\n- `anti_get_blocked` (distinct from CB)\n- `ledger_immutable` (WORM)\n- `aggregation_privacy_threshold`\n\
+    - `questionnaire_immutable` (WORM answers)\n\n**SQL → HTTP mapping:** RPCs/triggers raise with SQLSTATE `42501`\
+    \ (insufficient_privilege),\n`MESSAGE`/`HINT` = business code, `DETAIL` = `http_hint=403;code=<code>`.\nPostgREST\
+    \ maps `42501` → HTTP **403**, `22023`/`22004` → **400**, `23505` → **409**.\n\n**New in 1.6.0 (Karin's locks\
+    \ of 2026-10-20):**\n- Red team alert (team avg spoons < 3) — team-level trend only; shown only when ≥5 employees\
+    \ actually\n  reported spoons today (`/rpc/rpc_team_spoon_alert`); fewer → 403 `aggregation_privacy_threshold`.\n\
+    - Shop / golden→CHR open to every user with an employee profile (managers, CEO, VPs included);\n  governance-only\
+    \ users (board_chair / board_member / owner_shareholder without a profile) → 403.\n- Crypto-shredding only by\
+    \ the employee herself or automatically on offboarding; HR / managers / CEO → 403\n  `crypto_shred_forbidden`.\n\
+    - Pseudonyms assigned by the system (random colour + animal), unique per company, immutable\n  (`pseudonym_immutable`).\
+    \ The self-set RPC is removed.\n- TPS-12 30-day rule counts from `team_joined_at` (current team); reset on internal\
+    \ transfer.\n\n\n**New in 1.6.1-mvp (2026-10-20):**\n- Lock #1 (O-10): at ≤3 spoons ALL tasks are blocked, Farming\
+    \ included.\n- Lock #3 (O-11): every threshold counts actual contributors (`contributor_count`), not team size.\n\
+    - B1 role tree: `/org_role` (tiers 1–5, 14 seeded roles); users.`reports_to` (solid) + optional `dotted_line_to`;\n\
+    \  subtree access follows the solid line only (recursive). Cycles / cross-company → 400 `reporting_line_invalid`.\n\
+    - B2 access: employees no management access; managers their solid subtree (`rpc_subtree_summary`); CEO and owners\n\
+    \  averages only (`rpc_company_averages`); direct managers pseudonyms only (`rpc_direct_reports_pseudonyms`);\
+    \ CHRO\n  named data only with a reason (`rpc_chro_named_view`, 400 `reason_required`). Every view is audited\
+    \ (WORM).\n- B3 project manager: `rpc_project_load` — load index (NULL until a formula is locked) + burnout\
+    \ alert only, N≥5 contributors, audited.\n- B4 board: `rpc_board_macro_trends` — quarter/year, company or division,\
+    \ closed periods only, N≥20, no drill-down.\n- B5 emergency: only the safety & emergency manager declares /\
+    \ ends (3 types locked 13.10: `health_or_life_danger`,\n  `work_stopping_disaster`, `war_or_security`); immediate\
+    \ roster while ACTIVE;\n  CHRO HR review afterwards (JUSTIFIED | MISUSE); access after the end refused (`emergency_not_active`).\n\
+    - B6 distress button: `rpc_distress_press` (employee, manual) → 60 s grace (`rpc_distress_cancel` → silent log,\n\
+    \  nothing sent) → dispatch to the safety manager (name, phone, last location, time) + CHRO awareness (no PII)\
+    \ →\n  `rpc_distress_close` by the safety manager only (threat_removed | referred_to_external_help | pressed_by_mistake):\n\
+    \  PII removed, record read-only (403 `distress_record_immutable`), audit row, CHRO silent notice; false alarms\n\
+    \  excluded from analytics.\n\n**New in 1.6.2-mvp (2026-10-20):**\n- Emergency types named per Karin's lock\
+    \ of 13.10: `health_or_life_danger` (danger to an employee's health or life),\n  `work_stopping_disaster` (fault\
+    \ / disaster that stops work: fire, flood, systems down), `war_or_security`.\n- `rpc_project_load.load_index`\
+    \ returns NULL: Karin defined the idea (perceived load vs. hours capacity) but no\n  formula is locked (TODO\
+    \ להשלמה). `burnout_alert` = average reported spoons < 3 — the locked red team alert rule (#4).\n\n**New in\
+    \ 1.6.3-mvp (2026-10-20, Karin's locks of 20.10 + Q5 / Q6):**\n- Project workload module. Employee self-report\
+    \ (`/rpc/rpc_submit_workload_self_report`, weekly, WORM) is the only v1 source.\n  Personal indices EPWI_time\
+    \ = Σ(T_standard×D)/W_effective, EPWI_cognitive = EPWI_time/(1−L(P)) with L = 0/20/40/60/75 %\n  for P = 1–5,\
+    \ B_t (1.6.3: sigmoid, removed in 1.6.4) are returned ONLY to the employee (`/rpc/rpc_my_workload_indices`;\n\
     \  RLS: own rows only). [superseded in 1.6.4: B_t is linear and computed; P>5 counts as 5.]\n- PM: `/rpc/rpc_project_workload`\
     \ — PEWI = mean EPWI_time of the reporting project members (v1.6.7), AIDB = (1−σ_w/μ_w)×100 %, TRR (NULL until\
     \ v2),\n  M_SPOF = 1 + K_critical_single/K_total (v2 items only), at N≥5 actual respondents (else 403), every\
@@ -1284,7 +1306,7 @@ paths:
               required:
               - p_org_id
               properties:
-                p_org_id: &id022
+                p_org_id: &id028
                   type: string
                   format: uuid
                 p_department:
@@ -2509,7 +2531,7 @@ paths:
             schema:
               type: object
               properties:
-                p_project_id: &id025
+                p_project_id: &id031
                   type: string
                   format: uuid
                 p_is_core:
@@ -3505,8 +3527,10 @@ paths:
       - agents
       summary: Agent 1 — open Golden Spoons + internal ILS estimate (v3 GET /agents/budget/liability) — cfo / vp_hr
         only
-      description: ILS estimate by liability_method (fixed_cost × spoon_cost_ils | avg_redeemed); "לא הוגדר" while
-        not set. Includes leavers inside the 30-day window. No rate ever reaches an employee API.
+      description: 'v1.6.19 (A-3): ILS estimate = open Golden Spoons × the average cost of a redeemed spoon (3-month
+        moving average, current month + 2 previous; ≥ 10 purchases, else ils_estimate null and "אין עדיין מספיק
+        מימושים לאומדן"; an item without an internal cost → "חסר: everstore_item_cost.internal_cost_ils"). liability_method
+        is locked to avg_redeemed; spoon_cost_ils is deprecated and unused. Includes leavers inside the 30-day window.'
       requestBody:
         required: true
         content:
@@ -3524,7 +3548,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentJson'
-        '403': *id018
+        '403': &id022
+          description: insufficient_privilege — not an active cfo / vp_hr of the company (service and anon calls
+            are refused too)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_expire_departed_golden_spoons:
     post:
       tags:
@@ -3598,7 +3628,8 @@ paths:
         crossing its threshold in 2 consecutive periods of the 3-month moving average. 5th signal (team_movements):
         events of the last 3 months ÷ team employees ≥ 1.5 × organization average AND ≥ 2 events, shown only with
         full coverage and ≥ 10 employees. 12 כפיות are never read. cfo / vp_hr or a manager whose subtree holds
-        a team member.'
+        a team member. v1.6.19 (A4): recommendation_he = "לבדוק את תנאי העבודה בצוות" (recommendation_text_status
+        טיוטה) only when rising_risk; never more feedback, documentation or an improvement plan / PIP.'
       requestBody:
         required: true
         content:
@@ -3705,12 +3736,10 @@ paths:
       - agents
       summary: Documented fix (group, date, what was fixed, approver, amount) — reduces the memo line "יצא עם העוזבים"
         (vp_hr / cfo)
-      description: 'v1.6.18 (A-12, Karin 31.10): the remediation is attributed to ONE leaver_transfer of the team
-        — p_transfer_event_id (from /rpc/rpc_list_leaver_transfers), else the team''s oldest transfer with an open
-        balance and a month ≤ the remediation month — and never above that transfer''s open balance (422 remediation_exceeds_transfer;
-        no open transfer → 422 no_open_leaver_transfer; a named transfer of another team, of a later month or unknown
-        → 400 invalid_remediation). It never reduces another leaver''s share; a later reversal of that transfer
-        returns only what is left.'
+      description: 'v1.6.19: the remediation is attributed to the team''s oldest leaver_transfer with an open balance
+        and a month ≤ the remediation month (A-12 kept). A transfer can no longer be named — the aggregate list
+        shows none (400 transfer_selection_not_allowed). No open transfer, or an amount above its open balance →
+        one 422 remediation_not_attributable. It moves the published memo line only in a batch touching ≥ 10 transfers.'
       requestBody:
         required: true
         content:
@@ -3731,7 +3760,8 @@ paths:
                   type: string
                   format: uuid
                   nullable: true
-                  description: 'v1.6.18 (A-12): the leaver_transfer this remediation was made against (optional).'
+                  description: 'v1.6.19: must be NULL / absent (else 400 transfer_selection_not_allowed); kept in
+                    the signature for compatibility.'
               required:
               - p_company_id
               - p_team_id
@@ -3748,11 +3778,13 @@ paths:
                 format: uuid
         '403': *id018
         '400':
-          description: 'invalid_remediation (also: p_transfer_event_id not a transfer of that company and team,
-            or of a later month)'
-          content: *id016
+          description: invalid_remediation | transfer_selection_not_allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '422':
-          description: remediation_exceeds_transfer | no_open_leaver_transfer (v1.6.18, A-12)
+          description: remediation_not_attributable
           content:
             application/json:
               schema:
@@ -3835,8 +3867,9 @@ paths:
     post:
       tags:
       - agents
-      summary: Agent 3 — assurance tier 0–4 of a board metric (cfo / vp_hr)
-      description: 0 לא מאומת · 1 בקרה פנימית · 2 בדיקה פנימית מתועדת · 3 סקירה חיצונית · 4 ביקורת חיצונית מלאה.
+      summary: Deprecated (v1.6.19) — the verification level is computed
+      description: 'Always 422 verification_level_is_computed for a cfo / vp_hr: record evidence with /rpc/rpc_put_metric_verification_evidence
+        instead.'
       requestBody:
         required: true
         content:
@@ -3859,16 +3892,18 @@ paths:
               - p_metric_key
               - p_tier
       responses:
-        '200':
-          description: OK
+        '403': &id025
+          description: insufficient_privilege — not an active cfo / vp_hr of the company
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentJson'
-        '403': *id018
-        '400':
-          description: invalid_assurance_tier
-          content: *id016
+                $ref: '#/components/schemas/ErrorBody'
+        '422':
+          description: verification_level_is_computed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_put_bcr_check:
     post:
       tags:
@@ -3911,10 +3946,15 @@ paths:
       tags:
       - agents
       summary: Agent 3 — build_board_report(company, month) (cfo / vp_hr)
-      description: 'Publishes only with a balanced reconciliation (GAAP − 4 debt lines − מס קיפוח = CHR Real EBITDA)
-        and the prior-period figures (unless first period). Fields: reconciliation[], shadow_balance[4], exported_on_exit
-        ("יצא עם העוזבים", from 10 מדווחים בפועל), assurance_tier per metric, bcr_score, deprivation_tax (stored
-        12 % / display 10 % switch — display only), turnover_above_baseline, misleading_margins_flag.'
+      description: 'Publishes only with a balanced reconciliation and the prior-period figures (unless first period),
+        and (v1.6.19, Part A3) only when every metric used for pay / manager bonuses is at level ≥ 2. Fields: chr_real_ebitda
+        {value, gaap_ebitda, definition_he, note_he "מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת" (B4), text_status}, reconciliation[],
+        shadow_balance[4], exported_on_exit (published batch value, J-43: amount, batch_no, label_he, display_he,
+        waiting_note_he, text_status, evidence_he; behind 10 מדווחים בפועל), verification_levels (17 metrics, computed,
+        with used_for_pay / used_for_manager_bonus), layers {investment_activity, adoption_usage ("אימוץ"), outcomes,
+        governance, measuring_body, structure_source_doi}, measuring_body (גוף מודד CHR-ETRS), causal_note (טיוטה),
+        verification_dossiers (kept), bcr_score, deprivation_tax (12 % / 10 % display switch), turnover_above_baseline,
+        misleading_margins_flag, sources[5] {topic_he, source, citation, doi, status_he}.'
       requestBody:
         required: true
         content:
@@ -3946,7 +3986,11 @@ paths:
           content: *id016
         '422':
           description: reconciliation_missing | reconciliation_prior_period_missing | reconciliation_unbalanced
-          content: *id016
+            | pay_linked_metric_below_level_2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_get_board_report:
     post:
       tags:
@@ -4003,9 +4047,12 @@ paths:
     post:
       tags:
       - agents
-      summary: Per-transfer view of the memo line "יצא עם העוזבים" (vp_hr / cfo) — v1.6.18 A-12
-      description: 'One row per leaver_transfer of the company: team, month, moved, remediated (attributed), reversed,
-        open balance. No person field; the transfer is identified by its event id only (use it as p_transfer_event_id).'
+      summary: Aggregate leaver list of the memo line "יצא עם העוזבים" (cfo / vp_hr only) — v1.6.19
+      description: 'Rows from the batches only (Karin 31.10, J-43): batch (≥ 10 new leavers), batch_team (a team
+        with ≥ 10 leavers whose batch rest is 0 or ≥ 10), adjustment_batch (remediations / reversals of ≥ 10 transfers),
+        company_total (cumulative; open_balance = the published memo line). While new leavers wait, company_total
+        carries the waiting note (טיוטה). No person, transfer or event id. Audited (leaver_transfers_view). Service
+        and anon calls are refused.'
       requestBody:
         required: true
         content:
@@ -4026,13 +4073,8 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/LeaverTransfer'
-        '403':
-          description: insufficient_privilege — not an active cfo / vp_hr of the company
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorBody'
+                  $ref: '#/components/schemas/LeaverListRow'
+        '403': *id022
   /rpc/rpc_request_absence_reschedule:
     post:
       tags:
@@ -4076,6 +4118,528 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_get_redeemed_spoon_cost_estimate:
+    post:
+      tags:
+      - agents
+      summary: A-3 — ILS estimate of one redeemed Golden Spoon (cfo / vp_hr only)
+      description: 'Average internal ILS cost of a redeemed spoon over the current company month + the 2 previous
+        ones. Fewer than 10 purchases → ils_per_redeemed_spoon null and display_he "אין עדיין מספיק מימושים לאומדן";
+        an item without a cost → "חסר: everstore_item_cost.internal_cost_ils". Employee, manager, board, service
+        and anon → refused. Audited (redeemed_spoon_cost_view).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: &id023
+                  type: string
+                  format: uuid
+              required:
+              - p_company_id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id022
+  /rpc/rpc_put_metric_verification_evidence:
+    post:
+      tags:
+      - agents
+      summary: A1 — evidence of a board metric month; returns the COMPUTED level 0–4 (cfo / vp_hr)
+      description: 0 unless questionnaire (questionnaire metrics), population, timing and scoring are identified;
+        a logged company change caps at 1; full / limited external audit to an identified standard applying to the
+        metric → 4 / 3; one control (reporting rate, confidentiality, separate measuring body) → 2; else 1. An industry
+        comparison never raises the level. Labels are Karin's texts (טיוטה).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_metric_key: &id026
+                  type: string
+                p_month: &id027
+                  type: string
+                  format: date
+                p_questionnaire_identified:
+                  type: boolean
+                  nullable: true
+                p_population_identified: &id024
+                  type: boolean
+                p_timing_identified: *id024
+                p_scoring_identified: *id024
+                p_ctl_reporting_rate: *id024
+                p_ctl_confidentiality: *id024
+                p_audit_scope:
+                  type: string
+                  enum:
+                  - none
+                  - limited
+                  - full
+                p_audit_standard:
+                  type: string
+                  nullable: true
+                p_audit_applies_to_metric: *id024
+                p_industry_comparison: *id024
+              required:
+              - p_company_id
+              - p_metric_key
+              - p_month
+              - p_population_identified
+              - p_timing_identified
+              - p_scoring_identified
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_verification_evidence
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_get_verification_dossier:
+    post:
+      tags:
+      - agents
+      summary: A2 — 'תיק אימות' of a metric month (cfo / vp_hr)
+      description: 'Built live: verification_level, questionnaire (wording + change vs the previous period, or "להשלמה"),
+        population (measured vs payroll + exceptions, or "חסר: …"), timing (vs organisational events), reporting
+        (מדווחים בפועל, rate, range; no imputation), independence (גוף מודד CHR-ETRS, company changes), scoring,
+        golden_spoons (value in effect); last_kept_at = last copy kept with a published report.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_metric_key: *id026
+                p_month: *id027
+              required:
+              - p_company_id
+              - p_metric_key
+              - p_month
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_verification_evidence
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_metric_pay_linkage:
+    post:
+      tags:
+      - agents
+      summary: A3 — mark a metric as used for pay / manager bonuses (cfo / vp_hr; history kept)
+      description: A linked metric below level 2 blocks /rpc/rpc_build_board_report (422 pay_linked_metric_below_level_2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_metric_key: *id026
+                p_used_for_pay: *id024
+                p_used_for_manager_bonus: *id024
+              required:
+              - p_company_id
+              - p_metric_key
+              - p_used_for_pay
+              - p_used_for_manager_bonus
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_pay_linkage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_wellbeing_spend:
+    post:
+      tags:
+      - agents
+      summary: B1a — other wellbeing spend + the audited expense line of a month (cfo / vp_hr)
+      description: 'ILS amounts (aggregate). Not entered → "חסר: <field>".'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_month: *id027
+                p_other_wellbeing_spend_ils:
+                  type: number
+                  nullable: true
+                  minimum: 0
+                p_audited_expense_line_ils:
+                  type: number
+                  nullable: true
+                  minimum: 0
+                p_audited_line_name:
+                  type: string
+                  nullable: true
+              required:
+              - p_company_id
+              - p_month
+              - p_other_wellbeing_spend_ils
+              - p_audited_expense_line_ils
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_safety_incidents:
+    post:
+      tags:
+      - agents
+      summary: B1c — number of safety incidents of a month (cfo / vp_hr)
+      description: Count only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_month: *id027
+                p_incident_count:
+                  type: integer
+                  minimum: 0
+              required:
+              - p_company_id
+              - p_month
+              - p_incident_count
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_key_role_turnover:
+    post:
+      tags:
+      - agents
+      summary: B1c — voluntary key-role exits and key-role headcount of a month (cfo / vp_hr)
+      description: Aggregate input (J-56); shown only with ≥ 5 key roles.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_month: *id027
+                p_voluntary_exits:
+                  type: integer
+                  minimum: 0
+                p_key_role_headcount:
+                  type: integer
+                  minimum: 0
+              required:
+              - p_company_id
+              - p_month
+              - p_voluntary_exits
+              - p_key_role_headcount
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_company_governance:
+    post:
+      tags:
+      - agents
+      summary: B3 — governance layer inputs (cfo / vp_hr)
+      description: Accountable senior executive ROLE NAME (never a person), executive pay tied to the metrics, mean
+        complaint handling time (days). Returns the governance layer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_accountable_exec_role_name:
+                  type: string
+                  nullable: true
+                p_exec_pay_tied_to_metrics:
+                  type: boolean
+                  nullable: true
+                p_mean_complaint_handling_days:
+                  type: number
+                  nullable: true
+                  minimum: 0
+              required:
+              - p_company_id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_payroll_population:
+    post:
+      tags:
+      - agents
+      summary: A2 — payroll headcount + exceptions by reason of a month (cfo / vp_hr)
+      description: 'exceptions = {reason: count} (counts only).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_month: *id027
+                p_payroll_headcount:
+                  type: integer
+                  minimum: 0
+                p_exceptions:
+                  type: object
+                  additionalProperties:
+                    type: number
+                    minimum: 0
+              required:
+              - p_company_id
+              - p_month
+              - p_payroll_headcount
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_amount
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_add_org_event:
+    post:
+      tags:
+      - agents
+      summary: A2 — organisational event (date + description) for the timing check (cfo / vp_hr)
+      description: Shown in the dossier when within the measurement window or the month before.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_event_date: *id027
+                p_description_he: *id026
+              required:
+              - p_company_id
+              - p_event_date
+              - p_description_he
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
+        '400':
+          description: invalid_org_event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_put_questionnaire_items:
+    post:
+      tags:
+      - agents
+      summary: A2 / B2 — new wording version of a questionnaire
+      description: 'A locked instrument: only the measuring body (CHR-ETRS, service call); a client → 403 questionnaire_locked.
+        An unlocked questionnaire: vp_hr; the change is logged (caps its metrics at level 1 in that month).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_code: *id026
+                p_texts:
+                  type: array
+                  items:
+                    type: string
+              required:
+              - p_code
+              - p_texts
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403':
+          description: anti_get_blocked (not vp_hr) | questionnaire_locked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '400':
+          description: invalid_questionnaire_items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_create_social_event:
+    post:
+      tags:
+      - agents
+      summary: A5 — create a social event (vp_hr)
+      description: Always "ללא הערכה מקצועית"; no attendance is recorded and no Golden Spoons are given (golden_spoons
+        0).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+                p_title_he: *id026
+                p_event_date: *id027
+              required:
+              - p_company_id
+              - p_title_he
+              - p_event_date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403':
+          description: insufficient_privilege — not the vp_hr of the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '400':
+          description: invalid_social_event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_list_social_events:
+    post:
+      tags:
+      - agents
+      summary: A5 — list social events (active employees of the company)
+      description: title_he, event_date, evaluation_label_he ("ללא הערכה מקצועית") only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+              required:
+              - p_company_id
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    social_event_id: *id023
+                    title_he: *id026
+                    event_date: *id027
+                    evaluation_label_he:
+                      type: string
+                      enum:
+                      - ללא הערכה מקצועית
+        '403':
+          description: insufficient_privilege — not an active employee of the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
 components:
   securitySchemes:
     bearerAuth:
@@ -4515,8 +5079,8 @@ components:
     EmployeeValueAsset:
       type: object
       properties:
-        asset_id: *id022
-        user_id: *id022
+        asset_id: *id028
+        user_id: *id028
         direct_cost_opex:
           type: number
         asset_value_capex:
@@ -4628,8 +5192,8 @@ components:
     TeamAggregate:
       type: object
       properties:
-        aggregate_id: *id022
-        org_id: *id022
+        aggregate_id: *id028
+        org_id: *id028
         department:
           type: string
         contributor_count:
@@ -4648,15 +5212,15 @@ components:
         deprived_count:
           type: integer
           nullable: true
-        avg_annual_salary: &id023
+        avg_annual_salary: &id029
           type: number
           nullable: true
         deprivation_tax_amount:
           type: number
           nullable: true
           description: deprived_count × avg_annual_salary × 0.12 (system)
-        turnover_cost_min_sum: *id023
-        turnover_cost_max_sum: *id023
+        turnover_cost_min_sum: *id029
+        turnover_cost_max_sum: *id029
         heat_map_bucket:
           type: string
           nullable: true
@@ -4674,7 +5238,7 @@ components:
           - RED
           nullable: true
           description: Red team alert (avg < 3). NULL = no alert (fewer than 5 reporters).
-        calculated_at: &id024
+        calculated_at: &id030
           type: string
           format: date-time
         spoon_reporter_count:
@@ -4731,10 +5295,10 @@ components:
     ManagerLedger:
       type: object
       properties:
-        ledger_id: *id022
+        ledger_id: *id028
         chain_seq:
           type: integer
-        manager_id: *id022
+        manager_id: *id028
         org_id:
           type: string
           format: uuid
@@ -4744,9 +5308,9 @@ components:
           nullable: true
         event_type:
           type: string
-        amount_a: *id023
-        amount_b: *id023
-        deprivation_tax_cost: *id023
+        amount_a: *id029
+        amount_b: *id029
+        deprivation_tax_cost: *id029
         subject_pseudonym:
           type: string
           nullable: true
@@ -4764,7 +5328,7 @@ components:
           description: sha256(previous_hash || canonical_payload)
         restoration_status:
           type: string
-        created_at: *id024
+        created_at: *id030
     ShopItem:
       type: object
       description: 'EverStore catalog item (v1.6.13: 8 opening seed items קטלוג פתיחה + 8 categories, any positive
@@ -4832,15 +5396,15 @@ components:
     ShadowBalanceAggregate:
       type: object
       properties:
-        aggregate_id: *id022
-        org_id: *id022
+        aggregate_id: *id028
+        org_id: *id028
         department:
           type: string
         contributor_count:
           type: integer
           minimum: 10
           description: 'Actual salary contributors (lock #3).'
-        deprivation_tax_amount: *id023
+        deprivation_tax_amount: *id029
         happiness_debt_sum:
           type: number
           nullable: true
@@ -4849,7 +5413,7 @@ components:
           type: number
           nullable: true
           description: 'O-18: happiness_debt_sum + deprivation_tax_amount.'
-        calculated_at: *id024
+        calculated_at: *id030
         deprived_count:
           type: integer
           nullable: true
@@ -4869,16 +5433,16 @@ components:
     CuckooAlertManagerView:
       type: object
       properties:
-        alert_id: *id022
+        alert_id: *id028
         target_pseudonym:
           type: string
-        delivered_at: *id024
+        delivered_at: *id030
       description: Pseudonym only. No user id, no reason, no NLP codes, no medical details.
     EarlyLeaveLog:
       type: object
       properties:
-        log_id: *id022
-        user_id: *id022
+        log_id: *id028
+        user_id: *id028
         local_date:
           type: string
           format: date
@@ -4886,7 +5450,7 @@ components:
           type: string
           enum:
           - יציאה מוקדמת מאושרת
-        left_at: *id024
+        left_at: *id030
         counts_as_full_workday:
           type: boolean
           enum:
@@ -4905,7 +5469,7 @@ components:
           type: string
           enum:
           - יציאה מוקדמת מאושרת
-        left_at: *id024
+        left_at: *id030
     TurnoverTier:
       type: object
       properties:
@@ -4919,7 +5483,7 @@ components:
           type: number
         max_pct:
           type: number
-        updated_at: *id024
+        updated_at: *id030
         midpoint_pct:
           type: number
           readOnly: true
@@ -4928,15 +5492,15 @@ components:
     TurnoverCostRange:
       type: object
       properties:
-        user_id: *id022
+        user_id: *id028
         turnover_tier:
           type: string
           nullable: true
-        annual_salary: *id023
-        min_pct: *id023
-        max_pct: *id023
-        turnover_cost_min: *id023
-        turnover_cost_max: *id023
+        annual_salary: *id029
+        min_pct: *id029
+        max_pct: *id029
+        turnover_cost_min: *id029
+        turnover_cost_max: *id029
         midpoint_pct:
           type: number
           nullable: true
@@ -5012,7 +5576,7 @@ components:
           type: boolean
         is_active:
           type: boolean
-        updated_at: *id024
+        updated_at: *id030
         reward_setting_key:
           type: string
           enum:
@@ -5030,8 +5594,8 @@ components:
     QuestionnaireSubmission:
       type: object
       properties:
-        submission_id: *id022
-        user_id: *id022
+        submission_id: *id028
+        user_id: *id028
         questionnaire_code:
           type: string
         period_key:
@@ -5044,7 +5608,7 @@ components:
           type: array
           items:
             type: integer
-        score: *id023
+        score: *id029
         tps_12_score:
           type: number
           nullable: true
@@ -5052,7 +5616,7 @@ components:
         reward_golden_spoons:
           type: number
           multipleOf: 0.1
-        submitted_at: *id024
+        submitted_at: *id030
         ihs_score:
           type: number
           nullable: true
@@ -5086,8 +5650,8 @@ components:
     GoldenChrConversion:
       type: object
       properties:
-        conversion_id: *id022
-        user_id: *id022
+        conversion_id: *id028
+        user_id: *id028
         golden_spent:
           type: number
           multipleOf: 0.1
@@ -5099,11 +5663,11 @@ components:
           type: integer
         idempotency_key:
           type: string
-        created_at: *id024
+        created_at: *id030
     PseudonymKeyStatus:
       type: object
       properties:
-        user_id: *id022
+        user_id: *id028
         shredded_at:
           type: string
           format: date-time
@@ -5497,8 +6061,8 @@ components:
     Project:
       type: object
       properties:
-        project_id: *id025
-        company_id: *id025
+        project_id: *id031
+        company_id: *id031
         name:
           type: string
         project_manager_id:
@@ -5827,31 +6391,6 @@ components:
       type: object
       additionalProperties: true
       description: Agent result object (jsonb). Group-level fields only; never person_id / user_id / pseudonym.
-    LeaverTransfer:
-      type: object
-      description: 'v1.6.18 (A-12): one leaver_transfer on the memo line "יצא עם העוזבים" (no person field).'
-      properties:
-        transfer_event_id:
-          type: string
-          format: uuid
-        team:
-          type: string
-        period_month:
-          type: string
-          format: date
-        transferred:
-          type: number
-        remediated:
-          type: number
-        reversed:
-          type: number
-        open_balance:
-          type: number
-          description: transferred − remediated − reversed (0 once reversed)
-        label_he:
-          type: string
-          enum:
-          - יצא עם העוזבים
     ApprovedAbsenceOwnMove:
       type: object
       description: 'v1.6.18 (A-13): the employee''s own approved absence after a move request (no person field).'
@@ -5876,3 +6415,64 @@ components:
           - pending_coordination
           - coordinated
           - cancelled
+    LeaverListRow:
+      type: object
+      description: 'v1.6.19: one aggregate row of the leaver list (batches of ≥ 10 leavers; no person, transfer
+        or event id).'
+      properties:
+        row_kind:
+          type: string
+          enum:
+          - batch
+          - batch_team
+          - adjustment_batch
+          - company_total
+        batch_no:
+          type: integer
+          nullable: true
+        team:
+          type: string
+          nullable: true
+          description: batch_team only
+        period_from:
+          type: string
+          format: date
+          nullable: true
+        period_to:
+          type: string
+          format: date
+          nullable: true
+        leavers_count:
+          type: integer
+          description: leavers (batch / batch_team / company_total) or adjusted transfers (adjustment_batch); never
+            1–9
+        transferred:
+          type: number
+          nullable: true
+        remediated:
+          type: number
+          nullable: true
+        reversed:
+          type: number
+          nullable: true
+        open_balance:
+          type: number
+          nullable: true
+          description: company_total only = the published memo line
+        label_he:
+          type: string
+          enum:
+          - יצא עם העוזבים
+        note_he:
+          type: string
+          nullable: true
+        text_status:
+          type: string
+          nullable: true
+          enum:
+          - טיוטה
+          - null
+      required:
+      - row_kind
+      - leavers_count
+      - label_he

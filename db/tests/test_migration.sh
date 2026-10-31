@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# CHR-ETRS MVP v1.6.18 · tests/test_migration.sh — v1.4 → v1.6.18 migration tests (PostgreSQL 17).
-# v1.6.18 (2026-10-31): runs migrate_v1_4_to_v1_6_18.sql; catalog compared with a fresh v1.6.18 pack.
-# Version: 1.6.18-mvp (2026-10-31; base 1.6.13-mvp 2026-10-21) — supersedes the 1.6.9 test. Two modes (MIG_MODE):
+# CHR-ETRS MVP v1.6.19 · tests/test_migration.sh — v1.4 → v1.6.19 migration tests (PostgreSQL 17).
+# v1.6.19 (2026-10-31): runs migrate_v1_4_to_v1_6_19.sql; catalog compared with a fresh v1.6.19 pack.
+# Version: 1.6.19-mvp (2026-10-31; base 1.6.13-mvp 2026-10-21) — supersedes the 1.6.9 test. Two modes (MIG_MODE):
 #   super   (default): the app connection is a superuser → the runner installs the event-trigger guard;
 #                      + the timezone preflight block (non-UTC source DB with / without --source-tz).
 #   nosuper          : the app connection is chr_app_owner (LOGIN CREATEDB CREATEROLE, NOT superuser, like a
 #                      managed Supabase owner) → the guard is refused and the O-53 FALLBACK applies.
 # The admin connection (PGUSER, superuser) only sets up roles / databases and inspects.
 # v1.4 fixture (real v1.4 structure, tests/fixtures/) → dry run → apply (runner, with backup) → counts →
-# catalog = fresh v1.6.18 → second run changes nothing → release held companies → rollback = v1.4 again.
+# catalog = fresh v1.6.19 → second run changes nothing → release held companies → rollback = v1.4 again.
 # Prints one "PASS MIG …" / "FAIL MIG …" line per check; exits 1 on any failure.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -106,7 +106,7 @@ if [ "$MODE" = super ]; then
          && ok "tz preflight: non-UTC source without --source-tz stops with a clear message" || bad "tz preflight: wrong stop ($(cat "$W/tz1.log"))"; }
   check "…before the backup and without a change (no backup, start_date still plain)" "0|" \
     "$(ls "$BACKUP_DIR" | grep -c "^${TZDB}_pre" || true)|$(qdb "$TZDB" "SELECT attgenerated FROM pg_attribute WHERE attrelid = 'users'::regclass AND attname = 'start_date'")"
-  psql -X -U "$APP" -d "$TZDB" -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_18.sql > "$W/tz1b.log" 2>&1 \
+  psql -X -U "$APP" -d "$TZDB" -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_19.sql > "$W/tz1b.log" 2>&1 \
     && bad "tz preflight: plain psql without -v source_tz also stops (succeeded)" \
     || { grep -q "not UTC" "$W/tz1b.log" && ok "tz preflight: plain psql without -v source_tz also stops" || bad "tz preflight: plain psql stop ($(tail -3 "$W/tz1b.log"))"; }
   runner --source-tz Mars/Olympus dry-run "$TZDB" > "$W/tz2.log" 2>&1 && bad "tz preflight: unknown --source-tz refused (succeeded)" \
@@ -276,14 +276,14 @@ check "fallback: legacy rows intact (1|8|4|1)" "1|8|4|1" \
 fi
 check "new 1.6.7 tables empty (projects: none in v1.4); ledger has 1 genesis row per company (2 companies, O-13)" "0|0|2" "$(q "SELECT (SELECT count(*) FROM project), (SELECT count(*) FROM team_aggregate), (SELECT count(*) FROM manager_ledger WHERE event_type = 'GENESIS')")"
 psql -X -U "$ADMIN" -d "$DB" -qAt -f tests/catalog_snapshot.sql > "$W/mig.cat"
-check "catalog = fresh v1.6.18 except the 4 company NOT NULLs held back by NULL countries" \
+check "catalog = fresh v1.6.19 except the 4 company NOT NULLs held back by NULL countries" \
   "$(printf '%s\n' companies.country companies.last_workday_dow companies.timezone companies.week_start_dow)" \
   "$(diff "$W/fresh.cat" "$W/mig.cat" | sed -n 's/^> col public\.\([a-z_.]*\) .* nn=false .*/\1/p' | sort)"
 check "no other catalog difference" "8" "$(diff "$W/fresh.cat" "$W/mig.cat" | grep -c '^[<>]')"
 
 # --- second run: idempotent --------------------------------------------------
 snap "$W/m1"
-psql -X -U "$APP" -d "$DB" -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_18.sql > "$W/second.log" 2>&1 && ok "second run exits 0" || bad "second run exits 0"
+psql -X -U "$APP" -d "$DB" -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_19.sql > "$W/second.log" 2>&1 && ok "second run exits 0" || bad "second run exits 0"
 snap "$W/m2"
 cmp -s "$W/m1.cat" "$W/m2.cat" && ok "second run: catalog unchanged" || bad "second run: catalog unchanged"
 cmp -s "$W/m1.dat" "$W/m2.dat" && ok "second run: data unchanged" || { bad "second run: data unchanged"; diff "$W/m1.dat" "$W/m2.dat" || true; }
@@ -299,9 +299,9 @@ check "country set → reminders released + audited" "0|2" \
   "$(q "SELECT (SELECT count(*) FROM companies WHERE reminders_on_hold), (SELECT count(*) FROM access_audit_log WHERE action = 'reminders_released')")"
 check "IL confirmed, DE confirmed (Busingen excluded, ruling 21.10)" "confirmed|confirmed" \
   "$(q "SELECT string_agg(timezone_status, '|' ORDER BY country DESC) FROM companies")"
-psql -X -U "$APP" -d "$DB" -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_18.sql > /dev/null 2>&1 && ok "third run exits 0" || bad "third run exits 0"
+psql -X -U "$APP" -d "$DB" -v ON_ERROR_STOP=1 -f migrations/migrate_v1_4_to_v1_6_19.sql > /dev/null 2>&1 && ok "third run exits 0" || bad "third run exits 0"
 psql -X -U "$ADMIN" -d "$DB" -qAt -f tests/catalog_snapshot.sql > "$W/m3.cat"
-cmp -s "$W/fresh.cat" "$W/m3.cat" && ok "after release: catalog = fresh v1.6.18 exactly" || bad "after release: catalog = fresh v1.6.18 exactly"
+cmp -s "$W/fresh.cat" "$W/m3.cat" && ok "after release: catalog = fresh v1.6.19 exactly" || bad "after release: catalog = fresh v1.6.19 exactly"
 
 # --- rollback ------------------------------------------------------------------
 runner rollback "$DB" > "$W/rb.log" 2>&1 && ok "rollback exits 0" || { bad "rollback exits 0"; cat "$W/rb.log"; }
