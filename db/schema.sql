@@ -1,10 +1,22 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.17 · schema.sql
--- Version: 1.6.17-mvp (2026-10-31 IL) — supersedes 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- CHR-ETRS MVP v1.6.18 · schema.sql
+-- Version: 1.6.18-mvp (2026-10-31 IL) — supersedes 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
 -- Requires ref_country_calendar.sql (GENERATED from CLDR + IANA tz by tools/gen_ref_country_calendar.py)
 --   to be loaded BEFORE this file.
+-- New in 1.6.18 (Karin 31.10 via Chief of Drive — fix round closing A-12, A-13, A-14):
+--   * A-12: every documented remediation is attributed to ONE leaver_transfer
+--     (happiness_debt_remediation_allocation, WORM, no person column). A reversed offboarding returns only the
+--     transfer's open balance (moved debt − remediations attributed to it); 0 is a valid documented reversal.
+--     A v1.6.17 database's unattributed remediations are back-filled oldest-transfer-first within their team.
+--   * A-13: approved_absence_entry gains schedule_status 'cancelled' + cancelled_at / cancel_reason
+--     ('employment_ended'); the CLOSED tables time_benefit_absence_link (absence ↔ purchase, never shown to a
+--     manager) and time_benefit_refund (WORM, one refund per absence) let a time benefit scheduled after the
+--     end of employment be cancelled and its Golden Spoons refunded (rpc.sql).
+--   * A-14: the three questionnaire participation settings are company-adjustable (not locked); every change
+--     is kept in questionnaire_reward_history (WORM, effective_from) and every submission snapshots the
+--     setting key and the effective_from of the value it earned (reward_setting_key, reward_effective_from).
 -- New in 1.6.17 (Karin 31.10 via Chief of Drive — fix round closing A-5, A-8, J-3, J-15):
 --   * A-5: TPS-12 and IHS pay a fixed 10 Golden Spoons for participation — agent_settings
 --     golden_spoons_per_quarterly_questionnaire = 10 (adjustable: not locked, a company may override it).
@@ -1348,9 +1360,62 @@ CREATE TABLE IF NOT EXISTS approved_absence_entry (
     entry_text         text NOT NULL DEFAULT 'זמן התרעננות / היעדרות מאושרת'
                        CHECK (entry_text = 'זמן התרעננות / היעדרות מאושרת'),
     schedule_status    text NOT NULL DEFAULT 'pending_coordination'
-                       CHECK (schedule_status IN ('pending_coordination', 'coordinated')),
-    created_at         timestamptz NOT NULL DEFAULT clock_timestamp()
+                       CONSTRAINT approved_absence_entry_schedule_status_check
+                       CHECK (schedule_status IN ('pending_coordination', 'coordinated', 'cancelled')),
+    created_at         timestamptz NOT NULL DEFAULT clock_timestamp(),
+    -- v1.6.18 (A-13): cancellation of an entry scheduled after the end of employment (no EverStore reference)
+    cancelled_at       timestamptz,
+    cancel_reason      text CHECK (cancel_reason IN ('employment_ended')),
+    CONSTRAINT chk_absence_cancel_shape CHECK ((schedule_status = 'cancelled') = (cancelled_at IS NOT NULL AND cancel_reason IS NOT NULL))
 );
+-- v1.6.18 upgrade of a v1.6.17 table (adds the 'cancelled' status and the cancellation columns; no-op when present).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
+                  AND table_name = 'approved_absence_entry' AND column_name = 'cancelled_at') THEN
+    ALTER TABLE approved_absence_entry DROP CONSTRAINT IF EXISTS approved_absence_entry_schedule_status_check;
+    ALTER TABLE approved_absence_entry ADD CONSTRAINT approved_absence_entry_schedule_status_check
+      CHECK (schedule_status IN ('pending_coordination', 'coordinated', 'cancelled'));
+    ALTER TABLE approved_absence_entry ADD COLUMN cancelled_at timestamptz;
+    ALTER TABLE approved_absence_entry ADD COLUMN cancel_reason text CHECK (cancel_reason IN ('employment_ended'));
+    ALTER TABLE approved_absence_entry ADD CONSTRAINT chk_absence_cancel_shape
+      CHECK ((schedule_status = 'cancelled') = (cancelled_at IS NOT NULL AND cancel_reason IS NOT NULL));
+  END IF;
+END $$;
+
+-- v1.6.18 (A-13) time_benefit_absence_link — CLOSED internal link from an approved absence to the EverStore
+-- time_benefit purchase it came from (price snapshot), needed only to refund that purchase when the absence
+-- is cancelled after the end of employment. RLS forced, no client grant, never in a manager view or any RPC
+-- output (נעילת הפרגוד: approved_absence_entry itself still holds no purchase, item or Golden Spoons column).
+CREATE TABLE IF NOT EXISTS time_benefit_absence_link (
+    absence_id           uuid PRIMARY KEY REFERENCES approved_absence_entry(absence_id) ON DELETE CASCADE,
+    purchase_id          uuid NOT NULL UNIQUE REFERENCES shop_purchase(purchase_id) ON DELETE CASCADE,
+    price_golden_spoons  numeric(10, 1) NOT NULL CHECK (price_golden_spoons > 0),
+    created_at           timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+-- v1.6.18 (A-13) time_benefit_refund — WORM record of each refund (one per absence = idempotency backstop).
+CREATE TABLE IF NOT EXISTS time_benefit_refund (
+    absence_id      uuid PRIMARY KEY REFERENCES approved_absence_entry(absence_id) ON DELETE CASCADE,
+    amount          numeric(10, 1) NOT NULL CHECK (amount > 0),
+    refund_reason   text NOT NULL CHECK (refund_reason IN ('employment_ended')),
+    refunded_at     timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+-- v1.6.18 upgrade: a v1.6.17 database has no link rows. Each unlinked time_benefit purchase is matched to the
+-- same employee's unlinked absence created in the same purchase call (created_at within 5 seconds after
+-- purchased_at, closest first). Unmatched rows stay unlinked (their cancellation refunds nothing; reported).
+INSERT INTO time_benefit_absence_link (absence_id, purchase_id, price_golden_spoons)
+SELECT DISTINCT ON (m.purchase_id) m.absence_id, m.purchase_id, m.price_golden_spoons
+  FROM (SELECT p.purchase_id, p.price_golden_spoons, a.absence_id,
+               a.created_at - p.purchased_at AS gap
+          FROM shop_purchase p
+          JOIN approved_absence_entry a ON a.user_id = p.user_id
+                                       AND a.created_at >= p.purchased_at
+                                       AND a.created_at < p.purchased_at + interval '5 seconds'
+         WHERE p.category = 'time_benefit'
+           AND NOT EXISTS (SELECT 1 FROM time_benefit_absence_link l WHERE l.purchase_id = p.purchase_id)
+           AND NOT EXISTS (SELECT 1 FROM time_benefit_absence_link l WHERE l.absence_id = a.absence_id)) m
+ ORDER BY m.purchase_id, m.gap
+ON CONFLICT DO NOTHING;
 
 COMMENT ON TABLE approved_absence_entry IS
   'v1.6.13 (Karin 25.10, נעילת הפרגוד): Standard HR approved absence / refresh time entry (זמן התרעננות / היעדרות מאושרת). Contains zero reference to EverStore, item_id, or Golden Spoons.';
@@ -2154,6 +2219,8 @@ ALTER TABLE questionnaire_submission  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE early_leave_log           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shop_purchase             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE approved_absence_entry    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE time_benefit_absence_link ENABLE ROW LEVEL SECURITY;
+ALTER TABLE time_benefit_refund       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE turnover_tier_config      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE privacy_threshold_config  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE companies                 ENABLE ROW LEVEL SECURITY;
@@ -2178,6 +2245,8 @@ ALTER TABLE questionnaire_submission  FORCE ROW LEVEL SECURITY;
 ALTER TABLE early_leave_log           FORCE ROW LEVEL SECURITY;
 ALTER TABLE shop_purchase             FORCE ROW LEVEL SECURITY;
 ALTER TABLE approved_absence_entry    FORCE ROW LEVEL SECURITY;
+ALTER TABLE time_benefit_absence_link FORCE ROW LEVEL SECURITY;
+ALTER TABLE time_benefit_refund       FORCE ROW LEVEL SECURITY;
 ALTER TABLE turnover_tier_config      FORCE ROW LEVEL SECURITY;
 ALTER TABLE privacy_threshold_config  FORCE ROW LEVEL SECURITY;
 
@@ -2202,6 +2271,8 @@ GRANT SELECT ON TABLE privacy_threshold_config TO authenticated;
 GRANT SELECT ON TABLE questionnaire_definition TO authenticated;
 GRANT SELECT ON TABLE questionnaire_submission TO authenticated;
 REVOKE ALL ON TABLE shop_purchase, approved_absence_entry FROM PUBLIC, anon;
+-- v1.6.18 (A-13): the purchase link and the refund record are closed to every client role.
+REVOKE ALL ON TABLE time_benefit_absence_link, time_benefit_refund FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON TABLE early_leave_log TO authenticated;
 GRANT SELECT ON TABLE shop_purchase TO authenticated;
 GRANT SELECT ON TABLE approved_absence_entry TO authenticated;
@@ -3973,9 +4044,11 @@ INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, 
   (NULL, 'turnover_baseline_junior',    'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (junior) — לא הוגדר'),
   (NULL, 'turnover_baseline_mid',       'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (mid) — לא הוגדר'),
   (NULL, 'turnover_baseline_senior',    'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (senior) — לא הוגדר'),
-  (NULL, 'golden_spoons_per_questionnaire',           'numeric', 10,  NULL, 'set',         true,  'Karin 30.10 / 31.10: monthly questionnaire incl. PCQ-12 and Cantril = 10 כפיות (participation only)'),
-  (NULL, 'golden_spoons_per_short_questionnaire',     'numeric', 2,   NULL, 'set',         true,  'Karin 30.10: weekly / short questionnaire = 2 כפיות (participation only; Cantril is monthly — Karin 31.10)'),
-  (NULL, 'golden_spoons_per_quarterly_questionnaire', 'numeric', 10,  NULL, 'set',         false, 'Karin 31.10: TPS-12 / IHS = 10 כפיות per participation, same as a monthly questionnaire; adjustable (company override allowed)'),
+  -- v1.6.18 (A-14, Karin 31.10): the three questionnaire amounts are adjustable per company (not locked):
+  -- 1–20 per questionnaire, one value for the whole company, vp_hr only, WORM history, non-retroactive.
+  (NULL, 'golden_spoons_per_questionnaire',           'numeric', 10,  NULL, 'set',         false, 'Karin 30.10 / 31.10: monthly questionnaire incl. PCQ-12 and Cantril = 10 כפיות (participation only); A-14: adjustable per company 1–20, vp_hr only'),
+  (NULL, 'golden_spoons_per_short_questionnaire',     'numeric', 2,   NULL, 'set',         false, 'Karin 30.10: weekly / short questionnaire = 2 כפיות (participation only; Cantril is monthly — Karin 31.10); A-14: adjustable per company 1–20, vp_hr only'),
+  (NULL, 'golden_spoons_per_quarterly_questionnaire', 'numeric', 10,  NULL, 'set',         false, 'Karin 31.10: TPS-12 / IHS = 10 כפיות per participation, same as a monthly questionnaire; A-14: adjustable per company 1–20, vp_hr only'),
   (NULL, 'golden_spoons_per_checkin',     'numeric', NULL, NULL, 'not_defined', false, 'v3 §6.1: midday check-in participation — לא הוגדר'),
   (NULL, 'golden_spoons_per_shift',       'numeric', 2.0,  NULL, 'set',         false, 'O-16 / Q11 (Karin 24.10): 2 per shift (morning shift-start check-in)'),
   (NULL, 'golden_spoons_per_onboarding',  'numeric', 10.0, NULL, 'set',         false, 'O-16 / Q11 (Karin 24.10): 10 at signup'),
@@ -4062,12 +4135,14 @@ CREATE TABLE IF NOT EXISTS happiness_debt_events (
     period_month    date NOT NULL CHECK (extract(day FROM period_month) = 1),
     event_type      text NOT NULL CONSTRAINT happiness_debt_events_event_type_check
                     CHECK (event_type IN ('leaver_transfer', 'remediation', 'leaver_reversal')),
-    amount          numeric(14, 2) NOT NULL CHECK (amount > 0),
+    amount          numeric(14, 2) NOT NULL,
     remediation_id  uuid REFERENCES remediation_records(remediation_id),
     reverses_event_id uuid CONSTRAINT happiness_debt_events_reverses_event_id_fkey REFERENCES happiness_debt_events(event_id),
     created_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT chk_hde_remediation_link CHECK ((event_type = 'remediation') = (remediation_id IS NOT NULL)),
-    CONSTRAINT chk_hde_reversal_link CHECK ((event_type = 'leaver_reversal') = (reverses_event_id IS NOT NULL))
+    CONSTRAINT chk_hde_reversal_link CHECK ((event_type = 'leaver_reversal') = (reverses_event_id IS NOT NULL)),
+    -- v1.6.18 (A-12): a reversal returns the open balance, which is 0 when remediations covered the transfer
+    CONSTRAINT happiness_debt_events_amount_check CHECK (amount > 0 OR (event_type = 'leaver_reversal' AND amount = 0))
 );
 -- v1.6.17 upgrade of a v1.6.16 table (adds the reversal type and link; no-op when already present).
 DO $$
@@ -4081,6 +4156,17 @@ BEGIN
       CONSTRAINT happiness_debt_events_reverses_event_id_fkey REFERENCES happiness_debt_events(event_id);
     ALTER TABLE happiness_debt_events ADD CONSTRAINT chk_hde_reversal_link
       CHECK ((event_type = 'leaver_reversal') = (reverses_event_id IS NOT NULL));
+  END IF;
+END $$;
+-- v1.6.18 upgrade of a v1.6.17 table (A-12): allow a documented 0 reversal (fully remediated transfer).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'happiness_debt_events'::regclass
+                  AND conname = 'happiness_debt_events_amount_check'
+                  AND pg_get_constraintdef(oid) LIKE '%leaver_reversal%') THEN
+    ALTER TABLE happiness_debt_events DROP CONSTRAINT IF EXISTS happiness_debt_events_amount_check;
+    ALTER TABLE happiness_debt_events ADD CONSTRAINT happiness_debt_events_amount_check
+      CHECK (amount > 0 OR (event_type = 'leaver_reversal' AND amount = 0));
   END IF;
 END $$;
 CREATE INDEX IF NOT EXISTS idx_hde_company_period ON happiness_debt_events (company_id, period_month);
@@ -4098,6 +4184,54 @@ CREATE TABLE IF NOT EXISTS happiness_debt_leaver_link (
     created_at  timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS idx_hdll_user ON happiness_debt_leaver_link (user_id);
+
+-- happiness_debt_remediation_allocation — v1.6.18 (A-12): which leaver_transfer a documented remediation was made
+-- against, and how much of it. A new remediation is attributed to exactly ONE transfer of its own team and never
+-- exceeds that transfer's open balance, so it can never reduce another leaver's share. Open balance of a transfer
+-- = amount − Σ allocations − its reversal. WORM, no person column, closed to clients.
+CREATE TABLE IF NOT EXISTS happiness_debt_remediation_allocation (
+    remediation_event_id uuid NOT NULL REFERENCES happiness_debt_events(event_id) ON DELETE CASCADE,
+    transfer_event_id    uuid NOT NULL REFERENCES happiness_debt_events(event_id) ON DELETE CASCADE,
+    amount               numeric(14, 2) NOT NULL CHECK (amount > 0),
+    created_at           timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (remediation_event_id, transfer_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_hdra_transfer ON happiness_debt_remediation_allocation (transfer_event_id);
+DROP TRIGGER IF EXISTS trg_hdra_worm ON happiness_debt_remediation_allocation;
+CREATE TRIGGER trg_hdra_worm
+    BEFORE UPDATE OR DELETE ON happiness_debt_remediation_allocation
+    FOR EACH ROW EXECUTE FUNCTION fn_worm_immutable('ledger_immutable');
+
+-- v1.6.18 upgrade (A-12): a v1.6.17 remediation was team-level only. Each unattributed remediation is allocated
+-- to its own team's transfers, oldest first, never above a transfer's open balance and never to a transfer of a
+-- later month; any remainder stays unattributed (it still reduces the company memo line as it did in v1.6.17,
+-- but no transfer). No-op on a fresh database or once every remediation is attributed.
+DO $$
+DECLARE r record; t record; v_left numeric; v_open numeric; v_take numeric;
+BEGIN
+  FOR r IN SELECT e.* FROM happiness_debt_events e
+            WHERE e.event_type = 'remediation'
+              AND NOT EXISTS (SELECT 1 FROM happiness_debt_remediation_allocation a WHERE a.remediation_event_id = e.event_id)
+            ORDER BY e.created_at, e.event_id LOOP
+    v_left := r.amount;
+    FOR t IN SELECT x.* FROM happiness_debt_events x
+              WHERE x.event_type = 'leaver_transfer' AND x.company_id = r.company_id AND x.group_id = r.group_id
+                AND x.period_month <= r.period_month
+              ORDER BY x.created_at, x.event_id LOOP
+      EXIT WHEN v_left <= 0;
+      v_open := t.amount
+        - COALESCE((SELECT sum(a.amount) FROM happiness_debt_remediation_allocation a WHERE a.transfer_event_id = t.event_id), 0)
+        - COALESCE((SELECT sum(v.amount) FROM happiness_debt_events v
+                     WHERE v.event_type = 'leaver_reversal' AND v.reverses_event_id = t.event_id), 0);
+      IF v_open > 0 THEN
+        v_take := least(v_open, v_left);
+        INSERT INTO happiness_debt_remediation_allocation (remediation_event_id, transfer_event_id, amount)
+        VALUES (r.event_id, t.event_id, v_take);
+        v_left := v_left - v_take;
+      END IF;
+    END LOOP;
+  END LOOP;
+END $$;
 DROP TRIGGER IF EXISTS trg_happiness_debt_events_worm ON happiness_debt_events;
 CREATE TRIGGER trg_happiness_debt_events_worm
     BEFORE UPDATE OR DELETE ON happiness_debt_events
@@ -4196,7 +4330,8 @@ BEGIN
   FOREACH t IN ARRAY ARRAY['agent_settings', 'everstore_budget', 'everstore_item_cost', 'agent_daily_summaries',
                            'golden_spoons_ledger', 'remediation_records', 'happiness_debt_events',
                            'happiness_debt_ledger', 'team_movements', 'metric_assurance', 'bcr_checks',
-                           'epwi_inputs', 'board_reconciliation', 'board_report', 'happiness_debt_leaver_link'] LOOP
+                           'epwi_inputs', 'board_reconciliation', 'board_report', 'happiness_debt_leaver_link',
+                           'happiness_debt_remediation_allocation'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
     EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC, anon, authenticated', t);
@@ -4207,3 +4342,37 @@ END $$;
 -- setting was still "לא הוגדר" ('not_defined' → 0 Golden Spoons credited, nothing invented).
 ALTER TABLE questionnaire_submission ADD COLUMN IF NOT EXISTS
     reward_status text NOT NULL DEFAULT 'set' CHECK (reward_status IN ('set', 'not_defined'));
+-- v1.6.18 (A-14): non-retroactive proof — each submission snapshots WHICH setting paid it and since when the
+-- value it earned was in effect (questionnaire_reward_history.effective_from; NULL = the pack default, never
+-- changed for the company). reward_golden_spoons already snapshots the amount. NULL on pre-1.6.18 rows.
+ALTER TABLE questionnaire_submission ADD COLUMN IF NOT EXISTS reward_setting_key text;
+ALTER TABLE questionnaire_submission ADD COLUMN IF NOT EXISTS reward_effective_from timestamptz;
+
+-- v1.6.18 (A-14) questionnaire_reward_history — WORM history of every change of a company's questionnaire
+-- participation amount (monthly / short / quarterly). value_after is the amount in effect from effective_from on
+-- (scope 'default' = the company went back to the pack default). Who changed it is in access_audit_log (WORM);
+-- this table has no person column. Closed to clients (RLS forced, no grant).
+CREATE TABLE IF NOT EXISTS questionnaire_reward_history (
+    history_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id      uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    setting_key     text NOT NULL CHECK (setting_key IN ('golden_spoons_per_questionnaire',
+                                                         'golden_spoons_per_short_questionnaire',
+                                                         'golden_spoons_per_quarterly_questionnaire')),
+    value_before    numeric(10, 1),
+    value_after     numeric(10, 1) NOT NULL CHECK (value_after BETWEEN 1 AND 20),
+    scope_after     text NOT NULL CHECK (scope_after IN ('company', 'default')),
+    effective_from  timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_qrh_company_key ON questionnaire_reward_history (company_id, setting_key, effective_from DESC);
+ALTER TABLE questionnaire_reward_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE questionnaire_reward_history FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE questionnaire_reward_history FROM PUBLIC, anon, authenticated;
+DROP TRIGGER IF EXISTS trg_questionnaire_reward_history_worm ON questionnaire_reward_history;
+CREATE TRIGGER trg_questionnaire_reward_history_worm
+    BEFORE UPDATE OR DELETE ON questionnaire_reward_history
+    FOR EACH ROW EXECUTE FUNCTION fn_worm_immutable('ledger_immutable');
+-- v1.6.18 (A-13): refunds are WORM.
+DROP TRIGGER IF EXISTS trg_time_benefit_refund_worm ON time_benefit_refund;
+CREATE TRIGGER trg_time_benefit_refund_worm
+    BEFORE UPDATE OR DELETE ON time_benefit_refund
+    FOR EACH ROW EXECUTE FUNCTION fn_worm_immutable('ledger_immutable');
