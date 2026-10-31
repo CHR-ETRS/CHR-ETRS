@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# CHR-ETRS MVP v1.6.17 · tests/run_tests.sh — fresh DB → CLDR/tz reference → schema → rpc → tests (PostgreSQL 17)
-# Version: 1.6.17-mvp (supersedes 1.6.16-mvp); runs tests/test_v1_5.sql, tests/test_agents_v1_6_16.sql (agents, v3;
-# content v1.6.17) and the v1.4 → v1.6.17 migration tests (tests/test_migration.sh)
+# CHR-ETRS MVP v1.6.18 · tests/run_tests.sh — fresh DB → CLDR/tz reference → schema → rpc → tests (PostgreSQL 17)
+# Version: 1.6.18-mvp (supersedes 1.6.17-mvp); runs tests/test_v1_5.sql, tests/test_agents_v1_6_16.sql (agents, v3;
+# content v1.6.18) and the v1.4 → v1.6.18 migration tests (tests/test_migration.sh)
 # twice: as superuser (event-trigger guard + timezone preflight) and as a non-superuser owner (O-53 fallback). Usage: PGHOST=/tmp PGPORT=54317 PGUSER=postgres ./tests/run_tests.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -17,7 +17,7 @@ psql -qc "DROP DATABASE IF EXISTS ${DB}_agents" postgres
 psql -qc "CREATE DATABASE ${DB}_agents" postgres
 psql -d "${DB}_agents" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql
 psql -d "${DB}_agents" -v ON_ERROR_STOP=1 -qAt -f tests/test_agents_v1_6_16.sql
-# v1.4 → v1.6.17 migration: dry run, apply, counts, catalog = fresh, idempotence, rollback — in both modes
+# v1.4 → v1.6.18 migration: dry run, apply, counts, catalog = fresh, idempotence, rollback — in both modes
 MIG_MODE=super ./tests/test_migration.sh
 MIG_MODE=nosuper ./tests/test_migration.sh
 # The rejected fixed salary literal must not appear anywhere in the pack (pattern avoids writing it here)

@@ -1,19 +1,28 @@
-<!-- CHR-ETRS MVP v1 · README.md · Version: 1.6.17-mvp (2026-10-31) — supersedes 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20) and 1.4.0-mvp (2026-10-06) -->
-# CHR-ETRS MVP v1.6.17 — Code Pack
+<!-- CHR-ETRS MVP v1 · README.md · Version: 1.6.18-mvp (2026-10-31) — supersedes 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20) and 1.4.0-mvp (2026-10-06) -->
+# CHR-ETRS MVP v1.6.18 — Code Pack
 
 **SoT / מקור האמת:** [ADR index](https://docs.google.com/document/d/1U-u5844C4J1Y6WWv59wrX3xJwY8seDbHDDbULAdnGRg/edit) + Karin's approved locks of 2026-10-20  
 **Related:** [N-1–N-3 + API v2](https://docs.google.com/document/d/14BGHkebrXyzn9vAlJGB5oGJ9jA9v-AfsRBazmBeJH2Y/edit) · [Catalog N-2](https://docs.google.com/document/d/1w6V2IeVs-K2X7L_fS34nk60yO84qfH6N7280KJ8X948/edit) · [051 v4](https://docs.google.com/document/d/1sowWT4hrEp7gtuZE8GNC3dFJ23_dQpWB2-7mm9XUOwM/edit) · [070 v5](https://docs.google.com/document/d/1FgUAHnVKTJS0Sd9lA41fMm7NoLbPHBkvQeTSNEsSjE8/edit)  
 **NLM / NotebookLM:** archived — **not SoT** / בארכיון — אינו מקור האמת.  
-**Pack version:** `1.6.17-mvp`  
+**Pack version:** `1.6.18-mvp`  
 **Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
 
+> **v1.6.18 (2026-10-31):** fix round — Karin closed the open items A-12, A-13 and A-14 of v1.6.17:
+> - **A-12 — reversal amount:** every documented remediation is attributed to **one** `leaver_transfer` of its team (`happiness_debt_remediation_allocation`; optional `p_transfer_event_id` on `rpc_record_remediation`, else the team's oldest open transfer) and never above that transfer's open balance (422 `remediation_exceeds_transfer` / `no_open_leaver_transfer`), so it never reduces another leaver's share. A reversed offboarding returns **moved debt − remediations attributed to that transfer**: debt 100, remediation 30, reversal → the team gets back **70**, the transfer's "יצא עם העוזבים" balance is 0, the memo line drops by 70 (not 100). New `rpc_list_leaver_transfers` (vp_hr / cfo, no person field).
+> - **A-13 — time benefit scheduled after exit:** when the end of employment is recorded (or moved), each approved absence scheduled **after** the employee-local end date is cancelled (`schedule_status = 'cancelled'`, `cancel_reason = 'employment_ended'`) and its Golden Spoons are refunded (closed tables `time_benefit_absence_link` / `time_benefit_refund`) — the employee then has the 30-day window, products only (J-15). Idempotent; the end day and earlier stay; nothing is moved automatically. `rpc_request_absence_reschedule` = the employee's own regular request to move an absence (e.g. earlier), only while employed. The manager sees a plain HR status — no EverStore trace (נעילת הפרגוד).
+> - **A-14 — questionnaire Golden Spoons per company:** monthly (10, PCQ-12 + Cantril), short (2) and quarterly (10, TPS-12 + IHS) are adjustable per company — one value for every employee, **1–20** (422 `questionnaire_reward_out_of_range`), **vp_hr only** (cfo → 403), WORM history `questionnaire_reward_history` + WORM audit log, from now on only (each submission snapshots `reward_setting_key` + `reward_effective_from` with its amount). Employees see the current amount first: computed field `golden_spoons_reward` on `/questionnaire_definition`.
+> - Migration file renamed to `migrations/migrate_v1_4_to_v1_6_18.sql` (same steps; also upgrades a v1.6.17 database in place).
+> **Remaining open items:** see `ADR_GAPS.md` → *Still open after v1.6.18* (להשלמה).
+>
+> **גרסה v1.6.18 (31.10.2026):** סבב תיקונים לפי ההחלטות של קארין: (A-12) כל תיקון מתועד משויך להעברה אחת של עוזב באותו צוות ולא יותר מהיתרה שלה, וביטול סיום העסקה מחזיר לצוות רק את החוב שהועבר פחות התיקונים שכבר נעשו כנגדו (100 − 30 = 70), בלי ספירה כפולה ובלי לפגוע בחלק של עוזבים אחרים; (A-13) הטבת זמן שנקנתה לפני העזיבה ותוזמנה אחרי תאריך סיום העסקה מבוטלת, הכפיות מוחזרות לעובד (חלון 30 הימים — מוצרים בלבד), והרשומה של ההיעדרות המאושרת מבוטלת; אין הקדמה אוטומטית — הקדמה רק בבקשה רגילה של העובד לפני סיום העסקה; (A-14) ערכי הכפיות לשאלונים (חודשי 10, קצר 2, רבעוני 10) ניתנים לשינוי לכל חברה — אותו ערך לכל העובדים, 1 עד 20, רק vp_hr, כל שינוי נרשם ביומן WORM וחל מעכשיו בלבד; העובד רואה את הערך הנוכחי לפני מילוי השאלון. אף פלט לא כולל person_id, user_id או כינוי.
+>
 > **v1.6.17 (2026-10-31):** fix round — Karin closed the open items A-5, A-8, A-11 (J-3 / J-15) of v1.6.16:
 > - **TPS-12 and IHS** pay a fixed **10 כפיות** for participation, like a monthly questionnaire — `agent_settings.golden_spoons_per_quarterly_questionnaire` = 10, an **adjustable** setting (not locked; cfo / vp_hr may override it per company), never a code constant.
 > - **Cantril stays a MONTHLY questionnaire → 10 כפיות** (`golden_spoons_per_questionnaire`), replacing the v1.6.16 judgment J-3 (short → 2) and the older 2.5 lock.
 > - **No time benefits after employment ends** (J-15 confirmed): no early leave and no approved absence / day off for an ex-employee — `rpc_everstore_purchase` refuses a `time_benefit` item, `rpc_log_go_home` is refused, and a DB guard (`fn_block_time_benefit_after_exit`) blocks every such row on any path (403 `anti_get_blocked`). During the 30-day window only EverStore products can be redeemed.
 > - **Reversed offboarding** (marked by mistake or the employee returned): the Happiness Debt on the memo line "יצא עם העוזבים" returns to the team — a documented `leaver_reversal` event in `happiness_debt_events`, linked to the original `leaver_transfer` (`reverses_event_id`, once per transfer, idempotent). The event ↔ employee link lives only in the closed internal table `happiness_debt_leaver_link` (removed on crypto-shredding). No person_id / user_id / pseudonym in any output.
 > - Migration file renamed to `migrations/migrate_v1_4_to_v1_6_17.sql` (same steps).
-> **Remaining open items:** see `ADR_GAPS.md` → *Still open after v1.6.17* (להשלמה).
+> _(v1.6.17 open items A-12, A-13, A-14 were closed in v1.6.18 — see above.)_
 >
 > **גרסה v1.6.17 (31.10.2026):** סבב תיקונים לפי ההחלטות של קארין: TPS-12 ו־IHS נותנים 10 כפיות קבועות על השתתפות (פרמטר `golden_spoons_per_quarterly_questionnaire` שניתן לשינוי, לא קבוע בקוד); Cantril נשאר שאלון חודשי ונותן 10 כפיות; אחרי סיום העסקה אין הטבות זמן (יציאה מוקדמת, יום חופש) — בחלון 30 הימים אפשר לממש רק מוצרי EverStore; ביטול סיום העסקה (סומן בטעות או שהעובד חזר) מחזיר את חוב האושר משורת "יצא עם העוזבים" לצוות באירוע `leaver_reversal` מתועד שמקושר ל־`leaver_transfer` המקורי, פעם אחת בלבד לכל העברה. אף פלט לא כולל person_id, user_id או כינוי.
 >
@@ -50,7 +59,7 @@ Specs→Code pack from **locked decisions only**. Anything not locked is `TODO` 
 | `rpc.sql` | All write RPCs (SECURITY DEFINER) |
 | `openapi.yaml` | PostgREST reads + RPC writes + error contract (403 / 400 / 409 / 422 codes) |
 | `ADR_GAPS.md` | Closed in this version + still open + questions for Karin |
-| `migrations/migrate_v1_4_to_v1_6_17.sql`, `migrations/run_migration.sh`, `migrations/preflight_tz.sql`, `migrations/legacy_ddl_guard.sql`, `migrations/legacy_lockdown_fallback.sql` | Upgrade of a v1.4 database (v1.6.17, see below; replaces `migrate_v1_4_to_v1_6_16.sql` and `migrate_v1_4_to_v1_6_13.sql`) + source timezone preflight + superuser event-trigger guard for the legacy tables, or the non-superuser fallback lockdown |
+| `migrations/migrate_v1_4_to_v1_6_18.sql`, `migrations/run_migration.sh`, `migrations/preflight_tz.sql`, `migrations/legacy_ddl_guard.sql`, `migrations/legacy_lockdown_fallback.sql` | Upgrade of a v1.4 database (v1.6.18, see below; replaces `migrate_v1_4_to_v1_6_17.sql`, `migrate_v1_4_to_v1_6_16.sql` and `migrate_v1_4_to_v1_6_13.sql`; also upgrades a v1.6.17 database in place) + source timezone preflight + superuser event-trigger guard for the legacy tables, or the non-superuser fallback lockdown |
 | `tests/test_v1_5.sql`, `tests/test_agents_v1_6_16.sql`, `tests/run_tests.sh` | Scratch PostgreSQL 17 validation (fresh DB; the agents tests run on their own fresh DB) |
 | `tests/test_migration.sh`, `tests/catalog_snapshot.sql`, `tests/data_hash.sql`, `tests/fixtures/` | Migration tests on a real-structure v1.4 fixture |
 
@@ -68,7 +77,7 @@ Install target is a **fresh database** (`ref_country_calendar.sql`, then `schema
   python3 tools/gen_ref_country_calendar.py --cldr <dir>/node_modules/cldr-core --tzdir /usr/share/zoneinfo --out ref_country_calendar.sql
   ```
   The generator prints CLDR-vs-ruling and zone.tab-vs-zone1970.tab differences to stderr.
-### Migration v1.4 → v1.6.17 (`migrations/`)
+### Migration v1.4 → v1.6.18 (`migrations/`)
 Upgrades a **v1.4** database (structure of the real v1.4 files: Drive hot-fix `schema.20261013.sql` + v1.4 `rpc.sql`) in **one transaction**: the v1.4 code layer (functions, triggers, policies) is replaced; **users** (manager_id → reports_to, 1.6 columns, pseudonyms; `hire_date` ← v1.4 `start_date` unless it equals the record's creation date (v1.4 `users.created_at`, date in UTC — or in the `--source-tz` zone, v1.6.10) → unknown, audited `start_date_untrusted`; `start_date` becomes the deprecated alias; `team_joined_at` left NULL — no fallback; TPS wait source audited), **spoons history** (rows kept, `day_status` derived, `row_source = legacy_v1_4`), golden spoons, **projects** (`is_core = false` for legacy rows — v1.4 has none) and **company settings** (CLDR / zone.tab backfill, `needs_review`, reminder hold for companies without a country — v1.4 has no country column, so all are held) are migrated; then `ref_country_calendar.sql`, `schema.sql` and `rpc.sql` are applied. Out-of-scope v1.4 tables with an incompatible shape are kept, frozen and **read-only** (grants + triggers, owner included; never dropped), as `legacy_v1_4_*` (ADR_GAPS O-45).
 ```
 migrations/run_migration.sh [--source-tz <zone>] dry-run  <db>   # tz preflight, counts, then ROLLBACK; reports guard / fallback mode
@@ -99,6 +108,13 @@ The SECURITY DEFINER functions assume the owner role bypasses RLS (Supabase `pos
 Do **not** run Supabase tests from this pack until Stage A 27/27 (Karin).
 
 ### CHANGELOG
+
+#### 1.6.18-mvp — 2026-10-31 (Karin via Chief of Drive: fix round A-12, A-13, A-14)
+- **A-12:** new WORM `happiness_debt_remediation_allocation` (remediation event → leaver_transfer, amount); `fn_transfer_remediated`, `fn_transfer_open_balance`, `fn_remediation_target`; `rpc_record_remediation(…, p_transfer_event_id uuid DEFAULT NULL)` attributes to one transfer, capped at its open balance (422 `remediation_exceeds_transfer` / `no_open_leaver_transfer`, 400 `invalid_remediation`); `fn_reverse_leaver_transfer` returns the open balance (output adds `transferred`, `remediated`, `transfer_balance_after`); a 0 reversal is allowed by CHECK; `rpc_list_leaver_transfers`; v1.6.17 remediations back-filled oldest-transfer-first.
+- **A-13:** `approved_absence_entry` gains `cancelled` + `cancelled_at` / `cancel_reason`; closed `time_benefit_absence_link` (written by `rpc_everstore_purchase`; v1.6.17 rows matched on upgrade) and WORM `time_benefit_refund`; `fn_cancel_time_benefits_after_exit` + trigger `trg_users_time_benefit_cancel`; `rpc_request_absence_reschedule`; `rpc_coordinate_approved_absence` refuses cancelled / ex-employee entries.
+- **A-14:** the three questionnaire settings unlocked; `fn_is_questionnaire_reward_key`, `fn_assert_questionnaire_reward_change` (vp_hr only, 1–20, one decimal) in `rpc_put_agent_setting`; WORM `questionnaire_reward_history`; audit action `questionnaire_reward_setting_put`; `questionnaire_submission.reward_setting_key` / `reward_effective_from`; computed field `golden_spoons_reward(questionnaire_definition)`.
+- **Tests:** `tests/test_agents_v1_6_16.sql` (filename kept) gains companies E / F, §3b A-14, §4c A-13, §9c A-12; settings §1 now expects cfo → 403 on the questionnaire amounts. `tests/test_v1_5.sql` unchanged.
+- **Migration:** `migrations/migrate_v1_4_to_v1_6_18.sql` (renamed; backup prefix `_pre_v1_6_18_`).
 
 #### 1.6.17-mvp — 2026-10-31 (Karin via Chief of Drive: fix round A-5, A-8, J-3, J-15)
 - **A-5:** `golden_spoons_per_quarterly_questionnaire` = 10 (`set`, not locked → company override via `rpc_put_agent_setting`); TPS-12 and IHS pay it for participation.
@@ -273,8 +289,10 @@ Do **not** run Supabase tests from this pack until Stage A 27/27 (Karin).
 | `rpc.sql` | כל כתיבות ה־RPC |
 | `openapi.yaml` | קריאות PostgREST + כתיבות RPC + חוזה שגיאות |
 | `ADR_GAPS.md` | מה נסגר בגרסה זו, מה פתוח, ושאלות לקארין |
-| `migrations/` | שדרוג מסד v1.4 ל־v1.6.17 (בדיקת אזור זמן מקדימה, הרצת ניסיון, החלה עם גיבוי, שחזור) + נעילת DROP/ALTER על טבלאות legacy (טריגר אירועים עם superuser, ובלעדיו — נעילה חלופית) |
+| `migrations/` | שדרוג מסד v1.4 ל־v1.6.18 (וגם מסד v1.6.17 במקום) (בדיקת אזור זמן מקדימה, הרצת ניסיון, החלה עם גיבוי, שחזור) + נעילת DROP/ALTER על טבלאות legacy (טריגר אירועים עם superuser, ובלעדיו — נעילה חלופית) |
 | `tests/` | בדיקות על PostgreSQL 17 נקי (כולל `test_agents_v1_6_16.sql` — 18 בדיקות v3) |
+
+עיקרי 1.6.18 (31.10): ביטול סיום העסקה מחזיר לצוות את החוב פחות התיקונים שמשויכים להעברה (A-12); הטבת זמן שתוזמנה אחרי סיום העסקה מבוטלת והכפיות מוחזרות (A-13); ערכי הכפיות לשאלונים ניתנים לשינוי לכל חברה, 1–20, רק vp_hr, בלי רטרואקטיביות (A-14).
 
 עיקרי 1.6.17 (31.10): TPS-12 ו־IHS נותנים 10 כפיות על השתתפות (פרמטר שניתן לשינוי); Cantril שאלון חודשי — 10 כפיות; אין הטבות זמן אחרי סיום העסקה (רק מוצרי EverStore בחלון 30 הימים); ביטול סיום העסקה מחזיר את החוב משורת "יצא עם העוזבים" לצוות באירוע `leaver_reversal` מתועד.
 

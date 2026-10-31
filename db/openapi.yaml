@@ -1,9 +1,9 @@
-# CHR-ETRS MVP v1.6.17 · openapi.yaml
-# Version: 1.6.17-mvp (2026-10-31 IL) — supersedes 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
+# CHR-ETRS MVP v1.6.18 · openapi.yaml
+# Version: 1.6.18-mvp (2026-10-31 IL) — supersedes 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
-  version: 1.6.17-mvp
+  version: 1.6.18-mvp
   description: "PostgREST reads + RPC writes. Version 1.6.17-mvp (2026-10-31) — supersedes 1.6.16-mvp (2026-10-30),\
     \ 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24),\
     \ 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp\
@@ -123,20 +123,42 @@ info:
     \ releases them (audited).\n  XK → Europe/Belgrade and AN → America/Curacao are documented overrides in the\
     \ reference table.\n- PEWI: `/rpc/rpc_project_pewi` — mean EPWI of the project's members who reported in the\
     \ company week; below 5\n  actual reporters → `pewi: null, suppressed: true` (no 403). Every view audited; no\
-    \ individual values.\n\n**New in 1.6.17-mvp (2026-10-31, Karin via Chief of Drive — fix round):**\n- Questionnaire\
-    \ participation amounts: Cantril is MONTHLY → `golden_spoons_per_questionnaire` 10 (was the short 2); TPS-12\
-    \ and IHS → `golden_spoons_per_quarterly_questionnaire` 10 (was \"לא הוגדר\" → 0), an adjustable setting (not\
-    \ locked: cfo / vp_hr may override it per company with `/rpc/rpc_put_agent_setting`).\n- No time benefits after\
-    \ employment ends: `/rpc/rpc_everstore_purchase` refuses a `time_benefit` item and `/rpc/rpc_log_go_home` refuses\
-    \ an early leave for an ex-employee (403 `anti_get_blocked`); a DB guard blocks every early-leave / approved-absence\
-    \ row for an ex-employee. During the 30-day window only EverStore products can be redeemed.\n- Reversed offboarding\
-    \ (`/rpc/rpc_revert_offboarding`, or the HR system clearing the end date): the leaver's Happiness Debt returns\
-    \ from the memo line \"יצא עם העוזבים\" to the team — a documented `leaver_reversal` event linked to the original\
-    \ `leaver_transfer` (once per transfer, idempotent). No person identifier in any agent output.\n\n**New in 1.6.16-mvp\
-    \ (2026-10-30, Karin + Chief of Drive — agents, agents-bot-instructions-v3 is the single source of truth):**\n\
-    - Conversion blocked: `/rpc/rpc_convert_golden_to_chr` → 422 `chr_coins_deferred_to_v2` (\"CHR Coins shelf is\
-    \ deferred to v2; Golden Spoons conversion is disabled in v1\").\n- Golden Spoons by participation only (v3\
-    \ §3.6, Karin 30.10): amounts are locked `agent_settings` parameters, never code constants — `golden_spoons_per_questionnaire`\
+    \ individual values.\n\n**New in 1.6.18-mvp (2026-10-31, Karin via Chief of Drive — fix round closing A-12,\
+    \ A-13, A-14):**\n- A-12 reversal amount: every documented remediation (`/rpc/rpc_record_remediation`) is attributed\
+    \ to ONE `leaver_transfer` of its team — the one named in the new optional `p_transfer_event_id`, else the team's\
+    \ oldest transfer with an open balance — and never above that transfer's open balance (**422 `remediation_exceeds_transfer`**,\
+    \ **422 `no_open_leaver_transfer`**), so it never reduces another leaver's share. A reversed offboarding returns\
+    \ only the open balance (moved debt − its remediations; a documented 0 when fully remediated): debt 100, remediation\
+    \ 30, reversal → the team gets back 70, the transfer's \"יצא עם העוזבים\" balance is 0 and the memo line drops\
+    \ by 70, not 100. `/rpc/rpc_list_leaver_transfers` (vp_hr / cfo) shows each transfer (moved, remediated, reversed,\
+    \ open) with no person field.\n- A-13 time benefit scheduled after exit: when the end of employment is recorded\
+    \ (or moved), every approved absence scheduled after the employee-local end date is cancelled (`schedule_status`\
+    \ `cancelled`, `cancel_reason` `employment_ended`) and the Golden Spoons it cost are refunded — the employee\
+    \ is then in the 30-day window where only EverStore products can be bought. Idempotent; the end day itself and\
+    \ earlier days are unaffected; nothing is moved earlier automatically. `/rpc/rpc_request_absence_reschedule`\
+    \ is the employee's own regular request to move an absence (e.g. earlier), only while employed (403 after).\
+    \ The manager view shows the cancellation as a plain HR status — no EverStore, price or Golden Spoons field\
+    \ (נעילת הפרגוד).\n- A-14 questionnaire amounts per company: `golden_spoons_per_questionnaire` (monthly incl.\
+    \ PCQ-12 and Cantril, default 10), `golden_spoons_per_short_questionnaire` (default 2) and `golden_spoons_per_quarterly_questionnaire`\
+    \ (TPS-12 / IHS, default 10) are adjustable per company — one value for every employee (never by answers, team\
+    \ or role), 1–20 (**422 `questionnaire_reward_out_of_range`**), changed by **vp_hr only** (cfo → 403 `insufficient_privilege`).\
+    \ Each change is written to a WORM history (effective_from) and the WORM audit log, and applies from now on\
+    \ only: each submission snapshots `reward_golden_spoons`, `reward_setting_key` and `reward_effective_from`.\
+    \ Employees see the current amount before filling out: computed field `golden_spoons_reward` on `/questionnaire_definition`\
+    \ (`?select=*,golden_spoons_reward`).\n\n**New in 1.6.17-mvp (2026-10-31, Karin via Chief of Drive — fix round):**\n\
+    - Questionnaire participation amounts: Cantril is MONTHLY → `golden_spoons_per_questionnaire` 10 (was the short\
+    \ 2); TPS-12 and IHS → `golden_spoons_per_quarterly_questionnaire` 10 (was \"לא הוגדר\" → 0), an adjustable\
+    \ setting (not locked: cfo / vp_hr may override it per company with `/rpc/rpc_put_agent_setting`).\n- No time\
+    \ benefits after employment ends: `/rpc/rpc_everstore_purchase` refuses a `time_benefit` item and `/rpc/rpc_log_go_home`\
+    \ refuses an early leave for an ex-employee (403 `anti_get_blocked`); a DB guard blocks every early-leave /\
+    \ approved-absence row for an ex-employee. During the 30-day window only EverStore products can be redeemed.\n\
+    - Reversed offboarding (`/rpc/rpc_revert_offboarding`, or the HR system clearing the end date): the leaver's\
+    \ Happiness Debt returns from the memo line \"יצא עם העוזבים\" to the team — a documented `leaver_reversal`\
+    \ event linked to the original `leaver_transfer` (once per transfer, idempotent). No person identifier in any\
+    \ agent output.\n\n**New in 1.6.16-mvp (2026-10-30, Karin + Chief of Drive — agents, agents-bot-instructions-v3\
+    \ is the single source of truth):**\n- Conversion blocked: `/rpc/rpc_convert_golden_to_chr` → 422 `chr_coins_deferred_to_v2`\
+    \ (\"CHR Coins shelf is deferred to v2; Golden Spoons conversion is disabled in v1\").\n- Golden Spoons by participation\
+    \ only (v3 §3.6, Karin 30.10): amounts are locked `agent_settings` parameters, never code constants — `golden_spoons_per_questionnaire`\
     \ 10 (monthly incl. PCQ-12), `golden_spoons_per_short_questionnaire` 2 (weekly / short; Cantril moved to monthly\
     \ 10 in 1.6.17), `golden_spoons_per_quarterly_questionnaire` (TPS-12 / IHS) \"לא הוגדר\" → 0 with `reward_status\
     \ = not_defined` (superseded in 1.6.17: 10). The score/10 reward is removed.\n- `agent_settings` (GET / PUT\
@@ -1209,6 +1231,9 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/QuestionnaireDefinition'
+      description: 'v1.6.18 (A-14): add `golden_spoons_reward` to `select` (PostgREST computed field, e.g. `?select=*,golden_spoons_reward`)
+        to see the participation Golden Spoons the caller''s company pays NOW for each questionnaire, before filling
+        it out. Same value for every employee of the company; null = "לא הוגדר".'
   /questionnaire_submission:
     get:
       tags:
@@ -1399,7 +1424,9 @@ paths:
 
 
         PCQ-12 (O-7, Karin 24.10): 12 required items on the 1–6 Luthans scale, converted linearly to 0–100 ((mean
-        − 1) / 5.0 × 100); participation reward golden_spoons_per_questionnaire (10).'
+        − 1) / 5.0 × 100); participation reward golden_spoons_per_questionnaire (10). v1.6.18 (A-14): the three
+        amounts are adjustable per company by vp_hr (1–20); a submission keeps the amount it earned (snapshot reward_golden_spoons,
+        reward_setting_key, reward_effective_from) — no change is retroactive.'
       requestBody:
         required: true
         content:
@@ -2816,10 +2843,13 @@ paths:
       description: 'O-14 (Karin 24.10): callable by CHRO (vp_hr) or service_role within 30 days of termination before
         the pseudonym key is shredded. Clears employment_ended_at and scheduled_shred_at. If 30 days have elapsed
         or the key is already shredded → 403 offboarding_shred_already_executed. v1.6.17 (A-8, Karin 31.10): the
-        latest leaver_transfer of this employee is reversed — a leaver_reversal event (same team and amount, period
-        = company month of the reversal, linked to the original transfer) returns the Happiness Debt from the memo
-        line "יצא עם העוזבים" to the team. Once per transfer: a second call → 403 anti_get_blocked and no second
-        reversal.'
+        latest leaver_transfer of this employee is reversed — a leaver_reversal event (same team, period = company
+        month of the reversal, linked to the original transfer) returns the Happiness Debt from the memo line "יצא
+        עם העוזבים" to the team. Once per transfer: a second call → 403 anti_get_blocked and no second reversal.
+        v1.6.18 (A-12): the amount returned is the transfer''s open balance = moved debt − the documented remediations
+        attributed to that transfer (0 when fully remediated, still recorded), so nothing is counted twice and no
+        other leaver''s share moves. v1.6.18 (A-13): time benefits cancelled at exit stay cancelled (their Golden
+        Spoons were refunded).'
       requestBody:
         required: true
         content:
@@ -3191,6 +3221,8 @@ paths:
                   $ref: '#/components/schemas/ApprovedAbsenceManagerView'
         '403':
           $ref: '#/components/responses/BusinessError403'
+      description: 'v1.6.18 (A-13): a cancelled entry, or an entry of an employee whose employment has ended, cannot
+        be coordinated or moved → 403 anti_get_blocked.'
   /rpc/rpc_submit_morning_checkin: *id014
   /rpc/rpc_submit_midday_checkin: *id015
   /rpc/rpc_get_agent_settings:
@@ -3221,15 +3253,22 @@ paths:
                 items:
                   $ref: '#/components/schemas/AgentSetting'
         '403': &id018
-          description: insufficient_privilege — not an active cfo / vp_hr of the company
+          description: insufficient_privilege — not an active cfo / vp_hr of the company; for the three questionnaire
+            amounts not an active vp_hr of the company (v1.6.18)
           content: *id016
   /rpc/rpc_put_agent_setting:
     post:
       tags:
       - agents
-      summary: Set or reset a company agent setting (v3 PUT /agents/settings) — cfo / vp_hr
-      description: Both values null = reset to the default. Locked keys (Karin 30.10 closed values, privacy floors)
-        → 403 setting_locked.
+      summary: Set or reset a company agent setting (v3 PUT /agents/settings) — cfo / vp_hr; questionnaire amounts
+        vp_hr only
+      description: 'Both values null = reset to the default. Locked keys (Karin 30.10 closed values, privacy floors)
+        → 403 setting_locked. v1.6.18 (A-14, Karin 31.10): golden_spoons_per_questionnaire, golden_spoons_per_short_questionnaire
+        and golden_spoons_per_quarterly_questionnaire are adjustable per company — vp_hr only (cfo and anyone else
+        → 403 insufficient_privilege, including a reset), 1–20 per questionnaire (else 422 questionnaire_reward_out_of_range),
+        at most one decimal (else 400 invalid_setting_value). Every change is written to questionnaire_reward_history
+        (WORM, effective_from = now) and to the WORM access_audit_log (value before / after) and applies from now
+        on only.'
       requestBody:
         required: true
         content:
@@ -3262,6 +3301,12 @@ paths:
         '400':
           description: unknown_setting | invalid_setting_value
           content: *id016
+        '422':
+          description: questionnaire_reward_out_of_range — a questionnaire amount outside 1–20 (v1.6.18, A-14)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_margin_of_error:
     post:
       tags:
@@ -3660,7 +3705,12 @@ paths:
       - agents
       summary: Documented fix (group, date, what was fixed, approver, amount) — reduces the memo line "יצא עם העוזבים"
         (vp_hr / cfo)
-      description: ''
+      description: 'v1.6.18 (A-12, Karin 31.10): the remediation is attributed to ONE leaver_transfer of the team
+        — p_transfer_event_id (from /rpc/rpc_list_leaver_transfers), else the team''s oldest transfer with an open
+        balance and a month ≤ the remediation month — and never above that transfer''s open balance (422 remediation_exceeds_transfer;
+        no open transfer → 422 no_open_leaver_transfer; a named transfer of another team, of a later month or unknown
+        → 400 invalid_remediation). It never reduces another leaver''s share; a later reversal of that transfer
+        returns only what is left.'
       requestBody:
         required: true
         content:
@@ -3677,6 +3727,11 @@ paths:
                 p_reduction_amount:
                   type: number
                   minimum: 0.01
+                p_transfer_event_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: 'v1.6.18 (A-12): the leaver_transfer this remediation was made against (optional).'
               required:
               - p_company_id
               - p_team_id
@@ -3693,8 +3748,15 @@ paths:
                 format: uuid
         '403': *id018
         '400':
-          description: invalid_remediation
+          description: 'invalid_remediation (also: p_transfer_event_id not a transfer of that company and team,
+            or of a later month)'
           content: *id016
+        '422':
+          description: remediation_exceeds_transfer | no_open_leaver_transfer (v1.6.18, A-12)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_put_happiness_debt_split:
     post:
       tags:
@@ -3937,6 +3999,83 @@ paths:
           content: *id016
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /rpc/rpc_list_leaver_transfers:
+    post:
+      tags:
+      - agents
+      summary: Per-transfer view of the memo line "יצא עם העוזבים" (vp_hr / cfo) — v1.6.18 A-12
+      description: 'One row per leaver_transfer of the company: team, month, moved, remediated (attributed), reversed,
+        open balance. No person field; the transfer is identified by its event id only (use it as p_transfer_event_id).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LeaverTransfer'
+        '403':
+          description: insufficient_privilege — not an active cfo / vp_hr of the company
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_request_absence_reschedule:
+    post:
+      tags:
+      - rpc
+      summary: 'Employee: own regular request to move an approved absence (e.g. earlier) — only while employed (v1.6.18
+        A-13)'
+      description: Moves the caller's own approved absence to p_requested_date (today or later, employee-local;
+        past → 400 invalid_requested_date) and sets it back to pending_coordination for the direct manager. Refused
+        after the end of employment, on a cancelled entry or on someone else's entry → 403 anti_get_blocked. Nothing
+        is ever moved automatically. Returns the entry without any person field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_absence_id
+              - p_requested_date
+              properties:
+                p_absence_id:
+                  type: string
+                  format: uuid
+                p_requested_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Moved entry (no person field)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApprovedAbsenceOwnMove'
+        '400':
+          description: invalid_requested_date
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
 components:
   securitySchemes:
     bearerAuth:
@@ -4065,6 +4204,10 @@ components:
           - reconciliation_prior_period_missing
           - reconciliation_unbalanced
           - board_report_not_published
+          - questionnaire_reward_out_of_range
+          - remediation_exceeds_transfer
+          - no_open_leaver_transfer
+          - invalid_requested_date
         message:
           type: string
           description: 'Must equal code (or human text WITHOUT spoon/HRV numbers). Glass Box.
@@ -4106,6 +4249,9 @@ components:
             v1.6.6: 422 work_date_out_of_range (SQLSTATE PT422 → PostgREST 422).
 
             v1.6.8: 422 bridge_period, unknown_country (SQLSTATE PT422 → PostgREST 422).
+
+            v1.6.18: 422 questionnaire_reward_out_of_range, remediation_exceeds_transfer, no_open_leaver_transfer
+            (PT422); 400 invalid_requested_date (22023).
 
             '
         details:
@@ -4873,6 +5019,14 @@ components:
           - golden_spoons_per_questionnaire
           - golden_spoons_per_short_questionnaire
           - golden_spoons_per_quarterly_questionnaire
+        golden_spoons_reward:
+          type: number
+          nullable: true
+          minimum: 1
+          maximum: 20
+          multipleOf: 0.1
+          description: 'v1.6.18 (A-14): computed field (request it in `select`) — current participation amount of
+            the caller''s company for this questionnaire (agent_settings[reward_setting_key]); null = "לא הוגדר".'
     QuestionnaireSubmission:
       type: object
       properties:
@@ -4913,6 +5067,21 @@ components:
           - set
           - not_defined
           description: 'v1.6.16: not_defined when the participation amount is "לא הוגדר" (reward 0)'
+        reward_setting_key:
+          type: string
+          nullable: true
+          enum:
+          - golden_spoons_per_questionnaire
+          - golden_spoons_per_short_questionnaire
+          - golden_spoons_per_quarterly_questionnaire
+          - null
+          description: 'v1.6.18 (A-14): snapshot — the setting that paid this submission (null on pre-1.6.18 rows).'
+        reward_effective_from:
+          type: string
+          format: date-time
+          nullable: true
+          description: 'v1.6.18 (A-14): snapshot — since when the amount it earned was in effect for the company
+            (null = the pack default, never changed). Later changes never touch the row.'
       description: Immutable after submission (WORM).
     GoldenChrConversion:
       type: object
@@ -5524,9 +5693,23 @@ components:
           enum:
           - pending_coordination
           - coordinated
+          - cancelled
         created_at:
           type: string
           format: date-time
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: v1.6.18 (A-13)
+        cancel_reason:
+          type: string
+          nullable: true
+          enum:
+          - employment_ended
+          - null
+          description: 'v1.6.18 (A-13): scheduled after the end of employment → cancelled (its Golden Spoons refunded;
+            never shown to the manager as an EverStore item).'
     ApprovedAbsenceManagerView:
       type: object
       description: Direct manager view of approved absence / refresh time entries (pseudonym only, zero link to
@@ -5553,6 +5736,7 @@ components:
           enum:
           - pending_coordination
           - coordinated
+          - cancelled
         created_at:
           type: string
           format: date-time
@@ -5643,3 +5827,52 @@ components:
       type: object
       additionalProperties: true
       description: Agent result object (jsonb). Group-level fields only; never person_id / user_id / pseudonym.
+    LeaverTransfer:
+      type: object
+      description: 'v1.6.18 (A-12): one leaver_transfer on the memo line "יצא עם העוזבים" (no person field).'
+      properties:
+        transfer_event_id:
+          type: string
+          format: uuid
+        team:
+          type: string
+        period_month:
+          type: string
+          format: date
+        transferred:
+          type: number
+        remediated:
+          type: number
+        reversed:
+          type: number
+        open_balance:
+          type: number
+          description: transferred − remediated − reversed (0 once reversed)
+        label_he:
+          type: string
+          enum:
+          - יצא עם העוזבים
+    ApprovedAbsenceOwnMove:
+      type: object
+      description: 'v1.6.18 (A-13): the employee''s own approved absence after a move request (no person field).'
+      properties:
+        absence_id:
+          type: string
+          format: uuid
+        requested_date:
+          type: string
+          format: date
+        entry_type:
+          type: string
+          enum:
+          - approved_absence
+        entry_text:
+          type: string
+          enum:
+          - זמן התרעננות / היעדרות מאושרת
+        schedule_status:
+          type: string
+          enum:
+          - pending_coordination
+          - coordinated
+          - cancelled

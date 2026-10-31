@@ -1,7 +1,7 @@
-<!-- CHR-ETRS MVP v1 · ADR_GAPS.md · Version: 1.6.16-mvp (2026-10-30) — supersedes the 1.6.13-mvp ADR_GAPS (2026-10-25), the 1.6.12-mvp ADR_GAPS (2026-10-24), the 1.6.11-mvp ADR_GAPS (2026-10-24), the 1.6.10-mvp ADR_GAPS (2026-10-21), the 1.6.9-mvp ADR_GAPS (2026-10-21), the 1.6.8-mvp ADR_GAPS (2026-10-21), the 1.6.7-mvp ADR_GAPS (2026-10-20), the 1.6.6-mvp ADR_GAPS (2026-10-20), the 1.6.5-mvp ADR_GAPS (2026-10-20), the 1.6.4-mvp ADR_GAPS (2026-10-20), the 1.6.3-mvp ADR_GAPS (2026-10-20), the 1.6.2-mvp ADR_GAPS (2026-10-20), the 1.6.1-mvp ADR_GAPS (2026-10-20), the 1.6.0-mvp ADR_GAPS (2026-10-20), the 1.5 ADR_GAPS of 2026-10-20 (morning), the 1.4 ADR_GAPS of 2026-10-06 and the Drive ADR_GAPS of 2026-10-12 -->
-# ADR Gaps — CHR-ETRS MVP v1.6.17 Code Pack
+<!-- CHR-ETRS MVP v1 · ADR_GAPS.md · Version: 1.6.18-mvp (2026-10-31) — supersedes the 1.6.17-mvp ADR_GAPS (2026-10-31), the 1.6.16-mvp ADR_GAPS (2026-10-30), the 1.6.13-mvp ADR_GAPS (2026-10-25), the 1.6.12-mvp ADR_GAPS (2026-10-24), the 1.6.11-mvp ADR_GAPS (2026-10-24), the 1.6.10-mvp ADR_GAPS (2026-10-21), the 1.6.9-mvp ADR_GAPS (2026-10-21), the 1.6.8-mvp ADR_GAPS (2026-10-21), the 1.6.7-mvp ADR_GAPS (2026-10-20), the 1.6.6-mvp ADR_GAPS (2026-10-20), the 1.6.5-mvp ADR_GAPS (2026-10-20), the 1.6.4-mvp ADR_GAPS (2026-10-20), the 1.6.3-mvp ADR_GAPS (2026-10-20), the 1.6.2-mvp ADR_GAPS (2026-10-20), the 1.6.1-mvp ADR_GAPS (2026-10-20), the 1.6.0-mvp ADR_GAPS (2026-10-20), the 1.5 ADR_GAPS of 2026-10-20 (morning), the 1.4 ADR_GAPS of 2026-10-06 and the Drive ADR_GAPS of 2026-10-12 -->
+# ADR Gaps — CHR-ETRS MVP v1.6.18 Code Pack
 
-**Date:** 2026-10-31 · **Pack version:** `1.6.17-mvp` — fix round closing A-5, A-8, A-11 / J-3 / J-15 (see *Resolved in v1.6.17*). v1.6.16 encodes agents-bot-instructions-v3 (single source of truth for the agents; v3 wins over earlier decisions) and Karin's closed values of 30.10 (see *Resolved in v1.6.16*). Earlier (1.6.13): encodes Karin's locked EverStore expansion, Golden Spoons non-expiration / conversion policy, and time-benefit voucher redemption privacy (`נעילת הפרגוד`) of 2026-10-25.  
+**Date:** 2026-10-31 · **Pack version:** `1.6.18-mvp` — fix round closing A-12, A-13, A-14 (see *Resolved in v1.6.18*); v1.6.17 closed A-5, A-8, A-11 / J-3 / J-15 (see *Resolved in v1.6.17*). v1.6.16 encodes agents-bot-instructions-v3 (single source of truth for the agents; v3 wins over earlier decisions) and Karin's closed values of 30.10 (see *Resolved in v1.6.16*). Earlier (1.6.13): encodes Karin's locked EverStore expansion, Golden Spoons non-expiration / conversion policy, and time-benefit voucher redemption privacy (`נעילת הפרגוד`) of 2026-10-25.  
 **Rule:** Open items are TODO in schema / rpc / openapi. **Do not invent locked numbers.**  
 **Precedence:** Karin's clarifications of 2026-10-20 override the Drive ADR_GAPS of 2026-10-12 where they differ:
 - team averages are regular data at **N≥5**; only **Cuckoo, Shadow Balance and emergency mode** need **N≥10** (the 12.10 "N≥10 everywhere" is overridden);
@@ -12,7 +12,7 @@
 
 ---
 
-## Closed and encoded (v1.5 + v1.6 + v1.6.1 + v1.6.2 + v1.6.3 + v1.6.4 + v1.6.5 + v1.6.6 + v1.6.7 + v1.6.8 + v1.6.9 + v1.6.10 + v1.6.11 + v1.6.12 + v1.6.13 + v1.6.16 + v1.6.17)
+## Closed and encoded (v1.5 + v1.6 + v1.6.1 + v1.6.2 + v1.6.3 + v1.6.4 + v1.6.5 + v1.6.6 + v1.6.7 + v1.6.8 + v1.6.9 + v1.6.10 + v1.6.11 + v1.6.12 + v1.6.13 + v1.6.16 + v1.6.17 + v1.6.18)
 
 | Item | Resolution | Where encoded |
 |------|------------|---------------|
@@ -342,6 +342,31 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 | Time-benefit voucher privacy (`נעילת הפרגוד`) | Purchasing/redeeming a `time_benefit` item in EverStore automatically converts through HR into a standard approved absence / refresh time entry (`approved_absence_entry`: `'זמן התרעננות / היעדרות מאושרת'`), so the direct manager coordinates the schedule (`approved_absence_manager_v`, `rpc_coordinate_approved_absence`) without ever seeing that the voucher came from an EverStore purchase, while `shop_purchase` remains strictly hidden from managers (own-rows RLS only) | `shop_purchase`, `approved_absence_entry`, `fn_approved_absence_manager_feed`, `approved_absence_manager_v`, `rpc_everstore_purchase`, `rpc_coordinate_approved_absence` |
 | Stale `TODO` cleanup | Cleaned up all resolved `TODO` comments in `openapi.yaml`, `schema.sql`, and `rpc.sql` (including #6 shop purchase eligibility, O-5 morning/midday check-in scoring, O-1..O-4 turnover/deprivation/salary rules, O-10 farming at ≤3, O-13 ledger chain scope) | `openapi.yaml`, `schema.sql`, `rpc.sql` |
 
+## Resolved in v1.6.18 (Karin 31.10 via Chief of Drive — fix round)
+
+| # | Resolution | Where encoded |
+|---|-----------|---------------|
+| A-12 Reversal amount | A reversed offboarding returns to the team the **moved debt minus the documented remediations already made against that transfer**, never the full amount. Remediations are now **attributed per transfer**: each `rpc_record_remediation` is linked to exactly ONE `leaver_transfer` of its own team (named by the new optional `p_transfer_event_id`, else the team's oldest transfer with an open balance and a month ≤ the remediation month) and may not exceed that transfer's open balance (422 `remediation_exceeds_transfer`; none open → 422 `no_open_leaver_transfer`; wrong team / later month / unknown → 400 `invalid_remediation`) — so a remediation can never reduce another leaver's share. Open balance = moved − attributed remediations − reversal. Tested: debt 100 → remediation 30 → reversal → the team gets back **70**, that transfer's "יצא עם העוזבים" balance is **0** (30 + 70 = 100, no double count), the total memo line drops by **70**, not 100; the other leavers' balances do not move | `happiness_debt_remediation_allocation` (WORM, no person column, closed), `fn_transfer_remediated`, `fn_transfer_open_balance`, `fn_remediation_target`, `rpc_record_remediation(…, p_transfer_event_id)`, `fn_reverse_leaver_transfer`, `rpc_list_leaver_transfers`, CHECK `happiness_debt_events_amount_check`, v1.6.18 back-fill block; agents §9 / §9c |
+| A-13 Time benefit scheduled after exit | A time benefit bought before leaving but scheduled **after the end of employment** is **cancelled**: its `approved_absence_entry` → `schedule_status 'cancelled'`, `cancel_reason 'employment_ended'`, and the Golden Spoons it cost are **refunded** to the employee, who is then in the 30-day window where only products can be bought (J-15). Runs when the end of employment is recorded or moved (trigger on `users.employment_ended_at`); idempotent (cancelled rows skipped, one WORM refund per absence). A benefit on or before the end day is unaffected. **Nothing is moved earlier automatically**; moving it earlier is only the employee's own regular request (`rpc_request_absence_reschedule`), allowed before the end and refused after it (403). The manager sees the plain HR status only (no purchase, item, price or Golden Spoons field — נעילת הפרגוד) and cannot coordinate a cancelled entry or an ex-employee's entry | `approved_absence_entry` (+ `cancelled_at`, `cancel_reason`, v1.6.18 upgrade block), `time_benefit_absence_link` (closed), `time_benefit_refund` (WORM, closed), `rpc_everstore_purchase` (writes the link), `fn_employment_end_local_date`, `fn_cancel_time_benefits_after_exit`, `trg_users_time_benefit_cancel`, `rpc_request_absence_reschedule`, `rpc_coordinate_approved_absence`; agents §4c |
+| A-14 Questionnaire amounts per company | All three questionnaire amounts are adjustable per company — monthly `golden_spoons_per_questionnaire` (default 10, PCQ-12 + Cantril), short `golden_spoons_per_short_questionnaire` (default 2), quarterly `golden_spoons_per_quarterly_questionnaire` (default 10, TPS-12 + IHS). (1) One value for every employee of the company — the amount is a function of (definition, company) only, never of answers, team or role (tested across two teams and two org roles, lowest vs. highest answers). (2) **1–20** per questionnaire, else **422 `questionnaire_reward_out_of_range`**. (3) **vp_hr only** — cfo's permission removed, including on the quarterly value (cfo → 403 `insufficient_privilege`, also for a reset); every change goes to the WORM `access_audit_log` (value before / after, effective_from) and to the WORM `questionnaire_reward_history` (effective_from = now); it applies from now on only — each submission snapshots `reward_golden_spoons`, `reward_setting_key` and `reward_effective_from`, so earlier submissions provably keep what they earned. (4) Employees see the current value before filling out: computed field `golden_spoons_reward` on `/questionnaire_definition` (OpenAPI) | `agent_settings` seed (unlocked), `fn_is_questionnaire_reward_key`, `fn_assert_questionnaire_reward_change`, `rpc_put_agent_setting`, `questionnaire_reward_history`, `fn_questionnaire_reward_effective_from`, `rpc_submit_questionnaire`, `golden_spoons_reward(questionnaire_definition)`; agents §1 / §3b |
+
+### Judgment calls and edge cases in v1.6.18 (none fixed silently — for Karin / Chief of Drive review)
+
+| # | Call |
+|---|------|
+| J-28 | A-12 attribution design: remediations were **company / team-level only** in v1.6.17, so per-transfer attribution is new — a WORM allocation table (remediation event → leaver_transfer, amount). A new remediation goes to **one** transfer, never split; a remediation larger than the target's open balance is refused (422) — the caller records two remediations instead. Without `p_transfer_event_id` the team's **oldest** open transfer is used (FIFO) |
+| J-29 | `rpc_list_leaver_transfers` exposes transfer event ids, team, month and amounts to vp_hr / cfo so they can name a transfer. No person field, but in a small team a transfer can be matched to a known leaver by team + month — management data, not an agent output to employees or the board |
+| J-30 | v1.6.17 → v1.6.18 upgrade: existing team-level remediations are back-filled oldest-transfer-first within their team (may split across transfers; never above a transfer's open balance; never to a later month). A remainder that fits no transfer stays unattributed and keeps reducing the company memo line as before (totals unchanged by the upgrade). v1.6.17 reversals that already returned a full amount are WORM and are not rewritten |
+| J-31 | A fully remediated transfer that is reversed writes a documented **0** `leaver_reversal` (CHECK relaxed for reversals only), so "once per transfer" and the audit trail still hold |
+| J-32 | "The team gets back 70" = the `leaver_reversal` event (team of the transfer, J-20). `employee_value_asset.happiness_debt_liability` of the returning employee is not changed (it is rule-derived and recomputed by `fn_sync_employee_deprived`) |
+| J-33 | A-13 "scheduled after the end of employment" = `requested_date` **>** the employee-local date of `employment_ended_at`; a benefit on the end day itself is kept (still a day of employment) |
+| J-34 | "Employment ended" keeps the J-19 meaning (`employment_ended_at` recorded). A future-dated end date therefore cancels at the moment it is recorded, and from then on the employee can no longer move a benefit — a move earlier must be requested before HR records the end. Moving the end date later does not restore cancelled benefits; a reversed offboarding does not restore them either (the Golden Spoons were refunded; the employee can buy again) |
+| J-35 | The refund is the purchase price kept in the closed link (`time_benefit_absence_link`). Absences created by v1.6.17 have no link: on upgrade they are matched to the same employee's time_benefit purchase made in the same call (created ≤ 5 seconds after it); an unmatched entry is still cancelled but refunds nothing (`cancelled_without_refund` in the output) |
+| J-36 | `rpc_request_absence_reschedule` accepts any day from today on (earlier or later), not only earlier; the entry goes back to `pending_coordination` for the manager. The direct manager can no longer coordinate / move a cancelled entry or an ex-employee's entry (new 403) |
+| J-37 | A-14 "only vp_hr" is enforced for every API caller, service calls included (no vp_hr behind the call → 403); only direct DB writes by the pack owner bypass it. Values may have one decimal (e.g. 2.5 — the wallet unit); more decimals → 400 `invalid_setting_value`. Changes apply immediately (no future-dated effective_from) |
+| J-38 | "Field in the questionnaire API" implemented as a PostgREST computed field (`golden_spoons_reward`) on the existing `/questionnaire_definition` read, not a new endpoint; `questionnaire_reward_history` stores no person column (who changed it is in `access_audit_log`) |
+| J-39 | Test file names kept: `tests/test_agents_v1_6_16.sql` (content v1.6.18); `tests/test_v1_5.sql` is unchanged in v1.6.18 (header still 1.6.17) and is not re-uploaded |
+
 ## Resolved in v1.6.17 (Karin 31.10 via Chief of Drive — fix round)
 
 | # | Resolution | Where encoded |
@@ -356,17 +381,17 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 
 | # | Call |
 |---|------|
-| J-17 | "Adjustable parameter" read as an **unlocked** agent_setting (company override allowed). The monthly 10 and short 2 stay **locked** (J-4), so Cantril / PCQ-12 (monthly 10) cannot be overridden per company while TPS-12 / IHS can — confirm whether the monthly / short values should also be adjustable |
-| J-18 | Cantril shares the monthly key `golden_spoons_per_questionnaire` with PCQ-12 (no separate Cantril key) — a change of the monthly amount changes both |
+| J-17 | "Adjustable parameter" read as an **unlocked** agent_setting (company override allowed). ~~The monthly 10 and short 2 stay locked~~ — **v1.6.18 (A-14): all three amounts are adjustable per company, 1–20, vp_hr only (cfo no longer may change the quarterly value)** |
+| J-18 | Cantril shares the monthly key `golden_spoons_per_questionnaire` with PCQ-12 (no separate Cantril key) — a change of the monthly amount changes both. **v1.6.18:** unchanged and now visible to companies (A-14 lists PCQ-12 and Cantril under the monthly value) |
 | J-19 | J-15 guard keys on `users.employment_ended_at IS NOT NULL` (the offboarding flow sets it at termination). The go-home / low-spoons / task-assignment paths now answer 403 for an ex-employee instead of writing an early-leave row |
-| J-20 | A reversal returns the **full original transfer** to the **team of the transfer** (department at exit), even if the employee comes back to another department; its period is the company month of the reversal, so past months and already published board reports do not change |
-| J-21 | Edge case: if a remediation already reduced the memo line (company level, not per leaver) and the leaver then returns, the full transfer is still reversed; the memo never goes below 0, so the remediation then reduces other leavers' share (see A-12) |
+| J-20 | A reversal returns ~~the full original transfer~~ (**v1.6.18 A-12: the transfer's open balance = moved − its attributed remediations**) to the **team of the transfer** (department at exit), even if the employee comes back to another department; its period is the company month of the reversal, so past months and already published board reports do not change |
+| J-21 | ~~Edge case: a team-level remediation followed by a full reversal reduced other leavers' share~~ — **resolved v1.6.18 (A-12)**: remediations are attributed per transfer and the reversal returns only the open balance (see J-28 – J-31) |
 | J-22 | The exit month's `exported_on_exit` ledger row stays as history (amounts are ≥ 0 by CHECK); the memo line is computed from `happiness_debt_events` only |
 | J-23 | The event ↔ employee link is a new internal table holding `user_id` (like `golden_spoons_ledger`): closed (RLS forced, no grants), never returned, deleted on crypto-shredding. A return after the 30-day window is a re-hire (the key is shredded) → no reversal |
 | J-24 | `rpc_revert_offboarding` keeps its existing HR contract (input user_id, returns the `users` row to the CHRO / service). It is not an agent output; the new reversal output (`fn_reverse_leaver_transfer`) is id-free |
-| J-25 | Edge case not changed: a time benefit bought **while employed** but scheduled after the end date stays a `pending_coordination` approved absence (not cancelled automatically) — see A-13 |
+| J-25 | ~~A time benefit bought while employed but scheduled after the end date stays pending~~ — **resolved v1.6.18 (A-13)**: cancelled and refunded at exit (see J-33 – J-36) |
 | J-26 | Test-only fix (no code change): `tests/test_v1_5.sql` O40 "today + 1 accepted" failed on a Saturday run (the CHRO week-start change scheduled from the run date makes today + 1 a 1-day bridge); the test now expects 422 `bridge_period` on such a day. v1.6.16 fails the same way when run on a Saturday |
-| J-27 | `tests/test_agents_v1_6_16.sql` keeps its filename (content v1.6.17) so its Drive history stays in one file |
+| J-27 | `tests/test_agents_v1_6_16.sql` keeps its filename (content v1.6.17; **v1.6.18** content since this round) so its Drive history stays in one file |
 
 ## Resolved in v1.6.16 (Karin 30.10 + Chief of Drive 30.10 — agents-bot-instructions-v3; replaces planned v1.6.14 / v1.6.15)
 
@@ -417,7 +442,7 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 
 The 8 decisions of 30.10 · Golden Spoons per participation (fixed, from settings) · separation of measurement and management · score range gate (one coefficient 12.5 in agent_settings) · CHR Real EBITDA as an alternative measure and the 4-line Shadow Balance · Happiness Debt on exit (`happiness_debt_events`, memo line) · replacement cost above baseline + "שוליים מטעים" flag · sensitivity switch for מס קיפוח · assurance tiers · the 15-question check · deprived employee: two consecutive weeks · optional EPWI inputs · 5th signal at team level (Karin 30.10) · report not published without a reconciliation table · CHR Coins conversion blocked in v1.
 
-## Still open after v1.6.17 (להשלמה — not invented)
+## Still open after v1.6.18 (להשלמה — not invented)
 
 | # | Item |
 |---|------|
@@ -429,11 +454,8 @@ The 8 decisions of 30.10 · Golden Spoons per participation (fixed, from setting
 | A-7 | BCR middle band (6–9 yes) label — לא הוגדר in v3 — להשלמה |
 | A-9 | ADR numbers for the v3 §6.5 list above — להשלמה |
 | A-10 | DOI links and the r = 0.37 correlation in the board-report appendix are unverified — check before the board appendix — להשלמה |
-| A-12 | Remediation vs. a returning leaver (J-21): should a reversal return the transfer minus the remediation already credited for that team? — rule להשלמה |
-| A-13 | A time benefit bought while employed but scheduled after the end date (J-25): cancel, keep, or refund? — rule להשלמה |
-| A-14 | Should the monthly (10) and short (2) amounts also be adjustable per company like the quarterly 10 (J-17)? — להשלמה |
 
-_(A-5, A-8 and A-11 were closed in v1.6.17 — see *Resolved in v1.6.17*.)_
+_(A-5, A-8 and A-11 were closed in v1.6.17 — see *Resolved in v1.6.17*; A-12, A-13 and A-14 were closed in v1.6.18 — see *Resolved in v1.6.18*.)_
 
 ### Still open after v1.6.13 (carried over)
 
