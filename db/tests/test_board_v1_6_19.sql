@@ -1,7 +1,7 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.19 · tests/test_board_v1_6_19.sql — v1.6.19 board report, leaver batching, ILS estimate,
 -- verification levels, 'תיק אימות', pay linkage, social events, layers + governance, sources (PostgreSQL 17)
--- Version: 1.6.19-mvp (2026-10-31; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
+-- Version: 1.6.20-mvp r2 (2026-10-31; r1 = J-96 A; r2 = J-101 A notice + J-102 A catalog scan; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_board_v1_6_19.sql
 -- Every check prints "PASS <name>"; any failure aborts. Dates are relative to the run (current company month)
 -- because leaver batches are stamped with the real clock.
@@ -120,7 +120,11 @@ INSERT INTO companies (company_id, company_name, country, week_start_dow, last_w
   (t_u('cG'), 'Board G', 'IL', 0, 4, 'Asia/Jerusalem'),
   (t_u('cH'), 'Board H', 'IL', 0, 4, 'Asia/Jerusalem'),
   (t_u('cJ'), 'Board J', 'IL', 0, 4, 'Asia/Jerusalem'),
-  (t_u('cS'), 'Board S', 'IL', 0, 4, 'Asia/Jerusalem');
+  (t_u('cS'), 'Board S', 'IL', 0, 4, 'Asia/Jerusalem'),
+  (t_u('cN'), 'Board N', 'IL', 0, 4, 'Asia/Jerusalem'),   -- v1.6.20 J-92 (no-department group)
+  (t_u('cD'), 'Board D', 'IL', 0, 4, 'Asia/Jerusalem'),   -- v1.6.20-r1 J-96 = A: defaulted employees
+  (t_u('cR'), 'Board R', 'IL', 0, 4, 'Asia/Jerusalem'),   -- J-96 = A: a REAL team named 'General' (+ defaulted)
+  (t_u('cQ'), 'Board Q', 'IL', 0, 4, 'Asia/Jerusalem');   -- J-101: ambiguous existing 'General' rows
 DO $$
 DECLARE i int; c text;
 BEGIN
@@ -716,12 +720,21 @@ SELECT t_assert('B1c: outcomes — PCQ-12, IHS / TPS-12 below 5 reporters say so
 SELECT t_assert('J-54: a cancelled absence is not an absence (team OPS 1 — of 2 rows; team level unchanged)',
   fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 1
   AND fn_company_month_absences(t_u('cS'), (SELECT m FROM t_m)) = 1);
-SELECT t_assert('J-53 / r3: no team input → "חסר: team_absence_input" (3 teams missing) with the shared definition (טיוטה); the approved refresh entry is NOT counted',
+-- J-88 (Karin 31.10, approved): the exact 3-line absence definition, letter for letter, with no 'טיוטה'.
+CREATE TEMP TABLE t_absdef AS SELECT 'היעדרויות = סך ימי המחלה וההיעדרות הלא מתוכננת בצוות בחודש, כולל יציאה מוקדמת שלא אושרה מראש.' || chr(10) || 'לא נספרים: היעדרות מאושרת וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש.' || chr(10) || 'המקור: הזנה חודשית של vp_hr, בלי פירוט לפי עובד.' AS txt;
+SELECT t_assert('J-88: fn_absence_definition_he returns Karin''s approved text exactly — 3 lines, letter for letter, no "טיוטה"',
+  fn_absence_definition_he() = (SELECT txt FROM t_absdef)
+  AND array_length(string_to_array(fn_absence_definition_he(), chr(10)), 1) = 3
+  AND md5(fn_absence_definition_he()) = md5((SELECT txt FROM t_absdef))
+  AND length(fn_absence_definition_he()) = length((SELECT txt FROM t_absdef))
+  AND position('טיוטה' IN fn_absence_definition_he()) = 0
+  AND fn_board_absence_definition_he() = fn_absence_definition_he());
+SELECT t_assert('J-53 / r3: no team input → "חסר: team_absence_input" (3 teams missing) with the approved definition (no text_status / "טיוטה"); the approved refresh entry is NOT counted',
   (SELECT j->'outcomes'->'absences'->>'display_he' = 'חסר: team_absence_input'
           AND (j->'outcomes'->'absences'->>'teams_missing_count')::int = 3
-          AND j->'outcomes'->'absences'->>'definition_he' = 'היעדרות = ימי מחלה + היעדרות לא מתוכננת (כולל יציאה מוקדמת שלא אושרה מראש) בלבד; היעדרויות מאושרות וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש אינן נספרות'
-          AND j->'outcomes'->'absences'->>'definition_he' = fn_absence_definition_he()
-          AND j->'outcomes'->'absences'->>'text_status' = 'טיוטה' AND NOT (j->'outcomes'->'absences') ? 'days' FROM t_lay));
+          AND j->'outcomes'->'absences'->>'definition_he' = (SELECT txt FROM t_absdef)
+          AND NOT (j->'outcomes'->'absences') ? 'text_status' AND (j->'outcomes'->'absences')::text !~ 'טיוטה'
+          AND NOT (j->'outcomes'->'absences') ? 'days' FROM t_lay));
 SELECT t_assert('B3: governance missing → "חסר: …" / "לא הוגדר"',
   (SELECT j->'governance'->>'accountable_exec_display_he' = 'חסר: company_governance.accountable_exec_role_name'
           AND j->'governance'->>'exec_pay_display_he' = 'לא הוגדר'
@@ -825,6 +838,315 @@ SELECT t_assert('r3 J-85: the company-level input RPC is gone (board = Σ teams)
   AND EXISTS (SELECT 1 FROM pg_class WHERE relname = 'board_absence_input'));
 SELECT t_assert('J-53 / r3: the input output is team + month + status only',
   (SELECT j->>'status' = 'saved' AND j->>'team' = 'OPS' AND t_ids_free(j) FROM t_outputs WHERE label = 'absences_put'));
+-- ============ v1.6.20 J-92 (Karin 31.10): the 'ללא מחלקה' absence row ============
+-- users.department is NOT NULL (default 'General'), so "without a department" = blank or literally 'ללא מחלקה' (J-97).
+SELECT t_mk(t_u('cS'), 'nodeptS1', '', 'employee', 'employee', 'mgrS') IS NOT NULL AS nd1,
+       t_mk(t_u('cS'), 'nodeptS2', 'ללא מחלקה', 'employee', 'employee', 'mgrS') IS NOT NULL AS nd2;
+INSERT INTO t_outputs SELECT 'board_abs_nodept_missing', fn_board_absences_json(t_u('cS'), (SELECT m FROM t_m));
+SELECT t_assert('J-92 / J-95: active employees without a department and no "ללא מחלקה" row → the board says "חסר" (1 group missing), no partial total',
+  (SELECT j->>'display_he' = 'חסר: team_absence_input' AND (j->>'teams_missing_count')::int = 1 AND NOT j ? 'days'
+     FROM t_outputs WHERE label = 'board_abs_nodept_missing')
+  AND fn_absence_group_members(t_u('cS'), fn_no_department_key(), (SELECT m FROM t_m)) = 2);
+SELECT t_as(t_u('hrS'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'nodept_put', rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 2, 0.5, 0);
+SELECT t_expect_http('J-92: the no-department row has the same validation (negative → 400)', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), -1, 0, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('J-92: …and the same size cap (2 employees × days of the month)', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 60, 10, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('J-92: a padded / variant key is refused (only the exact key "ללא מחלקה") → 400 invalid_team', $$SELECT rpc_put_team_absences(t_u('cS'), ' ללא מחלקה ', (SELECT m FROM t_m), 1, 0, 0)$$, 'invalid_team', 400);
+SELECT t_expect_http('J-92: the burnout agent never treats "ללא מחלקה" as a team → 400 invalid_team', $$SELECT rpc_get_burnout_trend(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m))$$, 'invalid_team', 400);
+SELECT t_expect_http('J-92: …nor a blank team (the no-department group) → 400 invalid_team', $$SELECT rpc_get_burnout_trend(t_u('cS'), '', (SELECT m FROM t_m))$$, 'invalid_team', 400);
+INSERT INTO t_outputs SELECT 'trend_ops_j92', rpc_get_burnout_trend(t_u('cS'), 'OPS', (SELECT m FROM t_m));
+RESET ROLE;
+INSERT INTO t_outputs SELECT 'board_abs_nodept', fn_board_absences_json(t_u('cS'), (SELECT m FROM t_m));
+INSERT INTO t_outputs SELECT 'layers_nodept', fn_board_layers(t_u('cS'), (SELECT m FROM t_m));
+SELECT t_assert('J-92: company total = Σ all team rows + the no-department row = 11.5 + 2.5 = 14 (sickness 7 + 2, unplanned 3.5 + 0.5, early 1)',
+  (SELECT (j->>'days')::numeric = 14 AND (j->>'sickness_days')::numeric = 9 AND (j->>'unplanned_absence_days')::numeric = 4
+          AND (j->>'unapproved_early_leave_days')::numeric = 1 FROM t_outputs WHERE label = 'board_abs_nodept')
+  AND (SELECT (j->>'days')::numeric FROM t_outputs WHERE label = 'board_abs_nodept')
+      = (SELECT sum(x.sickness_days + x.unplanned_absence_days + x.unapproved_early_leave_days) FROM team_absence_input x
+          WHERE x.company_id = t_u('cS') AND x.period_month = (SELECT m FROM t_m)));
+SELECT t_assert('J-92: the no-department row is never shown separately — no key, label, count or own figure in the board absences or the whole layers output; teams_count = real teams only (3)',
+  (SELECT j::text !~ 'ללא מחלקה' AND j::text !~* 'no_dep' AND (j->>'teams_count')::int = 3
+          AND NOT EXISTS (SELECT 1 FROM jsonb_each(j) e WHERE e.value = '2.5'::jsonb OR e.value = '2'::jsonb)
+     FROM t_outputs WHERE label = 'board_abs_nodept')
+  AND (SELECT j::text !~ 'ללא מחלקה' AND j->'outcomes'->'absences' = (SELECT j FROM t_outputs WHERE label = 'board_abs_nodept')
+         FROM t_outputs WHERE label = 'layers_nodept'));
+SELECT t_assert('J-92: burnout output has no entry for the no-department group (OPS trend does not mention it)',
+  (SELECT j::text !~ 'ללא מחלקה' FROM t_outputs WHERE label = 'trend_ops_j92'));
+SELECT t_assert('J-92: the no-department input is audited like a team row (team key + month only, no person) and returns team + month + status',
+  (SELECT count(*) = 1 AND bool_and(t_ids_free(a.scope) AND a.subject_user_id IS NULL AND NOT a.scope ? 'sickness_days')
+     FROM access_audit_log a WHERE a.action = 'team_absences_put' AND a.scope->>'team' = 'ללא מחלקה')
+  AND (SELECT j->>'status' = 'saved' AND t_ids_free(j) FROM t_outputs WHERE label = 'nodept_put'));
+SELECT t_as(t_u('cfoS'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-91 / J-92: cfo → 403 on the no-department row (vp_hr only)', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('mgrS'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-92: manager → 403 on the no-department row', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('empS1'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-92: employee → 403 on the no-department row', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_expect_http('J-92: service call → 403 on the no-department row', $$SELECT rpc_put_team_absences(t_u('cS'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
+-- J-87 for the no-department group: company N = team NA (8 incl. vp_hr) + 2 employees without a department.
+DO $$
+DECLARE i int;
+BEGIN
+  PERFORM t_mk(t_u('cN'), 'hrN', 'NA', 'vp_hr', 'vp');
+  FOR i IN 1..7 LOOP PERFORM t_mk(t_u('cN'), 'naN' || i, 'NA'); END LOOP;
+END $$;
+SELECT t_as(t_u('hrN'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-92: no employee without a department → the "ללא מחלקה" row is refused (400 invalid_team)', $$SELECT rpc_put_team_absences(t_u('cN'), 'ללא מחלקה', (SELECT m FROM t_m), 1, 0, 0)$$, 'invalid_team', 400);
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cN'), 'NA', (SELECT m FROM t_m), 4, 1, 0)) AS na;
+RESET ROLE;
+SELECT t_assert('J-95: no employee without a department → the no-department row is NOT required (NA alone → total 5)',
+  (fn_board_absences_json(t_u('cN'), (SELECT m FROM t_m))->>'days')::numeric = 5);
+SELECT t_mk(t_u('cN'), 'ndN' || i, '', 'employee', 'employee') IS NOT NULL AS nd FROM generate_series(1, 2) i;
+SELECT t_as(t_u('hrN'));
+SET ROLE authenticated;
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cN'), 'ללא מחלקה', (SELECT m FROM t_m), 3, 0, 0)) AS nd_row;
+RESET ROLE;
+SELECT t_assert('J-87 + J-92: a no-department group of 2 (1–4) could be derived (total − NA) → the board total is not shown',
+  (SELECT j->>'display_he' = 'אין מספיק עובדים להצגה' AND NOT j ? 'days' FROM (SELECT fn_board_absences_json(t_u('cN'), (SELECT m FROM t_m)) j) x));
+SELECT t_mk(t_u('cN'), 'ndN' || i, 'ללא מחלקה', 'employee', 'employee') IS NOT NULL AS nd FROM generate_series(3, 5) i;
+SELECT t_assert('J-87 + J-92: with 5 employees without a department the total is shown (NA 5 + no-dept 3 = 8), still no separate figure',
+  (SELECT (j->>'days')::numeric = 8 AND j::text !~ 'ללא מחלקה' AND (j->>'teams_count')::int = 1
+     FROM (SELECT fn_board_absences_json(t_u('cN'), (SELECT m FROM t_m)) j) x));
+-- ============ v1.6.20-r1 J-96 = A (Karin 31.10): the default department = a SYSTEM MARKER, not the name ============
+-- (a) company D: team OPS (5 + vp_hr), 6 employees inserted WITHOUT a department (→ label 'General' + marker).
+DO $$
+DECLARE i int;
+BEGIN
+  PERFORM t_mk(t_u('cD'), 'hrD', 'OPS', 'vp_hr', 'vp');
+  FOR i IN 1..5 LOOP PERFORM t_mk(t_u('cD'), 'opsD' || i, 'OPS'); END LOOP;
+  FOR i IN 1..6 LOOP PERFORM t_mk(t_u('cD'), 'defD' || i, NULL); END LOOP;
+END $$;
+CREATE TEMP TABLE t_days AS SELECT extract(day FROM fn_month_shift((SELECT m FROM t_m), 1) - 1)::int AS d;
+GRANT SELECT ON t_days TO authenticated;
+SELECT t_assert('J-96 = A: an employee inserted without a department gets the label "General" AND the system marker department_is_default = true',
+  (SELECT count(*) = 6 AND bool_and(department = 'General' AND department_is_default) FROM users
+    WHERE company_id = t_u('cD') AND email LIKE 'defD%')
+  AND (SELECT bool_and(NOT department_is_default) FROM users WHERE company_id = t_u('cD') AND email NOT LIKE 'defD%'));
+SELECT t_assert('J-96 = A (a): defaulted employees are the no-department group (6), never team "General" (0 members); the default label is not a team',
+  fn_absence_group_members(t_u('cD'), fn_no_department_key(), (SELECT m FROM t_m)) = 6
+  AND fn_team_month_members(t_u('cD'), 'General', (SELECT m FROM t_m)) = 0
+  AND fn_is_default_department_group(t_u('cD'), 'General') AND NOT fn_is_default_department_group(t_u('cD'), 'OPS')
+  AND fn_team_month_members(t_u('cD'), NULL, (SELECT m FROM t_m)) = 12);
+INSERT INTO t_outputs SELECT 'board_abs_d_missing', fn_board_absences_json(t_u('cD'), (SELECT m FROM t_m));
+SELECT t_as(t_u('hrD'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-96 = A (a): the default department cannot be entered as a team ("General" → 400 invalid_team; its days go to "ללא מחלקה")', $$SELECT rpc_put_team_absences(t_u('cD'), 'General', (SELECT m FROM t_m), 1, 0, 0)$$, 'invalid_team', 400);
+SELECT t_expect_http('J-96 = A (a) / J-98: the no-department maximum uses the new group (6 defaulted × days of the month): one tenth more → 400', $$SELECT rpc_put_team_absences(t_u('cD'), 'ללא מחלקה', (SELECT m FROM t_m), 6 * (SELECT d FROM t_days) + 0.1, 0, 0)$$, 'invalid_amount', 400);
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cD'), 'ללא מחלקה', (SELECT m FROM t_m), 6 * (SELECT d FROM t_days), 0, 0)) AS at_max;
+SELECT t_expect_http('J-96 = A (a): the burnout agent refuses the default department ("General" here) → 400 invalid_team', $$SELECT rpc_get_burnout_trend(t_u('cD'), 'General', (SELECT m FROM t_m))$$, 'invalid_team', 400);
+INSERT INTO t_outputs SELECT 'trend_d_ops', rpc_get_burnout_trend(t_u('cD'), 'OPS', (SELECT m FROM t_m));
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cD'), 'ללא מחלקה', (SELECT m FROM t_m), 4, 1, 0.5)) AS nd,
+       jsonb_typeof(rpc_put_team_absences(t_u('cD'), 'OPS', (SELECT m FROM t_m), 3, 1, 0)) AS ops;
+RESET ROLE;
+SELECT t_assert('J-95 (updated): defaulted employees and no "ללא מחלקה" row → the board says "חסר" (the no-department group is one of the 2 missing groups)',
+  (SELECT j->>'display_he' = 'חסר: team_absence_input' AND (j->>'teams_missing_count')::int = 2 AND NOT j ? 'days'
+     FROM t_outputs WHERE label = 'board_abs_d_missing'));
+INSERT INTO t_outputs SELECT 'board_abs_d', fn_board_absences_json(t_u('cD'), (SELECT m FROM t_m));
+SELECT t_assert('J-96 = A (a): board total includes the defaulted employees'' row (OPS 4 + no-dept 5.5 = 9.5); teams_count = real teams (1); neither "General" nor "ללא מחלקה" shown',
+  (SELECT (j->>'days')::numeric = 9.5 AND (j->>'teams_count')::int = 1 AND j::text !~ 'General' AND j::text !~ 'ללא מחלקה'
+          AND NOT EXISTS (SELECT 1 FROM jsonb_each(j) e WHERE e.value = '5.5'::jsonb)
+     FROM t_outputs WHERE label = 'board_abs_d'));
+SELECT t_assert('J-96 = A (a): burnout of a real team does not mention the default department / no-department group',
+  (SELECT j::text !~ 'General' AND j::text !~ 'ללא מחלקה' FROM t_outputs WHERE label = 'trend_d_ops'));
+-- the marker is a system field: cannot be set by hand, cleared by an explicit department, set by "no department"
+SELECT t_mk(t_u('cD'), 'mkD1', 'General') IS NOT NULL AS explicit_general;
+INSERT INTO auth.users (id) VALUES (t_u('mkD2'));
+INSERT INTO users (user_id, company_id, email, full_name, department, department_is_default, app_role, timezone, hire_date)
+VALUES (t_u('mkD2'), t_u('cD'), 'mkd2@board.test', 'Board Person mkD2', 'General', true, 'employee', 'Asia/Jerusalem', DATE '2025-01-01');
+SELECT t_assert('J-96 = A: an EXPLICIT "General" is never the default (marker false), even when the insert asks for the marker',
+  (SELECT bool_and(NOT department_is_default) FROM users WHERE user_id IN (t_u('mkD1'), t_u('mkD2'))));
+UPDATE users SET department_is_default = true WHERE user_id = t_u('mkD1');
+UPDATE users SET department = 'OPS' WHERE user_id = t_u('defD6');
+UPDATE users SET department = NULL WHERE user_id = t_u('mkD2');
+SELECT t_assert('J-96 = A: the marker cannot be set by hand; an explicit department clears it; "no department" (NULL) sets it again',
+  (SELECT NOT department_is_default FROM users WHERE user_id = t_u('mkD1'))
+  AND (SELECT department = 'OPS' AND NOT department_is_default FROM users WHERE user_id = t_u('defD6'))
+  AND (SELECT department = 'General' AND department_is_default FROM users WHERE user_id = t_u('mkD2')));
+UPDATE users SET department = 'General', department_is_default = false WHERE user_id = t_u('mkD2');
+UPDATE users SET department = NULL WHERE user_id = t_u('defD6');
+DELETE FROM users WHERE user_id IN (t_u('mkD1'), t_u('mkD2'));
+SELECT t_assert('J-96 = A: after the round trip company D is back to 6 defaulted employees and no "General" team',
+  fn_absence_group_members(t_u('cD'), fn_no_department_key(), (SELECT m FROM t_m)) = 6
+  AND fn_is_default_department_group(t_u('cD'), 'General'));
+-- (b) company R: a REAL department named 'General' (6, incl. vp_hr; marker false) + 5 defaulted employees
+-- (same label 'General', marker true) + one signup without a department and one with 'General'.
+DO $$
+DECLARE i int;
+BEGIN
+  PERFORM t_mk(t_u('cR'), 'hrR', 'General', 'vp_hr', 'vp');
+  FOR i IN 1..5 LOOP PERFORM t_mk(t_u('cR'), 'genR' || i, 'General'); END LOOP;
+  FOR i IN 1..5 LOOP PERFORM t_mk(t_u('cR'), 'defR' || i, NULL); END LOOP;
+END $$;
+INSERT INTO auth.users (id) VALUES (t_u('sgR1')), (t_u('sgR2'));
+SELECT t_as(t_u('sgR1'));
+SET ROLE authenticated;
+SELECT (rpc_signup_profile('sgr1@board.test', 'S R1', 'Asia/Jerusalem', NULL, t_u('cR'))).department_is_default AS sg1;
+RESET ROLE;
+SELECT t_as(t_u('sgR2'));
+SET ROLE authenticated;
+SELECT (rpc_signup_profile('sgr2@board.test', 'S R2', 'Asia/Jerusalem', NULL, t_u('cR'), 'General')).department_is_default AS sg2;
+SELECT (rpc_signup_profile('sgr2@board.test', 'S R2', 'Asia/Jerusalem', NULL, t_u('cR'))).department_is_default AS sg2_again;
+RESET ROLE;
+SELECT t_assert('J-96 = A: rpc_signup_profile without a department → marker true; with "General" → a real team (false); a re-signup without a department keeps it',
+  (SELECT department = 'General' AND department_is_default FROM users WHERE user_id = t_u('sgR1'))
+  AND (SELECT department = 'General' AND NOT department_is_default FROM users WHERE user_id = t_u('sgR2')));
+SELECT t_assert('J-96 = A (b): the real "General" team (7, marker false) is NOT merged into the no-department group (6 defaulted, same label)',
+  fn_team_month_members(t_u('cR'), 'General', (SELECT m FROM t_m)) = 7
+  AND fn_absence_group_members(t_u('cR'), fn_no_department_key(), (SELECT m FROM t_m)) = 6
+  AND NOT fn_is_default_department_group(t_u('cR'), 'General'));
+SELECT t_as(t_u('hrR'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-96 = A (b) / J-90: the real "General" row max = 7 real members × days (defaulted not counted)', $$SELECT rpc_put_team_absences(t_u('cR'), 'General', (SELECT m FROM t_m), 7 * (SELECT d FROM t_days) + 0.1, 0, 0)$$, 'invalid_amount', 400);
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cR'), 'General', (SELECT m FROM t_m), 5, 2, 1)) AS gen,
+       jsonb_typeof(rpc_put_team_absences(t_u('cR'), 'ללא מחלקה', (SELECT m FROM t_m), 3, 0, 0)) AS nd;
+INSERT INTO t_outputs SELECT 'trend_r_general', rpc_get_burnout_trend(t_u('cR'), 'General', (SELECT m FROM t_m));
+RESET ROLE;
+SELECT t_assert('J-96 = A (b): burnout works for the real "General" team (its output; its members are the 7 real ones, checked above)',
+  (SELECT jsonb_typeof(j) = 'object' AND j->>'team' = 'General' AND j::text !~ 'ללא מחלקה' FROM t_outputs WHERE label = 'trend_r_general'));
+INSERT INTO t_outputs SELECT 'board_abs_r', fn_board_absences_json(t_u('cR'), (SELECT m FROM t_m));
+SELECT t_assert('J-96 = A (b): board = the "General" team row (8) + the no-department row (3) = 11; teams_count 1 (the real "General"); no separate no-department figure',
+  (SELECT (j->>'days')::numeric = 11 AND (j->>'teams_count')::int = 1 AND j::text !~ 'ללא מחלקה'
+          AND NOT EXISTS (SELECT 1 FROM jsonb_each(j) e WHERE e.value = '3'::jsonb)
+     FROM t_outputs WHERE label = 'board_abs_r'));
+DELETE FROM users WHERE user_id IN (SELECT t_u('defR' || i) FROM generate_series(1, 5) i);   -- fixture rows only
+SELECT t_assert('J-99 (updated): a no-department group of 1–4 (now only the 1 signup without a department) could be derived → board total not shown',
+  fn_absence_group_members(t_u('cR'), fn_no_department_key(), (SELECT m FROM t_m)) = 1
+  AND (SELECT j->>'display_he' = 'אין מספיק עובדים להצגה' AND NOT j ? 'days' FROM (SELECT fn_board_absences_json(t_u('cR'), (SELECT m FROM t_m)) j) x));
+-- J-101: company Q — 5 rows that already read 'General' (marker false: can't be proven defaulted) + vp_hr in HR
+DO $$
+DECLARE i int;
+BEGIN
+  PERFORM t_mk(t_u('cQ'), 'hrQ', 'HR', 'vp_hr', 'vp');
+  FOR i IN 1..5 LOOP PERFORM t_mk(t_u('cQ'), 'genQ' || i, 'General'); END LOOP;
+END $$;
+-- ============ v1.6.20-r2 J-101 = A (Karin 31.10): one-time notice to vp_hr when a department named 'General' exists ============
+-- The pack runs fn_notify_general_department_review() at its end (after every upgrade / re-apply); here it is run
+-- again on the data above: companies R and Q have a real 'General' (marker false), D has only defaulted employees.
+SELECT t_mk(t_u('cQ'), 'hrQ2', 'HR', 'vp_hr', 'vp') IS NOT NULL AS second_vp_hr_q;
+CREATE TEMP TABLE t_notice AS SELECT fn_notify_general_department_review() AS first_run,
+  (SELECT count(*) FROM users v WHERE v.app_role = 'vp_hr' AND v.employment_ended_at IS NULL
+      AND fn_general_department_ambiguous_count(v.company_id) > 0) AS expected;
+SELECT t_assert('J-101 = A: the notice is created for every vp_hr of a company with a department named "General" (R: hrR; Q: hrQ, hrQ2)',
+  (SELECT first_run = expected AND first_run >= 3 FROM t_notice)
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrR') AND ref_id = t_u('cR'))
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrQ') AND ref_id = t_u('cQ'))
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrQ2') AND ref_id = t_u('cQ')));
+SELECT t_assert('J-101 = A: NOT created when the company has no department named "General" (D: only defaulted; S: none)',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id IN (t_u('cD'), t_u('cS')))
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrD')));
+SELECT t_assert('J-101 = A: one-time — a second run (pack / migration re-run) creates nothing and leaves exactly one per vp_hr',
+  fn_notify_general_department_review() = 0
+  AND (SELECT count(*) FROM notification WHERE kind = 'default_department_review') = (SELECT first_run FROM t_notice)
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review'
+                   GROUP BY recipient_id, ref_id HAVING count(*) > 1));
+DO $$
+BEGIN
+  INSERT INTO notification (recipient_id, kind, ref_id) VALUES (t_u('hrQ'), 'default_department_review', t_u('cQ'));
+  RAISE EXCEPTION 'FAIL J-101 = A: a duplicate notice was accepted';
+EXCEPTION WHEN unique_violation THEN
+  PERFORM t_pass('J-101 = A: a duplicate cannot be inserted even directly (unique per vp_hr + company)');
+END $$;
+SELECT t_assert('J-101 = A: the notice carries no person — ref_id is the company, kind only; no text column on the row',
+  NOT EXISTS (SELECT 1 FROM notification n JOIN users u ON u.user_id = n.ref_id WHERE n.kind = 'default_department_review')
+  AND (SELECT bool_and(n.ref_id IN (SELECT company_id FROM companies)) FROM notification n WHERE n.kind = 'default_department_review')
+  AND (SELECT array_agg(column_name::text ORDER BY column_name) FROM information_schema.columns WHERE table_name = 'notification')
+      = '{created_at,kind,notification_id,recipient_id,ref_id,silent}'::text[]);
+SELECT t_as(t_u('hrQ'));
+SET ROLE authenticated;
+SELECT t_assert('J-101 = A: vp_hr of Q sees her one notice (company Q) and nobody else''s',
+  (SELECT count(*) = 1 AND bool_and(ref_id = t_u('cQ') AND recipient_id = t_u('hrQ')) FROM notification WHERE kind = 'default_department_review'));
+SELECT t_assert('J-101 = A: the text, letter for letter',
+  rpc_notification_message_he('default_department_review')
+  = 'יש אצלכם מחלקה בשם General. אם זו ברירת המחדל ולא מחלקה אמיתית, אפשר לסמן אותה כך.'
+  AND rpc_notification_message_he('distress_alert') IS NULL);
+RESET ROLE;
+SELECT t_assert('J-101 = A: the text names nobody and holds no id',
+  t_ids_free(jsonb_build_object('text', rpc_notification_message_he('default_department_review')))
+  AND NOT EXISTS (SELECT 1 FROM users u WHERE length(btrim(u.full_name)) > 2
+                     AND position(u.full_name IN rpc_notification_message_he('default_department_review')) > 0));
+SELECT t_as(t_u('genQ1'));
+SET ROLE authenticated;
+SELECT t_assert('J-101 = A: an employee of the same company sees no notice',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review'));
+RESET ROLE;
+SELECT t_as(t_u('hrD'));
+SET ROLE authenticated;
+SELECT t_assert('J-101 = A: vp_hr of another company (D) sees no notice',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review'));
+RESET ROLE;
+SELECT t_assert('J-101: existing "General" rows stay a normal team (no silent reclassification) and are counted as ambiguous (5, no names)',
+  fn_general_department_ambiguous_count(t_u('cQ')) = 5 AND fn_team_month_members(t_u('cQ'), 'General', (SELECT m FROM t_m)) = 5
+  AND fn_absence_group_members(t_u('cQ'), fn_no_department_key(), (SELECT m FROM t_m)) = 0);
+SELECT t_as(t_u('genQ1'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-101: only vp_hr may run the resolver (employee → 403)', $$SELECT rpc_mark_general_as_default_department(t_u('cQ'))$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('hrD'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-101: another company''s vp_hr → 403', $$SELECT rpc_mark_general_as_default_department(t_u('cQ'))$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('hrQ'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'mark_q', rpc_mark_general_as_default_department(t_u('cQ'));
+SELECT t_expect_http('J-101: after Karin''s call is applied, "General" of company Q is the default department → burnout refuses it', $$SELECT rpc_get_burnout_trend(t_u('cQ'), 'General', (SELECT m FROM t_m))$$, 'invalid_team', 400);
+RESET ROLE;
+SELECT t_assert('J-101: the resolver marks the 5 rows, audited with company + count only, and the group moves to "ללא מחלקה"',
+  (SELECT j->>'status' = 'marked' AND (j->>'marked')::int = 5 AND t_ids_free(j) FROM t_outputs WHERE label = 'mark_q')
+  AND fn_general_department_ambiguous_count(t_u('cQ')) = 0
+  AND fn_absence_group_members(t_u('cQ'), fn_no_department_key(), (SELECT m FROM t_m)) = 5
+  AND (SELECT count(*) = 1 AND bool_and(a.subject_user_id IS NULL AND (a.scope->>'marked')::int = 5 AND t_ids_free(a.scope - 'company_id'))
+         FROM access_audit_log a WHERE a.action = 'default_department_marked'));
+SELECT t_assert('J-96 = A: no session is left with the backfill switch on',
+  COALESCE(current_setting('chr.default_department_backfill', true), '') = '');
+-- ============ v1.6.20-r2 J-102 = A: NO function groups users by department without the marker ============
+-- Catalog check over pg_proc: every public function whose source mentions the word "department" must reference
+-- the marker (department_is_default) or a marker-aware helper (fn_user_in_team / fn_user_is_no_department /
+-- fn_user_group_key). Documented allowlist (each one does NOT group users by department):
+--   fn_company_month_shadow, fn_team_month_tax_debt, rpc_ledger_append — read stored team rows (team_aggregate /
+--     shadow_balance_aggregate) that were computed marker-aware; no users read.
+--   fn_ledger_chain, fn_seed_company_ledger_genesis — copy the ledger row's own group into the hash chain.
+--   fn_users_team_joined, fn_users_manager_vault_guard — row triggers on the user's OWN row (department changed).
+--   rpc_provision_governance_user — writes the governance user's own row ('Board').
+--   rpc_team_spoon_alert — counts via fn_team_spoon_reports (marker-aware, checked by this scan).
+--   rpc_get_burnout_trend, rpc_put_team_absences — refuse the default / 'ללא מחלקה' groups and count members via
+--     fn_team_month_members / fn_absence_group_members (marker-aware, checked by this scan).
+CREATE TEMP TABLE t_dept_scan AS
+SELECT p.proname::text AS fn,
+       p.prosrc ~ '(department_is_default|fn_user_in_team|fn_user_is_no_department|fn_user_group_key)' AS marker_aware
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND p.prosrc ~* '\mdepartment\M';
+SELECT t_assert('J-102 = A (1): catalog scan — every function that mentions department is marker-aware or on the documented allowlist (exact)',
+  (SELECT array_agg(fn ORDER BY fn) FROM t_dept_scan WHERE NOT marker_aware)
+  = ARRAY['fn_company_month_shadow', 'fn_ledger_chain', 'fn_seed_company_ledger_genesis', 'fn_team_month_tax_debt',
+          'fn_users_manager_vault_guard', 'fn_users_team_joined', 'rpc_get_burnout_trend', 'rpc_ledger_append',
+          'rpc_provision_governance_user', 'rpc_put_team_absences', 'rpc_team_spoon_alert']::text[]);
+SELECT t_assert('J-102 = A (1): no allowlisted function reads the users table by department',
+  NOT EXISTS (SELECT 1 FROM t_dept_scan s JOIN pg_proc p ON p.proname = s.fn
+               WHERE NOT s.marker_aware AND p.prosrc ~* '\mfrom\s+users\M' AND p.prosrc ~* '\m[a-z0-9_]+\.department\M'
+                 AND s.fn NOT IN ('fn_company_month_shadow', 'fn_team_month_tax_debt', 'rpc_ledger_append')));
+SELECT t_assert('J-102 = A (1): the named groupings are marker-aware — spoon alert counts, team מס קיפוח / Happiness Debt refresh, cuckoo window, emergency team status, board adoption units',
+  (SELECT count(*) = 9 AND bool_and(marker_aware) FROM t_dept_scan
+    WHERE fn IN ('fn_team_spoon_reports', 'fn_team_aggregate_contributors', 'rpc_team_aggregate_refresh',
+                 'fn_shadow_balance_contributors', 'rpc_shadow_balance_refresh', 'fn_team_activity_contributors',
+                 'fn_cuckoo_raise', 'rpc_emergency_team_status', 'fn_board_layer_adoption')));
+-- J-102 = A (2), board adoption units: company R — 4 real 'General' reporters + 5 defaulted reporters (same label).
+SELECT t_pcq('genR' || i, (SELECT m FROM t_m), 60) FROM generate_series(1, 4) i;
+SELECT t_mk(t_u('cR'), 'adR' || i, NULL) IS NOT NULL AS defaulted_r FROM generate_series(1, 5) i;   -- 5 defaulted (marker true)
+SELECT t_pcq('adR' || i, (SELECT m FROM t_m), 60) FROM generate_series(1, 5) i;
+CREATE TEMP TABLE t_adopt_r AS SELECT fn_board_layer_adoption(t_u('cR'), (SELECT m FROM t_m)) AS j;
+SELECT t_assert('J-102 = A (2): adoption — the real "General" unit has 4 מדווחים בפועל (< 5) and stays suppressed although 9 share the label; no "ללא מחלקה" unit',
+  (SELECT NOT EXISTS (SELECT 1 FROM jsonb_array_elements(j->'coverage_by_unit') e WHERE e->>'unit' IN ('General', 'ללא מחלקה'))
+     FROM t_adopt_r));
+SELECT t_assert('J-102 = A (2): adoption — the defaulted reporters count only in the company total (4 + 5 = 9)',
+  (SELECT (j->'coverage_company'->>'reporters_count')::int = 9 AND t_ids_free(j) FROM t_adopt_r));
 SELECT t_assert('B3: governance = role name only (no person), exec pay tied, complaint time 4.5 days',
   (SELECT j->>'accountable_exec_role_name' = 'סמנכ"ל משאבי אנוש' AND (j->>'exec_pay_tied_to_metrics')::boolean
           AND (j->>'mean_complaint_handling_days')::numeric = 4.5 AND t_ids_free(j) FROM t_outputs WHERE label = 'governance_put'));

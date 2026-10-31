@@ -1,6 +1,8 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.17 · tests/test_v1_5.sql (filename kept per Drive rule) — scratch PostgreSQL 17 validation
 -- Version: 1.6.17-mvp (2026-10-31) — supersedes the 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25), 1.6.12-mvp, 1.6.11-mvp, 1.6.10-mvp, 1.6.9-mvp, 1.6.8-mvp and 1.6.7-mvp versions of this file
+-- v1.6.20-r2 (2026-10-31, Karin J-102 = A): + a real 'General' team never grows by default-department employees
+--   (small team stays suppressed at N≥5 and N≥10; tax / Happiness Debt exclude them).
 -- v1.6.10: UZ keeps Asia/Tashkent (Samarkand excluded); a pinned zone (UA → Kyiv) is never needs_review;
 --   fn_start_date_untrusted / fn_tz_edge follow chr.mig_source_tz (UTC when unset).
 -- v1.6.9: users.start_date is a generated read-only alias (O-50) → fixtures write hire_date instead.
@@ -2399,6 +2401,92 @@ SELECT t_assert('v1.6.11 O-4 & O-18: rpc_shadow_balance_refresh at N=10 computes
           AND chr_real_ebitda = 9674000.00
      FROM rpc_shadow_balance_refresh('00000000-0000-0000-0000-0000000000cb', 'SB10', 10000000)));
 RESET ROLE;
+
+-- ============ v1.6.20-r2 (J-102 = A): a REAL team named 'General' never grows by default-department employees ============
+-- Company J102S: a small real 'General' team (4 employees, department given explicitly → marker false) and 6
+-- employees with NO department (marker true). All have salary rows and report spoons today.
+-- Company J102T: a real 'General' team of 10 (2 flagged deprived) and 5 defaulted employees (all flagged deprived).
+DO $$
+DECLARE
+  v_s uuid := md5('j102-small')::uuid;
+  v_t uuid := md5('j102-tax')::uuid;
+  v_uid uuid;
+  i int;
+BEGIN
+  INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone) VALUES
+    (v_s, 'J102 Small', 'IL', 0, 4, 'Asia/Jerusalem'), (v_t, 'J102 Tax', 'IL', 0, 4, 'Asia/Jerusalem');
+  INSERT INTO auth.users (id) VALUES (md5('j102-mgr-s')::uuid), (md5('j102-mgr-t')::uuid);
+  INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date) VALUES
+    (md5('j102-mgr-s')::uuid, v_s, 'mgr@j102s', 'J102 S Mgr', 'Exec', 'manager', 'direct_manager', 'Asia/Jerusalem', CURRENT_DATE - 200),
+    (md5('j102-mgr-t')::uuid, v_t, 'mgr@j102t', 'J102 T Mgr', 'Exec', 'manager', 'direct_manager', 'Asia/Jerusalem', CURRENT_DATE - 200);
+  FOR i IN 1..10 LOOP
+    v_uid := md5('j102-s-' || i)::uuid;
+    INSERT INTO auth.users (id) VALUES (v_uid);
+    INSERT INTO users (user_id, company_id, reports_to, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+    VALUES (v_uid, v_s, md5('j102-mgr-s')::uuid, 's' || i || '@j102s', 'J102 S ' || i,
+            CASE WHEN i <= 4 THEN 'General' END,  -- 1..4 real 'General'; 5..10 no department → default marker
+            'employee', 'employee', 'Asia/Jerusalem', CURRENT_DATE - 100);
+    INSERT INTO employee_value_asset (user_id, company_id, annual_salary) VALUES (v_uid, v_s, 100000);
+  END LOOP;
+  FOR i IN 1..15 LOOP
+    v_uid := md5('j102-t-' || i)::uuid;
+    INSERT INTO auth.users (id) VALUES (v_uid);
+    INSERT INTO users (user_id, company_id, reports_to, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+    VALUES (v_uid, v_t, md5('j102-mgr-t')::uuid, 't' || i || '@j102t', 'J102 T ' || i,
+            CASE WHEN i <= 10 THEN 'General' END, -- 1..10 real 'General'; 11..15 defaulted
+            'employee', 'employee', 'Asia/Jerusalem', CURRENT_DATE - 100);
+    INSERT INTO employee_value_asset (user_id, company_id, annual_salary, is_deprived)
+    VALUES (v_uid, v_t, 100000, i IN (1, 2) OR i > 10);
+  END LOOP;
+END $$;
+SELECT fn_ensure_local_spoon_budget(md5('j102-s-' || i)::uuid) IS NOT NULL FROM generate_series(1, 10) i;
+UPDATE spoon_budget sb SET current_spoon_count = 2, reported_at = clock_timestamp()
+  FROM users u WHERE u.user_id = sb.user_id AND u.company_id = md5('j102-small')::uuid;
+
+SELECT t_assert('J-102 setup: 4 real General (marker false) + 6 defaulted (label General, marker true) in J102 Small',
+  (SELECT count(*) FILTER (WHERE NOT department_is_default) = 4 AND count(*) FILTER (WHERE department_is_default) = 6
+          AND bool_and(department = 'General')
+     FROM users WHERE company_id = md5('j102-small')::uuid AND app_role = 'employee'));
+SELECT t_assert('J-102: contributors / spoon reporters of the real General = 4 (defaulted employees not counted)',
+  fn_team_aggregate_contributors(md5('j102-small')::uuid, 'General') = 4
+  AND (SELECT reporters FROM fn_team_spoon_reports(md5('j102-small')::uuid, 'General')) = 4
+  AND fn_shadow_balance_contributors(md5('j102-small')::uuid, 'General') = 4);
+SELECT t_as(md5('j102-mgr-s')::uuid);
+SET ROLE authenticated;
+SELECT t_expect_err('J-102: spoon alert, real General with 4 reporters + 6 defaulted reporters → stays suppressed (403, N<5)',
+  $$SELECT * FROM rpc_team_spoon_alert(md5('j102-small')::uuid, 'General')$$, 'aggregation_privacy_threshold');
+SELECT t_expect_err('J-102: team מס קיפוח refresh, real General 4 + 6 defaulted → stays suppressed (403, N<5)',
+  $$SELECT * FROM rpc_team_aggregate_refresh(md5('j102-small')::uuid, 'General')$$, 'aggregation_privacy_threshold');
+SELECT t_expect_err('J-102: Shadow Balance / Happiness Debt (N≥10), real General 4 + 6 defaulted → stays suppressed (403)',
+  $$SELECT * FROM rpc_shadow_balance_refresh(md5('j102-small')::uuid, 'General', NULL)$$, 'aggregation_privacy_threshold');
+SELECT t_expect_err('J-102: the default group has no team view either ("ללא מחלקה" → 403)',
+  $$SELECT * FROM rpc_team_spoon_alert(md5('j102-small')::uuid, 'ללא מחלקה')$$, 'aggregation_privacy_threshold');
+RESET ROLE;
+SELECT t_assert('J-102: the three team RPCs have no default department input any more (p_department required)',
+  (SELECT bool_and(pronargdefaults = CASE WHEN proname = 'rpc_shadow_balance_refresh' THEN 1 ELSE 0 END)
+     FROM pg_proc WHERE proname IN ('rpc_team_spoon_alert', 'rpc_team_aggregate_refresh', 'rpc_shadow_balance_refresh'))
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname IN ('rpc_team_spoon_alert', 'rpc_team_aggregate_refresh', 'rpc_shadow_balance_refresh')
+                     AND pg_get_function_arguments(oid) ILIKE '%General%'));
+
+-- Burnout tax / Happiness Debt of a real General team (10) exclude the 5 defaulted (all flagged deprived).
+SELECT t_as(md5('j102-mgr-t')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-102: team מס קיפוח refresh of the real General — 10 contributors, 2 deprived (5 defaulted deprived excluded)',
+  (SELECT contributor_count = 10 AND deprived_count = 2 FROM rpc_team_aggregate_refresh(md5('j102-tax')::uuid, 'General')));
+SELECT t_assert('J-102: Happiness Debt refresh of the real General — N=10, 2 deprived (5 defaulted deprived excluded)',
+  (SELECT contributor_count = 10 AND deprived_count = 2 FROM rpc_shadow_balance_refresh(md5('j102-tax')::uuid, 'General', NULL)));
+RESET ROLE;
+SELECT t_assert('J-102: stored tax = 2 × tier salary × factor and debt = 2 × tier salary × midpoint (defaulted excluded)',
+  (SELECT t.deprivation_tax_amount = round(2 * fn_company_tier_avg_salary(md5('j102-tax')::uuid, 'junior') * fn_chr_productivity_factor(), 2)
+     FROM team_aggregate t WHERE t.org_id = md5('j102-tax')::uuid AND t.department = 'General' ORDER BY t.calculated_at DESC LIMIT 1)
+  AND (SELECT s.happiness_debt_balance = round(2 * fn_company_tier_avg_salary(md5('j102-tax')::uuid, 'junior')
+                                              * fn_turnover_tier_midpoint_factor('junior'), 2)
+     FROM shadow_balance_aggregate s WHERE s.org_id = md5('j102-tax')::uuid AND s.department = 'General' ORDER BY s.calculated_at DESC LIMIT 1));
+SELECT t_assert('J-102: the burnout-agent tax/debt terms read the same team rows (defaulted excluded)',
+  (SELECT d.deprivation_tax = round(2 * fn_company_tier_avg_salary(md5('j102-tax')::uuid, 'junior') * fn_chr_productivity_factor(), 2)
+          AND d.happiness_debt = round(2 * fn_company_tier_avg_salary(md5('j102-tax')::uuid, 'junior')
+                                       * fn_turnover_tier_midpoint_factor('junior'), 2)
+     FROM fn_team_month_tax_debt(md5('j102-tax')::uuid, 'General', date_trunc('month', (clock_timestamp() AT TIME ZONE 'Asia/Jerusalem'))::date) d));
 
 -- 7. (O-5) Morning & midday check-in RPCs
 SELECT t_assert('v1.6.11 O-5: morning half-point scores floored in employee favor (4.5→0 deducted, 5.0→2, 5.5→2, 6.0→3, 7.5→3, 8.0→4)',

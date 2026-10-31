@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.19 · tests/test_agents_v1_6_16.sql — agents (agents-bot-instructions-v3) on PostgreSQL 17
--- Version: 1.6.19-mvp (2026-10-31) — supersedes the 1.6.18-mvp, 1.6.17-mvp and 1.6.16-mvp files of the same name (filename kept so the Drive
+-- Version: 1.6.20-mvp (2026-10-31) — supersedes the 1.6.19-mvp, 1.6.18-mvp, 1.6.17-mvp and 1.6.16-mvp files of the same name (filename kept so the Drive
 -- id history stays in one place). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_agents_v1_6_16.sql
 -- Covers: the 18 server tests of v3 §6.3 (tagged "v3-T<n>"), A1 (conversion blocked), A2 (anonymous EverStore
@@ -989,7 +989,7 @@ SELECT t_assert('r3: BIG October absences = 30 days = sick 20 + unplanned 6 + un
   (SELECT (j->'signals'->'absences'->>'days')::numeric = 30 AND (j->'signals'->'absences'->>'used_in_risk')::boolean
           AND (j->'signals'->'absences'->>'aggregate_only')::boolean
           AND j->'signals'->'absences'->>'definition_he' = fn_absence_definition_he()
-          AND j->'signals'->'absences'->>'text_status' = 'טיוטה'
+          AND NOT (j->'signals'->'absences') ? 'text_status' AND (j->'signals'->'absences')::text !~ 'טיוטה'   -- J-88 approved
      FROM t_outputs WHERE label = 'trend_big_abs')
   AND fn_team_absence_days(t_u('cA'), 'BIG', '2026-10-01') = 30 AND fn_team_absence_days(t_u('cA'), 'BIG', '2026-09-01') = 20);
 SELECT t_assert('r3: the absence term uses the existing rise test — 10, 10, 10, 20, 30 → crosses in 2 consecutive periods → rising',
