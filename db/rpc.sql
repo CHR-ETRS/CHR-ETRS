@@ -1,6 +1,6 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.17 · rpc.sql
--- Version: 1.6.17-mvp (2026-10-31 IL) — supersedes 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- CHR-ETRS MVP v1.6.18 · rpc.sql
+-- Version: 1.6.18-mvp (2026-10-31 IL) — supersedes 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -8,6 +8,18 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- New in 1.6.18 (Karin 31.10 via Chief of Drive — fix round closing A-12, A-13, A-14):
+--   * A-12: rpc_record_remediation attributes every remediation to ONE leaver_transfer of the team (optional
+--     p_transfer_event_id, else the team's oldest open transfer) and never above its open balance (422
+--     remediation_exceeds_transfer / no_open_leaver_transfer); fn_reverse_leaver_transfer returns only the open
+--     balance (moved − attributed remediations); rpc_list_leaver_transfers (vp_hr / cfo) shows each transfer.
+--   * A-13: recording (or moving) the end of employment cancels every approved absence scheduled after the
+--     employee-local end date and refunds its Golden Spoons (trg_users_time_benefit_cancel →
+--     fn_cancel_time_benefits_after_exit, idempotent); rpc_request_absence_reschedule = the employee's own
+--     request to move an absence (e.g. earlier), only while employed; the manager cannot reschedule a cancelled
+--     entry or one of an ex-employee.
+--   * A-14: questionnaire amounts per company — vp_hr only (cfo → 403), 1–20 (else 422), WORM history +
+--     audit, snapshot on each submission; computed field golden_spoons_reward on /questionnaire_definition.
 -- New in 1.6.17 (Karin 31.10 via Chief of Drive — fix round):
 --   * A-5 / J-3: TPS-12, IHS and Cantril each pay 10 Golden Spoons for participation (settings, see schema.sql);
 --     fn_questionnaire_reward is unchanged (it reads agent_settings, never a code constant).
@@ -1322,6 +1334,8 @@ DECLARE
   v_prior    jsonb;
   v_inv      jsonb;
   v_departed boolean;
+  v_purchase uuid;
+  v_absence  uuid;
 BEGIN
   -- Lock #6: open to every user with an employee interface (managers at every tier,
   -- CEO, VPs). Governance-only users (no employee profile) → 403.
@@ -1373,7 +1387,8 @@ BEGIN
   ) VALUES (
     v_uid, v_item.item_id, v_item.category, v_price, COALESCE(v_item.cosmetic_only, true), p_idempotency_key
   )
-  ON CONFLICT (user_id, idempotency_key) DO NOTHING;
+  ON CONFLICT (user_id, idempotency_key) DO NOTHING
+  RETURNING purchase_id INTO v_purchase;
 
   -- נעילת הפרגוד (Karin 25.10): time_benefit voucher automatically converts through HR into a
   -- standard approved absence / refresh time entry ('זמן התרעננות / היעדרות מאושרת') with no
@@ -1388,7 +1403,14 @@ BEGIN
       'approved_absence',
       'זמן התרעננות / היעדרות מאושרת',
       'pending_coordination'
-    );
+    )
+    RETURNING absence_id INTO v_absence;
+    -- v1.6.18 (A-13): CLOSED internal link (never shown to a manager) so the purchase can be refunded if the
+    -- absence ends up scheduled after the end of employment.
+    IF v_purchase IS NOT NULL THEN
+      INSERT INTO time_benefit_absence_link (absence_id, purchase_id, price_golden_spoons)
+      VALUES (v_absence, v_purchase, v_price);
+    END IF;
   END IF;
 
   v_inv := COALESCE(v_state.shop_inventory, '[]'::jsonb) || jsonb_build_array(
@@ -1518,6 +1540,11 @@ BEGIN
   IF NOT FOUND THEN
     PERFORM fn_raise_business('access_denied');
   END IF;
+  -- v1.6.18 (A-13): a cancelled entry is final, and nothing is rescheduled once the employment has ended.
+  IF fn_employment_ended(v_sub) OR EXISTS (SELECT 1 FROM approved_absence_entry a
+                                            WHERE a.absence_id = p_absence_id AND a.schedule_status = 'cancelled') THEN
+    PERFORM fn_raise_business('anti_get_blocked');
+  END IF;
 
   UPDATE approved_absence_entry a
      SET requested_date  = COALESCE(p_requested_date, a.requested_date),
@@ -1534,6 +1561,135 @@ $$;
 
 REVOKE ALL ON FUNCTION rpc_coordinate_approved_absence(uuid, date) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_coordinate_approved_absence(uuid, date) TO authenticated;
+
+-- ---------------------------------------------------------------------------
+-- v1.6.18 (A-13, Karin 31.10): a time benefit bought before leaving but scheduled AFTER the end of employment is
+-- cancelled — the approved_absence_entry gets schedule_status 'cancelled' (cancel_reason 'employment_ended') and
+-- the Golden Spoons it cost are refunded to the employee, who is then in the 30-day exit redemption window where
+-- only EverStore products can be bought (J-15). Nothing is moved earlier automatically.
+-- ---------------------------------------------------------------------------
+
+-- Employee-local calendar date on which the employment ends (NULL while employed).
+CREATE OR REPLACE FUNCTION fn_employment_end_local_date(p_user_id uuid)
+RETURNS date
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT (u.employment_ended_at AT TIME ZONE u.timezone)::date FROM users u WHERE u.user_id = p_user_id
+$$;
+REVOKE ALL ON FUNCTION fn_employment_end_local_date(uuid) FROM PUBLIC;
+
+-- Cancel + refund every not-yet-cancelled approved absence of the employee scheduled after the end date
+-- (requested_date > employee-local end date; the end date itself is still a day of employment). Idempotent:
+-- cancelled rows are skipped and time_benefit_refund allows one refund per absence. Returns an id-free summary.
+CREATE OR REPLACE FUNCTION fn_cancel_time_benefits_after_exit(p_user_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_end      date := fn_employment_end_local_date(p_user_id);
+  r          record;
+  v_n        int := 0;
+  v_unlinked int := 0;
+  v_refund   numeric(10, 1) := 0;
+  v_amt      numeric(10, 1);
+BEGIN
+  IF v_end IS NULL THEN
+    RETURN jsonb_build_object('status', 'still_employed', 'cancelled_count', 0, 'refunded_golden_spoons', 0);
+  END IF;
+  FOR r IN SELECT a.absence_id, l.price_golden_spoons
+             FROM approved_absence_entry a
+             LEFT JOIN time_benefit_absence_link l ON l.absence_id = a.absence_id
+            WHERE a.user_id = p_user_id AND a.schedule_status <> 'cancelled' AND a.requested_date > v_end
+            ORDER BY a.requested_date, a.absence_id
+              FOR UPDATE OF a LOOP
+    UPDATE approved_absence_entry
+       SET schedule_status = 'cancelled', cancelled_at = clock_timestamp(), cancel_reason = 'employment_ended'
+     WHERE absence_id = r.absence_id;
+    v_n := v_n + 1;
+    v_amt := NULL;
+    IF r.price_golden_spoons IS NOT NULL THEN
+      INSERT INTO time_benefit_refund (absence_id, amount, refund_reason)
+      VALUES (r.absence_id, r.price_golden_spoons, 'employment_ended')
+      ON CONFLICT (absence_id) DO NOTHING
+      RETURNING amount INTO v_amt;
+    ELSE
+      v_unlinked := v_unlinked + 1;                 -- pre-1.6.18 row with no purchase link: nothing to refund
+    END IF;
+    IF v_amt IS NOT NULL THEN
+      INSERT INTO avatar_state (user_id) VALUES (p_user_id) ON CONFLICT (user_id) DO NOTHING;
+      UPDATE avatar_state SET golden_spoons = golden_spoons + v_amt, updated_at = clock_timestamp()
+       WHERE user_id = p_user_id;
+      v_refund := v_refund + v_amt;
+    END IF;
+  END LOOP;
+  RETURN jsonb_build_object('status', CASE WHEN v_n = 0 THEN 'nothing_to_cancel' ELSE 'cancelled' END,
+                            'cancelled_count', v_n, 'refunded_golden_spoons', v_refund,
+                            'cancelled_without_refund', v_unlinked, 'end_date', v_end);
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_cancel_time_benefits_after_exit(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION fn_cancel_time_benefits_after_exit(uuid) TO service_role;
+
+-- Trigger body: the end of employment is recorded (or moved) → cancel the benefits scheduled after it.
+CREATE OR REPLACE FUNCTION fn_users_time_benefit_cancel()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_cancel_time_benefits_after_exit(NEW.user_id);
+  RETURN NULL;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_users_time_benefit_cancel() FROM PUBLIC;
+
+DROP TRIGGER IF EXISTS trg_users_time_benefit_cancel ON users;
+CREATE TRIGGER trg_users_time_benefit_cancel
+    AFTER UPDATE OF employment_ended_at ON users
+    FOR EACH ROW WHEN (NEW.employment_ended_at IS NOT NULL
+                       AND OLD.employment_ended_at IS DISTINCT FROM NEW.employment_ended_at)
+    EXECUTE FUNCTION fn_users_time_benefit_cancel();
+
+-- v1.6.18 (A-13): the employee's own regular request to move an approved absence to another (e.g. earlier) day.
+-- Allowed only while employed (after the end → 403 anti_get_blocked), never on a cancelled entry (403), never to a
+-- past day (400 invalid_requested_date). The entry goes back to 'pending_coordination' for the direct manager.
+-- Returns the employee's own entry without any person field.
+CREATE OR REPLACE FUNCTION rpc_request_absence_reschedule(p_absence_id uuid, p_requested_date date)
+RETURNS TABLE (absence_id uuid, requested_date date, entry_type text, entry_text text, schedule_status text)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_uid uuid := auth.uid();
+  v_row approved_absence_entry;
+BEGIN
+  IF v_uid IS NULL THEN
+    PERFORM fn_raise_business('anti_get_blocked');
+  END IF;
+  SELECT * INTO v_row FROM approved_absence_entry a WHERE a.absence_id = p_absence_id AND a.user_id = v_uid FOR UPDATE;
+  IF NOT FOUND OR v_row.schedule_status = 'cancelled' OR fn_employment_ended(v_uid) THEN
+    PERFORM fn_raise_business('anti_get_blocked');
+  END IF;
+  IF p_requested_date IS NULL OR p_requested_date < fn_user_local_date(v_uid) THEN
+    PERFORM fn_raise_bad_request('invalid_requested_date');
+  END IF;
+  UPDATE approved_absence_entry a
+     SET requested_date = p_requested_date, schedule_status = 'pending_coordination'
+   WHERE a.absence_id = p_absence_id;
+  RETURN QUERY
+  SELECT a.absence_id, a.requested_date, a.entry_type, a.entry_text, a.schedule_status
+    FROM approved_absence_entry a WHERE a.absence_id = p_absence_id;
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_request_absence_reschedule(uuid, date) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_request_absence_reschedule(uuid, date) TO authenticated;
 
 -- ---------------------------------------------------------------------------
 -- rpc_convert_golden_to_chr — v2 design: ONE-WAY 1 golden spoon = 50 CHR Coins (no reverse function).
@@ -1617,6 +1773,36 @@ AS $$
 $$;
 REVOKE ALL ON FUNCTION fn_questionnaire_reward(questionnaire_definition, uuid) FROM PUBLIC;
 
+-- v1.6.18 (A-14): since when the company's current amount for a reward setting is in effect (latest
+-- questionnaire_reward_history row; NULL = the pack default, never changed for this company).
+CREATE OR REPLACE FUNCTION fn_questionnaire_reward_effective_from(p_company uuid, p_key text)
+RETURNS timestamptz
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT max(h.effective_from) FROM questionnaire_reward_history h
+   WHERE h.company_id = p_company AND h.setting_key = p_key AND h.effective_from <= clock_timestamp()
+$$;
+REVOKE ALL ON FUNCTION fn_questionnaire_reward_effective_from(uuid, text) FROM PUBLIC;
+
+-- v1.6.18 (A-14, Karin 31.10): PostgREST computed field of /questionnaire_definition — the participation Golden
+-- Spoons the CALLER's company currently pays for this questionnaire, shown before she fills it out
+-- (GET /questionnaire_definition?select=*,golden_spoons_reward). Same value for every employee of the company;
+-- it depends only on the company and the definition, never on answers, team or role. NULL = "לא הוגדר".
+CREATE OR REPLACE FUNCTION golden_spoons_reward(p_def questionnaire_definition)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT fn_questionnaire_reward(p_def, (SELECT u.company_id FROM users u WHERE u.user_id = auth.uid()))
+$$;
+REVOKE ALL ON FUNCTION golden_spoons_reward(questionnaire_definition) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION golden_spoons_reward(questionnaire_definition) TO authenticated;
+
 CREATE OR REPLACE FUNCTION rpc_submit_questionnaire(
   p_code    varchar,
   p_answers int[]
@@ -1636,6 +1822,7 @@ DECLARE
   v_reward numeric;
   v_rstat  text;
   v_row    questionnaire_submission;
+  v_comp   uuid;
 BEGIN
   IF v_uid IS NULL OR fn_app_role() <> 'employee' THEN
     PERFORM fn_raise_business('anti_get_blocked');
@@ -1661,14 +1848,19 @@ BEGIN
   END IF;
 
   v_score := fn_questionnaire_score(v_def, p_answers);   -- group metric only; never a reward input
-  v_reward := fn_questionnaire_reward(v_def, (SELECT u.company_id FROM users u WHERE u.user_id = v_uid));
+  v_comp := (SELECT u.company_id FROM users u WHERE u.user_id = v_uid);
+  v_reward := fn_questionnaire_reward(v_def, v_comp);
   v_rstat := CASE WHEN v_reward IS NULL THEN 'not_defined' ELSE 'set' END;
   v_reward := COALESCE(v_reward, 0);
 
+  -- v1.6.18 (A-14): snapshot of the amount, the setting key and since when that amount is in effect → a later
+  -- change never touches this row (non-retroactive, provable against questionnaire_reward_history).
   INSERT INTO questionnaire_submission (
-    user_id, questionnaire_code, period_key, local_date, answers, score, reward_golden_spoons, reward_status
+    user_id, questionnaire_code, period_key, local_date, answers, score, reward_golden_spoons, reward_status,
+    reward_setting_key, reward_effective_from
   ) VALUES (
-    v_uid, v_def.code, fn_period_key(v_def.frequency, v_local), v_local, p_answers, v_score, v_reward, v_rstat
+    v_uid, v_def.code, fn_period_key(v_def.frequency, v_local), v_local, p_answers, v_score, v_reward, v_rstat,
+    v_def.reward_setting_key, fn_questionnaire_reward_effective_from(v_comp, v_def.reward_setting_key)
   )
   ON CONFLICT (user_id, questionnaire_code, period_key) DO NOTHING
   RETURNING * INTO v_row;
@@ -4695,7 +4887,46 @@ BEGIN
 END;
 $$;
 
+-- v1.6.18 (A-14): true for the three questionnaire participation settings (monthly / short / quarterly).
+CREATE OR REPLACE FUNCTION fn_is_questionnaire_reward_key(p_key text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT p_key IN ('golden_spoons_per_questionnaire', 'golden_spoons_per_short_questionnaire',
+                   'golden_spoons_per_quarterly_questionnaire')
+$$;
+
+-- v1.6.18 (A-14, Karin 31.10): rules for changing a questionnaire amount — only an active vp_hr of the company
+-- (cfo and every other caller, service calls included → 403 insufficient_privilege); 1–20 per questionnaire
+-- (else 422 questionnaire_reward_out_of_range); at most one decimal (the wallet unit; else 400 invalid_setting_value).
+CREATE OR REPLACE FUNCTION fn_assert_questionnaire_reward_change(p_company uuid, p_value numeric)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR NOT EXISTS (SELECT 1 FROM users u
+                                        WHERE u.user_id = auth.uid() AND u.company_id = p_company
+                                          AND u.employment_ended_at IS NULL AND u.app_role = 'vp_hr') THEN
+    PERFORM fn_raise_business('insufficient_privilege');
+  END IF;
+  IF p_value IS NOT NULL AND (p_value < 1 OR p_value > 20) THEN
+    PERFORM fn_raise_unprocessable('questionnaire_reward_out_of_range');
+  END IF;
+  IF p_value IS NOT NULL AND p_value <> round(p_value, 1) THEN
+    PERFORM fn_raise_bad_request('invalid_setting_value');
+  END IF;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_is_questionnaire_reward_key(text), fn_assert_questionnaire_reward_change(uuid, numeric) FROM PUBLIC;
+
 -- Set (or, with both values NULL, reset) a company override (cfo / vp_hr). Locked keys → 403 setting_locked.
+-- v1.6.18 (A-14): the questionnaire amounts follow fn_assert_questionnaire_reward_change (vp_hr only, 1–20); each
+-- change is written to questionnaire_reward_history (WORM, effective_from = now) and to access_audit_log (WORM)
+-- with the value before and after. It applies from now on only: submissions keep the amount they snapshotted.
 CREATE OR REPLACE FUNCTION rpc_put_agent_setting(
   p_company_id    uuid,
   p_setting_key   text,
@@ -4709,7 +4940,11 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_def agent_settings;
+  v_def    agent_settings;
+  v_qkey   boolean := fn_is_questionnaire_reward_key(p_setting_key);
+  v_before numeric;
+  v_after  agent_settings;
+  v_at     timestamptz;
 BEGIN
   PERFORM fn_assert_finance_viewer(p_company_id);
   SELECT * INTO v_def FROM agent_settings s WHERE s.company_id IS NULL AND s.setting_key = p_setting_key;
@@ -4718,6 +4953,13 @@ BEGIN
   END IF;
   IF v_def.is_locked THEN
     PERFORM fn_raise_business('setting_locked');
+  END IF;
+  IF v_qkey THEN
+    IF p_value_text IS NOT NULL THEN
+      PERFORM fn_raise_bad_request('invalid_setting_value');
+    END IF;
+    PERFORM fn_assert_questionnaire_reward_change(p_company_id, p_value_numeric);
+    v_before := fn_agent_setting_num(p_company_id, p_setting_key);
   END IF;
   PERFORM fn_validate_agent_setting(v_def.value_kind, p_value_numeric, p_value_text);
   IF p_setting_key = 'score_range_coefficient' AND p_value_numeric IS NOT NULL AND p_value_numeric <= 0 THEN
@@ -4731,6 +4973,17 @@ BEGIN
             CASE WHEN v_def.value_kind = 'numeric' THEN p_value_numeric END,
             CASE WHEN v_def.value_kind <> 'numeric' THEN p_value_text END,
             'set', false, 'company override');
+  END IF;
+  IF v_qkey THEN
+    v_after := fn_agent_setting_row(p_company_id, p_setting_key);
+    INSERT INTO questionnaire_reward_history (company_id, setting_key, value_before, value_after, scope_after)
+    VALUES (p_company_id, p_setting_key, v_before, v_after.value_numeric,
+            CASE WHEN v_after.company_id IS NULL THEN 'default' ELSE 'company' END)
+    RETURNING effective_from INTO v_at;
+    PERFORM fn_audit_view('questionnaire_reward_setting_put',
+                          jsonb_build_object('company_id', p_company_id, 'setting_key', p_setting_key,
+                                             'value_before', v_before, 'value_after', v_after.value_numeric,
+                                             'effective_from', v_at));
   END IF;
   PERFORM fn_audit_view('agent_setting_put', jsonb_build_object('company_id', p_company_id, 'setting_key', p_setting_key));
   RETURN QUERY SELECT * FROM rpc_get_agent_settings(p_company_id) g WHERE g.setting_key = p_setting_key;
@@ -5613,11 +5866,40 @@ CREATE TRIGGER trg_users_leaver_debt_transfer
     FOR EACH ROW WHEN (OLD.employment_ended_at IS NULL AND NEW.employment_ended_at IS NOT NULL)
     EXECUTE FUNCTION fn_users_leaver_debt_transfer();
 
--- v1.6.17 (A-8, Karin 31.10): an offboarding was reversed (marked by mistake or the employee returned) → the
--- latest not-yet-reversed leaver_transfer of this employee goes back to its team: a 'leaver_reversal' event
--- (same team, same amount, period = company month of the reversal; reverses_event_id = the transfer). The
--- memo line "יצא עם העוזבים" decreases by that amount; the original transfer stays (WORM, history intact).
--- Idempotent: a transfer is reversed at most once (unique index); a second call changes nothing.
+-- v1.6.18 (A-12): Σ documented remediations attributed to one leaver_transfer.
+CREATE OR REPLACE FUNCTION fn_transfer_remediated(p_transfer uuid)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE(sum(a.amount), 0) FROM happiness_debt_remediation_allocation a WHERE a.transfer_event_id = p_transfer
+$$;
+
+-- v1.6.18 (A-12): open balance of one leaver_transfer on the memo line "יצא עם העוזבים" =
+-- moved debt − its attributed remediations − its reversal (0 once reversed; never below 0).
+CREATE OR REPLACE FUNCTION fn_transfer_open_balance(p_transfer uuid)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT greatest(0, t.amount - fn_transfer_remediated(t.event_id)
+                     - COALESCE((SELECT sum(v.amount) FROM happiness_debt_events v
+                                  WHERE v.event_type = 'leaver_reversal' AND v.reverses_event_id = t.event_id), 0))
+    FROM happiness_debt_events t WHERE t.event_id = p_transfer AND t.event_type = 'leaver_transfer'
+$$;
+REVOKE ALL ON FUNCTION fn_transfer_remediated(uuid), fn_transfer_open_balance(uuid) FROM PUBLIC;
+
+-- v1.6.17 (A-8) + v1.6.18 (A-12, Karin 31.10): an offboarding was reversed (marked by mistake or the employee
+-- returned) → the latest not-yet-reversed leaver_transfer of this employee goes back to its team: a
+-- 'leaver_reversal' event (same team, period = company month of the reversal; reverses_event_id = the transfer)
+-- whose amount is the transfer's OPEN balance = moved debt − the documented remediations already attributed to
+-- that transfer (A-12; 0 when they covered it all — still recorded). The memo line decreases by that net amount
+-- only, so no remediation is counted twice and no other leaver's share moves; the transfer's own balance is 0.
+-- The original transfer and remediations stay (WORM). Idempotent: one reversal per transfer (unique index).
 -- Returns an id-free summary (no person_id / user_id / pseudonym). Only while the employment is active again.
 CREATE OR REPLACE FUNCTION fn_reverse_leaver_transfer(p_user_id uuid)
 RETURNS jsonb
@@ -5629,6 +5911,8 @@ DECLARE
   v_t     happiness_debt_events;
   v_month date;
   v_rev   uuid;
+  v_rem   numeric;
+  v_net   numeric;
 BEGIN
   IF fn_employment_ended(p_user_id) THEN
     RETURN jsonb_build_object('status', 'still_offboarded');
@@ -5646,15 +5930,19 @@ BEGIN
     RETURN jsonb_build_object('status', 'nothing_to_reverse');
   END IF;
   v_month := fn_agent_month_start(v_t.company_id, clock_timestamp());
+  v_rem := fn_transfer_remediated(v_t.event_id);
+  v_net := greatest(0, v_t.amount - v_rem);
   INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, reverses_event_id)
-  VALUES (v_t.company_id, v_t.group_id, v_month, 'leaver_reversal', v_t.amount, v_t.event_id)
+  VALUES (v_t.company_id, v_t.group_id, v_month, 'leaver_reversal', v_net, v_t.event_id)
   ON CONFLICT (reverses_event_id) WHERE event_type = 'leaver_reversal' DO NOTHING
   RETURNING event_id INTO v_rev;
   IF v_rev IS NULL THEN
     RETURN jsonb_build_object('status', 'nothing_to_reverse');
   END IF;
   RETURN jsonb_build_object('status', 'reversed', 'reversal_event_id', v_rev, 'reverses_event_id', v_t.event_id,
-                            'team', v_t.group_id, 'period_month', v_month, 'amount', v_t.amount,
+                            'team', v_t.group_id, 'period_month', v_month,
+                            'transferred', v_t.amount, 'remediated', v_rem, 'amount', v_net,
+                            'transfer_balance_after', fn_transfer_open_balance(v_t.event_id),
                             'memo_after', fn_leaver_memo(v_t.company_id, v_month), 'label_he', 'יצא עם העוזבים');
 END;
 $$;
@@ -5680,35 +5968,111 @@ CREATE TRIGGER trg_users_leaver_debt_reversal
     FOR EACH ROW WHEN (OLD.employment_ended_at IS NOT NULL AND NEW.employment_ended_at IS NULL)
     EXECUTE FUNCTION fn_users_leaver_debt_reversal();
 
+-- v1.6.18 (A-12): the leaver_transfer a remediation is attributed to. p_transfer given → it must be a transfer of
+-- that company and team (else 400 invalid_remediation); NULL → the team's OLDEST transfer with an open balance and
+-- a month ≤ the remediation month (none → 422 no_open_leaver_transfer). Locks the transfer row.
+CREATE OR REPLACE FUNCTION fn_remediation_target(p_company uuid, p_team varchar, p_month date, p_transfer uuid)
+RETURNS happiness_debt_events
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_t happiness_debt_events;
+BEGIN
+  IF p_transfer IS NOT NULL THEN
+    SELECT e.* INTO v_t FROM happiness_debt_events e
+     WHERE e.event_id = p_transfer AND e.event_type = 'leaver_transfer'
+       AND e.company_id = p_company AND e.group_id = p_team AND e.period_month <= p_month
+       FOR UPDATE;
+    IF NOT FOUND THEN
+      PERFORM fn_raise_bad_request('invalid_remediation');
+    END IF;
+  ELSE
+    SELECT e.* INTO v_t FROM happiness_debt_events e
+     WHERE e.event_type = 'leaver_transfer' AND e.company_id = p_company AND e.group_id = p_team
+       AND e.period_month <= p_month AND fn_transfer_open_balance(e.event_id) > 0
+     ORDER BY e.created_at, e.event_id
+     LIMIT 1
+       FOR UPDATE;
+    IF NOT FOUND THEN
+      PERFORM fn_raise_unprocessable('no_open_leaver_transfer');
+    END IF;
+  END IF;
+  RETURN v_t;
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_remediation_target(uuid, varchar, date, uuid) FROM PUBLIC;
+
 -- Record a documented fix (vp_hr / cfo): remediation_records row + happiness_debt_events 'remediation'.
+-- v1.6.18 (A-12): attributed to exactly ONE leaver_transfer of the team (fn_remediation_target) and never above
+-- its open balance (else 422 remediation_exceeds_transfer) — so it can never reduce another leaver's share.
+DROP FUNCTION IF EXISTS rpc_record_remediation(uuid, varchar, date, text, numeric);
 CREATE OR REPLACE FUNCTION rpc_record_remediation(p_company_id uuid, p_team_id varchar, p_remediated_on date,
-                                                  p_what_fixed text, p_reduction_amount numeric)
+                                                  p_what_fixed text, p_reduction_amount numeric,
+                                                  p_transfer_event_id uuid DEFAULT NULL)
 RETURNS uuid
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_id uuid;
+  v_id  uuid;
+  v_ev  uuid;
+  v_t   happiness_debt_events;
 BEGIN
   PERFORM fn_assert_finance_viewer(p_company_id);
   IF p_team_id IS NULL OR p_remediated_on IS NULL OR p_what_fixed IS NULL OR length(btrim(p_what_fixed)) = 0
-     OR p_reduction_amount IS NULL OR p_reduction_amount <= 0 THEN
+     OR p_reduction_amount IS NULL OR p_reduction_amount <= 0 OR p_reduction_amount <> round(p_reduction_amount, 2) THEN
     PERFORM fn_raise_bad_request('invalid_remediation');
+  END IF;
+  v_t := fn_remediation_target(p_company_id, p_team_id, fn_month_of(p_remediated_on), p_transfer_event_id);
+  IF p_reduction_amount > fn_transfer_open_balance(v_t.event_id) THEN
+    PERFORM fn_raise_unprocessable('remediation_exceeds_transfer');
   END IF;
   INSERT INTO remediation_records (company_id, group_id, remediated_on, what_fixed, approved_by, reduction_amount)
   VALUES (p_company_id, p_team_id, p_remediated_on, btrim(p_what_fixed), auth.uid(), p_reduction_amount)
   RETURNING remediation_id INTO v_id;
   INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount, remediation_id)
-  VALUES (p_company_id, p_team_id, fn_month_of(p_remediated_on), 'remediation', p_reduction_amount, v_id);
+  VALUES (p_company_id, p_team_id, fn_month_of(p_remediated_on), 'remediation', p_reduction_amount, v_id)
+  RETURNING event_id INTO v_ev;
+  INSERT INTO happiness_debt_remediation_allocation (remediation_event_id, transfer_event_id, amount)
+  VALUES (v_ev, v_t.event_id, p_reduction_amount);
   RETURN v_id;
 END;
 $$;
-REVOKE ALL ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_record_remediation(uuid, varchar, date, text, numeric, uuid) TO authenticated, service_role;
+
+-- v1.6.18 (A-12): per-transfer view of the memo line for vp_hr / cfo, so a remediation can be attributed to a
+-- named transfer. One row per leaver_transfer: team, month, moved, remediated, reversed, open balance. No person
+-- field (the transfer is identified by its event id only).
+CREATE OR REPLACE FUNCTION rpc_list_leaver_transfers(p_company_id uuid)
+RETURNS TABLE (transfer_event_id uuid, team text, period_month date, transferred numeric, remediated numeric,
+               reversed numeric, open_balance numeric, label_he text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_finance_viewer(p_company_id);
+  RETURN QUERY
+  SELECT t.event_id, t.group_id::text, t.period_month, t.amount, fn_transfer_remediated(t.event_id),
+         COALESCE((SELECT sum(v.amount) FROM happiness_debt_events v
+                    WHERE v.event_type = 'leaver_reversal' AND v.reverses_event_id = t.event_id), 0),
+         fn_transfer_open_balance(t.event_id), 'יצא עם העוזבים'::text
+    FROM happiness_debt_events t
+   WHERE t.company_id = p_company_id AND t.event_type = 'leaver_transfer'
+   ORDER BY t.created_at, t.event_id;
+END;
+$$;
+REVOKE ALL ON FUNCTION rpc_list_leaver_transfers(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_list_leaver_transfers(uuid) TO authenticated, service_role;
 
 -- Memo line "יצא עם העוזבים" through a month: Σ leaver_transfer − Σ remediation − Σ leaver_reversal (v1.6.17)
--- (never below 0).
+-- (never below 0). v1.6.18 (A-12): a reversal now carries only the net (moved − attributed remediations), so the
+-- formula equals Σ per-transfer open balances (minus any pre-1.6.18 remainder that could not be attributed).
 CREATE OR REPLACE FUNCTION fn_leaver_memo(p_company uuid, p_month date)
 RETURNS numeric
 LANGUAGE sql
