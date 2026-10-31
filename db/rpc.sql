@@ -20,7 +20,7 @@
 --     'תיק אימות' per metric (kept with every report), pay / bonus linkage (report 422 below level 2), measuring
 --     body CHR-ETRS, company-side timing / wording changes logged (cap at level 1).
 --   * Report layers (investment & activity, adoption & usage "אימוץ", outcomes) + governance; inputs RPCs;
---     5 sources (fn_board_sources; IJEB year 2026 in fn_chr_paper_year); burnout recommendation + guard; social
+--     5 sources (fn_board_sources; IJEB year 2026 in fn_chr_paper_year) + sources_note = Karin's binding A-10 text; burnout recommendation + guard; social
 --     events "ללא הערכה מקצועית"; J-54 cancelled absences are not absences.
 -- New in 1.6.18 (Karin 31.10 via Chief of Drive — fix round closing A-12, A-13, A-14):
 --   * A-12: rpc_record_remediation attributes every remediation to ONE leaver_transfer of the team (optional
@@ -7551,6 +7551,26 @@ AS $$
       'doi', '10.13140/rg.2.2.35568.62722', 'status_he', 'טיוטה'))
 $$;
 
+-- Karin's binding appendix text (A-10, 31.10), EXACT characters, a line break between the two sentences.
+-- r = 0.37 is never shown alone or as a link to profit: only inside this text, always next to 0.14–0.16.
+CREATE OR REPLACE FUNCTION fn_board_binding_text_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'מתאם בין רווחת עובדים לביצועים: r = 0.37 (רווח בר-סמך 95%: 0.26–0.48; יציב בין 0.31 ל-0.39 בבדיקות רגישות).' || chr(10) || 'הקשר הישיר לרווחיות חלש יותר: 0.14–0.16. המסלול החזק ביותר עובר דרך הלקוחות. (טיוטה)' $$;
+
+-- The appendix note next to the sources, tied to the 'Does Employee Well-Being Pay?' source ('טיוטה').
+CREATE OR REPLACE FUNCTION fn_board_sources_note()
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT jsonb_build_object('text_he', fn_board_binding_text_he(), 'source', s->>'source', 'citation', s->>'citation',
+                            'doi', s->>'doi', 'status_he', s->>'status_he', 'text_status', fn_text_status_draft())
+    FROM jsonb_array_elements(fn_board_sources()) s
+   WHERE s->>'doi' = '10.13140/rg.2.2.35568.62722'
+$$;
+
 -- ---------- the three report layers + governance (Part B1, B3; Tsaban & Shavit 2026, World 7(5):77) ----------
 
 -- Lowest verification level of a set of metrics in a month = the layer's label (J-62).
@@ -7944,7 +7964,8 @@ BEGIN
     'bcr_score', CASE WHEN v_bcr.company_id IS NULL THEN jsonb_build_object('display_he', 'לא בוצע')
                       ELSE jsonb_build_object('yes_count', v_bcr.yes_count, 'of', 15, 'result_he', v_bcr.result_he) END,
     'choices_he', 'שיעור מס קיפוח 12% (מתג רגישות 10%); חוב אושר לפי נקודת האמצע של דרג העלות (40% / 125% / 300%); עלות החלפה רק מעל קו הבסיס לכל דרג.',
-    'sources', fn_board_sources());
+    'sources', fn_board_sources(),
+    'sources_note', fn_board_sources_note());
   INSERT INTO board_report (company_id, period_month, report) VALUES (p_company_id, v_month, v_report);
   PERFORM fn_audit_view('board_report_published', jsonb_build_object('company_id', p_company_id, 'month', v_month));
   RETURN v_report;

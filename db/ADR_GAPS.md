@@ -354,9 +354,16 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 | Complementary rule | A team row is not shown if the rest of the batch could be computed from it: shown teams have ≥ 10 leavers each AND the rest of the batch is 0 or ≥ 10; otherwise the smallest shown team is folded back until that holds. The same rule is used for the adoption layer cells (≥ 5 buyers / reporters there) | `fn_complement_safe_keys`, `fn_leaver_batch_teams`, `fn_board_layer_adoption` |
 | Batching of adjustments | Remediations and reversals move the memo line / list only inside a batch, and only when the pending adjustments touch **≥ 10 distinct transfers**; until then they wait (same note) | `fn_leaver_memo_try_snapshot` (`adjustment_batch` rows) |
 | A-3 (closed) | ILS estimate = **average cost of a redeemed spoon, 3-month moving average** (Σ internal ILS cost ÷ Σ Golden Spoons of the company's EverStore purchases in the current company-local month + the 2 previous); shown only with **≥ 10 purchases**, else exactly 'אין עדיין מספיק מימושים לאומדן'; an item without an internal cost → 'חסר: everstore_item_cost.internal_cost_ils'. **cfo / vp_hr only** (service / anon / others → 403). `liability_method` = `avg_redeemed` (locked). `spoon_cost_ils` is **deprecated and unused** (kept, `not_defined`, locked — not deleted) | `fn_redeemed_spoon_cost_3m`, `rpc_get_redeemed_spoon_cost_estimate`, `rpc_get_open_golden_spoons_liability` (strict), `fn_board_layer_investment` |
-| A-10 (closed) | All DOIs checked by Karin; the earlier unverified-DOI note is removed. r = 0.37 may appear **only inside the binding text and always next to 0.14–0.16** — that text was not provided, so the pack holds no r = 0.37 anywhere (gap G-1 below). The B_t burnout weight 0.37 (0.41·S + 0.37·O + 0.22·D) is a different number and is unchanged | `fn_board_sources` |
+| A-10 (**fully closed**, r1 31.10) | All DOIs checked by Karin; the earlier unverified-DOI note is removed. Karin's binding appendix text (exact, below) is in the published report as `sources_note` next to `sources`, tied to *Does Employee Well-Being Pay?* (doi 10.13140/rg.2.2.35568.62722, 'טיוטה'). The correlation is never shown alone or as a link to profit — it appears only inside this full text, always next to 0.14–0.16 (tested in the report, and in openapi / README / ADR_GAPS by `run_tests.sh`). The B_t burnout weight (0.41·S + 0.37·O + 0.22·D) is a different number, unchanged and not linked to this text | `fn_board_binding_text_he`, `fn_board_sources_note`, `rpc_build_board_report.sources_note`, `fn_board_sources` |
 | Sources (5) | Exactly 5 entries, each with `doi` + `status_he`: IJEB — Tsaban & Shavit (2026), *Corporate happiness responsibility (CHR) – changing the role of corporations*, IJEB 33(1), 123–160, doi 10.1080/13571516.2025.2599785, 'פורסם' (year 2026 in one constant `fn_chr_paper_year()`; the DOI is unchanged) · Oswald, Proto & Sgroi (2015), doi 10.1086/681096, 'פורסם' · Bellet, De Neve & Ward (2024), doi 10.1287/mnsc.2023.4766, 'פורסם' · Tsaban & Shavit (2026), *Unveiling the Value of Happiness: Why Reporting on Corporate Investments in Employee Happiness Matters*, World 7(5), 77, doi 10.3390/world7050077, 'פורסם' (עבר ביקורת עמיתים) · Tsaban (2026), *Does Employee Well-Being Pay?*, doi 10.13140/rg.2.2.35568.62722, 'טיוטה'. Karin's own texts keep `text_status` 'טיוטה' | `fn_chr_paper_year`, `fn_board_sources`, `rpc_build_board_report.sources` |
 | J-54 fix | Cancelled time-benefit absences (A-13) are excluded from every absence count | `fn_team_month_absences`, `fn_company_month_absences` |
+
+**A-10 binding appendix text (Karin 31.10, exact; 'טיוטה'):**
+
+```
+מתאם בין רווחת עובדים לביצועים: r = 0.37 (רווח בר-סמך 95%: 0.26–0.48; יציב בין 0.31 ל-0.39 בבדיקות רגישות).
+הקשר הישיר לרווחיות חלש יותר: 0.14–0.16. המסלול החזק ביותר עובר דרך הלקוחות. (טיוטה)
+```
 
 ### Built per the approved plan (sections 2, 2b, 3)
 
@@ -371,7 +378,7 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 | Burnout recommendation (A4) | Only 'לבדוק את תנאי העבודה בצוות' ('טיוטה'), only when the risk rises; a guard refuses texts suggesting more feedback / documentation / an improvement plan / PIP | `fn_burnout_recommendation`, `fn_recommendation_allowed`, `rpc_get_burnout_trend` |
 | Social events (A5) | 'ללא הערכה מקצועית'; no attendance table, no Golden Spoons | `social_event`, `rpc_create_social_event` (vp_hr), `rpc_list_social_events` |
 | Report layers (B1, B3) + measuring body (B2) | (a) investment & activity, (b) adoption & usage under 'אימוץ' (redemption rate 'לא הוגדר'), (c) outcomes, plus governance; each with its verification level; missing input → 'חסר: <field>'; measuring body CHR-ETRS; causal note ('טיוטה'); ILS only as a total | `fn_board_layers`, `fn_board_layer_*`, `fn_board_causal_note`, input RPCs `rpc_put_wellbeing_spend` / `_safety_incidents` / `_key_role_turnover` / `_company_governance` / `_payroll_population`, `rpc_add_org_event`, `rpc_put_questionnaire_items` |
-| Board report keys | added `verification_levels`, `layers`, `measuring_body`, `causal_note`, `verification_dossiers`, `sources`; removed `assurance_tier`, `sources_note_he` | `rpc_build_board_report`, OpenAPI |
+| Board report keys | added `verification_levels`, `layers`, `measuring_body`, `causal_note`, `verification_dossiers`, `sources`, `sources_note` (A-10 binding text); removed `assurance_tier`, `sources_note_he` | `rpc_build_board_report`, OpenAPI |
 
 ### Judgment calls of the approved plan (J-40 – J-54; J-43 is now a decision)
 
@@ -418,7 +425,6 @@ Notes: all 13 tiered schema roles fit Karin's list; no listed role is missing. "
 
 | # | Gap |
 |---|-----|
-| G-1 | The binding text that must carry r = 0.37 next to 0.14–0.16 was never provided — not in the pack (להשלמה) |
 | G-2 | Failed attempts (403 / 422) cannot be audited: the audit row is rolled back with the failed call (PostgREST runs each call in one transaction) |
 | G-3 | Remediation 422s still leak a little (a caller can learn that a team has / lacks open balance above an amount by trying); reduced by one shared code, not removed |
 | G-4 | Upgrade memo jump (J-64): the first published memo after upgrade can exceed the pre-upgrade value until ≥ 10 transfers of adjustments accumulate |
@@ -534,7 +540,6 @@ The 8 decisions of 30.10 · Golden Spoons per participation (fixed, from setting
 | A-6 | `golden_spoons_per_checkin` (midday check-in participation) — לא הוגדר, pays 0 — להשלמה |
 | A-7 | BCR middle band (6–9 yes) label — לא הוגדר in v3 — להשלמה |
 | A-9 | ADR numbers for the v3 §6.5 list above — להשלמה |
-| A-15 | The binding text with r = 0.37 next to 0.14–0.16 (A-10 rule) — wording not provided — להשלמה (G-1) |
 | A-16 | J-52 Hebrew forbidden phrases, J-53 definitions (redemption-rate denominator, key role, board absences) and the causal-note text (J-65) — for Karin — להשלמה |
 
 _(A-5, A-8 and A-11 were closed in v1.6.17 — see *Resolved in v1.6.17*; A-12, A-13 and A-14 were closed in v1.6.18 — see *Resolved in v1.6.18*; A-3 and A-10 were closed in v1.6.19 — see *Resolved in v1.6.19*.)_

@@ -584,10 +584,39 @@ SELECT t_assert('sources: no 2025 author-year for the IJEB paper outside the DOI
      FROM t_outputs WHERE label LIKE 'board_%')
   AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
                    AND replace(p.prosrc, '13571516.2025.2599785', '') ~ '(Shavit|שביט)[^0-9]{0,40}2025'));
-SELECT t_assert('A-10: r = 0.37 appears only inside the binding text next to 0.14–0.16 — no such text is in the pack, so 0.37 is in no report',
-  (SELECT bool_and(strpos(j::text, '0.37') = 0 OR (strpos(j::text, '0.14') > 0 AND strpos(j::text, '0.16') > 0)) FROM t_outputs WHERE label LIKE 'board_%')
+-- A-10 (Karin 31.10): the binding appendix text, EXACT (en dashes, a line break between the two sentences).
+CREATE TEMP TABLE t_binding AS SELECT 'מתאם בין רווחת עובדים לביצועים: r = 0.37 (רווח בר-סמך 95%: 0.26–0.48; יציב בין 0.31 ל-0.39 בבדיקות רגישות).
+הקשר הישיר לרווחיות חלש יותר: 0.14–0.16. המסלול החזק ביותר עובר דרך הלקוחות. (טיוטה)'::text AS txt;
+SELECT t_assert('A-10: the published report carries Karin''s binding text exactly (sources_note.text_he, with the line break)',
+  (SELECT j->'sources_note'->>'text_he' = (SELECT txt FROM t_binding) FROM t_outputs WHERE label = 'board_r5')
+  AND fn_board_binding_text_he() = (SELECT txt FROM t_binding)
+  AND position(chr(10) IN fn_board_binding_text_he()) > 0);
+SELECT t_assert('A-10: the binding text is tied to "Does Employee Well-Being Pay?" (doi 10.13140/rg.2.2.35568.62722, טיוטה)',
+  (SELECT j->'sources_note'->>'doi' = '10.13140/rg.2.2.35568.62722' AND j->'sources_note'->>'status_he' = 'טיוטה'
+          AND j->'sources_note'->>'text_status' = 'טיוטה' AND j->'sources_note'->>'citation' LIKE '%Does Employee Well-Being Pay?%'
+          AND (j->'sources'->4->>'doi') = '10.13140/rg.2.2.35568.62722'
+     FROM t_outputs WHERE label = 'board_r5'));
+-- Count of a pattern in a text (helper for the A-10 checks).
+CREATE OR REPLACE FUNCTION t_count(p_text text, p_pat text) RETURNS int LANGUAGE sql IMMUTABLE AS
+  $$ SELECT (length(p_text) - length(replace(p_text, p_pat, ''))) / length(p_pat) $$;
+SELECT t_assert('A-10: every "r = 0.37" in every published report is inside the full binding text (count r = 0.37 = count full text = 1)',
+  (SELECT bool_and(t_count(j::text, 'r = 0.37') = t_count(j::text, (SELECT to_jsonb(txt)::text FROM t_binding) )
+                   AND t_count(j::text, 'r = 0.37') = 1)
+     FROM t_outputs WHERE label LIKE 'board_r%'));
+SELECT t_assert('A-10: 0.37 is never shown alone: without sources_note no report holds 0.37 (no "link to profit" wording)',
+  (SELECT bool_and(strpos((j - 'sources_note')::text, '0.37') = 0) FROM t_outputs WHERE label LIKE 'board_%')
+  AND (SELECT bool_and(strpos(j::text, '0.37') = 0) FROM t_outputs WHERE label NOT LIKE 'board_r%'));
+SELECT t_assert('A-10: 0.37 always next to 0.14–0.16 (same sentence block of the binding text)',
+  position('0.14–0.16' IN fn_board_binding_text_he()) > position('r = 0.37' IN fn_board_binding_text_he())
+  AND position('r = 0.37' IN fn_board_binding_text_he()) > 0);
+SELECT t_assert('A-10: in the code only fn_board_binding_text_he holds "r = 0.37"; only fn_board_sources_note uses it',
+  NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
+               AND p.prosrc ~ 'r\s*=\s*0\.37' AND p.proname <> 'fn_board_binding_text_he')
   AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
-                   AND p.prosrc ~ 'r\s*=\s*0\.37'));
+               AND p.prosrc LIKE '%fn_board_binding_text_he%' AND p.proname <> 'fn_board_sources_note'));
+SELECT t_assert('A-10: the burnout B_t weight is not linked to the binding text (burnout / B_t functions never use it)',
+  NOT EXISTS (SELECT 1 FROM pg_proc WHERE (proname LIKE '%burnout%' OR proname = 'fn_b_t' OR proname LIKE '%_b_t%')
+               AND (prosrc LIKE '%fn_board_binding_text_he%' OR prosrc LIKE '%fn_board_sources_note%')));
 SELECT t_assert('A-10: the burnout overtime weight 0.37 (Karin 20.10) is unchanged: B_t(S 5, O 10 h, D 1) = 0.41 + 0.37 = 0.78',
   fn_b_t(5, 10, 1) = 0.78 AND fn_b_t(1, 10, 1) = 0.37);
 

@@ -3954,7 +3954,8 @@ paths:
         with used_for_pay / used_for_manager_bonus), layers {investment_activity, adoption_usage ("אימוץ"), outcomes,
         governance, measuring_body, structure_source_doi}, measuring_body (גוף מודד CHR-ETRS), causal_note (טיוטה),
         verification_dossiers (kept), bcr_score, deprivation_tax (12 % / 10 % display switch), turnover_above_baseline,
-        misleading_margins_flag, sources[5] {topic_he, source, citation, doi, status_he}.'
+        misleading_margins_flag, sources[5] {topic_he, source, citation, doi, status_he}, sources_note {text_he (Karin''s exact
+        A-10 binding appendix text, two lines), source, citation, doi 10.13140/rg.2.2.35568.62722, status_he טיוטה, text_status}.'
       requestBody:
         required: true
         content:

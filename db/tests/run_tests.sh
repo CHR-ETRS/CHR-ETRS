@@ -26,6 +26,24 @@ psql -d "${DB}_board" -v ON_ERROR_STOP=1 -qAt -f tests/test_board_v1_6_19.sql
 # v1.4 → v1.6.19 migration: dry run, apply, counts, catalog = fresh, idempotence, rollback — in both modes
 MIG_MODE=super ./tests/test_migration.sh
 MIG_MODE=nosuper ./tests/test_migration.sh
+# A-10 (Karin 31.10): every "r = 0.37" in openapi.yaml / README.md / ADR_GAPS.md must sit inside the full binding text
+# (taken from the pack itself: fn_board_binding_text_he), so the correlation is never shown alone.
+BIND_FILE=$(mktemp)
+psql -d "${DB}_board" -qAt -c "SELECT fn_board_binding_text_he()" > "$BIND_FILE"
+python3 - "$BIND_FILE" openapi.yaml README.md ADR_GAPS.md <<'PY'
+import re, sys
+full = open(sys.argv[1], encoding='utf-8').read().rstrip('\n')
+bad = 0
+for f in sys.argv[2:]:
+    text = open(f, encoding='utf-8').read()
+    n_r = len(re.findall(r'r\s*=\s*0\.37', text))
+    n_full = text.count(full)
+    ok = n_r == n_full
+    print(('PASS' if ok else 'FAIL') + f' A-10 {f}: "r = 0.37" x{n_r}, full binding text x{n_full}')
+    bad += 0 if ok else 1
+sys.exit(1 if bad else 0)
+PY
+rm -f "$BIND_FILE"
 # The rejected fixed salary literal must not appear anywhere in the pack (pattern avoids writing it here)
 if grep -rnE '10{1}50{3}' --include='*.sql' --include='*.yaml' --include='*.md' --include='*.sh' --include='*.py' . ; then
   echo "FAIL rejected salary literal found"; exit 1
