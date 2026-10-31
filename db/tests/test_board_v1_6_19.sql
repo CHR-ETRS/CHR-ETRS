@@ -1,7 +1,7 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.19 · tests/test_board_v1_6_19.sql — v1.6.19 board report, leaver batching, ILS estimate,
 -- verification levels, 'תיק אימות', pay linkage, social events, layers + governance, sources (PostgreSQL 17)
--- Version: 1.6.20-mvp r1 (2026-10-31; r1 = J-96 A; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
+-- Version: 1.6.20-mvp r2 (2026-10-31; r1 = J-96 A; r2 = J-101 A notice + J-102 A catalog scan; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_board_v1_6_19.sql
 -- Every check prints "PASS <name>"; any failure aborts. Dates are relative to the run (current company month)
 -- because leaver batches are stamped with the real clock.
@@ -1027,6 +1027,61 @@ BEGIN
   PERFORM t_mk(t_u('cQ'), 'hrQ', 'HR', 'vp_hr', 'vp');
   FOR i IN 1..5 LOOP PERFORM t_mk(t_u('cQ'), 'genQ' || i, 'General'); END LOOP;
 END $$;
+-- ============ v1.6.20-r2 J-101 = A (Karin 31.10): one-time notice to vp_hr when a department named 'General' exists ============
+-- The pack runs fn_notify_general_department_review() at its end (after every upgrade / re-apply); here it is run
+-- again on the data above: companies R and Q have a real 'General' (marker false), D has only defaulted employees.
+SELECT t_mk(t_u('cQ'), 'hrQ2', 'HR', 'vp_hr', 'vp') IS NOT NULL AS second_vp_hr_q;
+CREATE TEMP TABLE t_notice AS SELECT fn_notify_general_department_review() AS first_run,
+  (SELECT count(*) FROM users v WHERE v.app_role = 'vp_hr' AND v.employment_ended_at IS NULL
+      AND fn_general_department_ambiguous_count(v.company_id) > 0) AS expected;
+SELECT t_assert('J-101 = A: the notice is created for every vp_hr of a company with a department named "General" (R: hrR; Q: hrQ, hrQ2)',
+  (SELECT first_run = expected AND first_run >= 3 FROM t_notice)
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrR') AND ref_id = t_u('cR'))
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrQ') AND ref_id = t_u('cQ'))
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrQ2') AND ref_id = t_u('cQ')));
+SELECT t_assert('J-101 = A: NOT created when the company has no department named "General" (D: only defaulted; S: none)',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id IN (t_u('cD'), t_u('cS')))
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrD')));
+SELECT t_assert('J-101 = A: one-time — a second run (pack / migration re-run) creates nothing and leaves exactly one per vp_hr',
+  fn_notify_general_department_review() = 0
+  AND (SELECT count(*) FROM notification WHERE kind = 'default_department_review') = (SELECT first_run FROM t_notice)
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review'
+                   GROUP BY recipient_id, ref_id HAVING count(*) > 1));
+DO $$
+BEGIN
+  INSERT INTO notification (recipient_id, kind, ref_id) VALUES (t_u('hrQ'), 'default_department_review', t_u('cQ'));
+  RAISE EXCEPTION 'FAIL J-101 = A: a duplicate notice was accepted';
+EXCEPTION WHEN unique_violation THEN
+  PERFORM t_pass('J-101 = A: a duplicate cannot be inserted even directly (unique per vp_hr + company)');
+END $$;
+SELECT t_assert('J-101 = A: the notice carries no person — ref_id is the company, kind only; no text column on the row',
+  NOT EXISTS (SELECT 1 FROM notification n JOIN users u ON u.user_id = n.ref_id WHERE n.kind = 'default_department_review')
+  AND (SELECT bool_and(n.ref_id IN (SELECT company_id FROM companies)) FROM notification n WHERE n.kind = 'default_department_review')
+  AND (SELECT array_agg(column_name::text ORDER BY column_name) FROM information_schema.columns WHERE table_name = 'notification')
+      = '{created_at,kind,notification_id,recipient_id,ref_id,silent}'::text[]);
+SELECT t_as(t_u('hrQ'));
+SET ROLE authenticated;
+SELECT t_assert('J-101 = A: vp_hr of Q sees her one notice (company Q) and nobody else''s',
+  (SELECT count(*) = 1 AND bool_and(ref_id = t_u('cQ') AND recipient_id = t_u('hrQ')) FROM notification WHERE kind = 'default_department_review'));
+SELECT t_assert('J-101 = A: the text, letter for letter',
+  rpc_notification_message_he('default_department_review')
+  = 'יש אצלכם מחלקה בשם General. אם זו ברירת המחדל ולא מחלקה אמיתית, אפשר לסמן אותה כך.'
+  AND rpc_notification_message_he('distress_alert') IS NULL);
+RESET ROLE;
+SELECT t_assert('J-101 = A: the text names nobody and holds no id',
+  t_ids_free(jsonb_build_object('text', rpc_notification_message_he('default_department_review')))
+  AND NOT EXISTS (SELECT 1 FROM users u WHERE length(btrim(u.full_name)) > 2
+                     AND position(u.full_name IN rpc_notification_message_he('default_department_review')) > 0));
+SELECT t_as(t_u('genQ1'));
+SET ROLE authenticated;
+SELECT t_assert('J-101 = A: an employee of the same company sees no notice',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review'));
+RESET ROLE;
+SELECT t_as(t_u('hrD'));
+SET ROLE authenticated;
+SELECT t_assert('J-101 = A: vp_hr of another company (D) sees no notice',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review'));
+RESET ROLE;
 SELECT t_assert('J-101: existing "General" rows stay a normal team (no silent reclassification) and are counted as ambiguous (5, no names)',
   fn_general_department_ambiguous_count(t_u('cQ')) = 5 AND fn_team_month_members(t_u('cQ'), 'General', (SELECT m FROM t_m)) = 5
   AND fn_absence_group_members(t_u('cQ'), fn_no_department_key(), (SELECT m FROM t_m)) = 0);
@@ -1051,6 +1106,47 @@ SELECT t_assert('J-101: the resolver marks the 5 rows, audited with company + co
          FROM access_audit_log a WHERE a.action = 'default_department_marked'));
 SELECT t_assert('J-96 = A: no session is left with the backfill switch on',
   COALESCE(current_setting('chr.default_department_backfill', true), '') = '');
+-- ============ v1.6.20-r2 J-102 = A: NO function groups users by department without the marker ============
+-- Catalog check over pg_proc: every public function whose source mentions the word "department" must reference
+-- the marker (department_is_default) or a marker-aware helper (fn_user_in_team / fn_user_is_no_department /
+-- fn_user_group_key). Documented allowlist (each one does NOT group users by department):
+--   fn_company_month_shadow, fn_team_month_tax_debt, rpc_ledger_append — read stored team rows (team_aggregate /
+--     shadow_balance_aggregate) that were computed marker-aware; no users read.
+--   fn_ledger_chain, fn_seed_company_ledger_genesis — copy the ledger row's own group into the hash chain.
+--   fn_users_team_joined, fn_users_manager_vault_guard — row triggers on the user's OWN row (department changed).
+--   rpc_provision_governance_user — writes the governance user's own row ('Board').
+--   rpc_team_spoon_alert — counts via fn_team_spoon_reports (marker-aware, checked by this scan).
+--   rpc_get_burnout_trend, rpc_put_team_absences — refuse the default / 'ללא מחלקה' groups and count members via
+--     fn_team_month_members / fn_absence_group_members (marker-aware, checked by this scan).
+CREATE TEMP TABLE t_dept_scan AS
+SELECT p.proname::text AS fn,
+       p.prosrc ~ '(department_is_default|fn_user_in_team|fn_user_is_no_department|fn_user_group_key)' AS marker_aware
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND p.prosrc ~* '\mdepartment\M';
+SELECT t_assert('J-102 = A (1): catalog scan — every function that mentions department is marker-aware or on the documented allowlist (exact)',
+  (SELECT array_agg(fn ORDER BY fn) FROM t_dept_scan WHERE NOT marker_aware)
+  = ARRAY['fn_company_month_shadow', 'fn_ledger_chain', 'fn_seed_company_ledger_genesis', 'fn_team_month_tax_debt',
+          'fn_users_manager_vault_guard', 'fn_users_team_joined', 'rpc_get_burnout_trend', 'rpc_ledger_append',
+          'rpc_provision_governance_user', 'rpc_put_team_absences', 'rpc_team_spoon_alert']::text[]);
+SELECT t_assert('J-102 = A (1): no allowlisted function reads the users table by department',
+  NOT EXISTS (SELECT 1 FROM t_dept_scan s JOIN pg_proc p ON p.proname = s.fn
+               WHERE NOT s.marker_aware AND p.prosrc ~* '\mfrom\s+users\M' AND p.prosrc ~* '\m[a-z0-9_]+\.department\M'
+                 AND s.fn NOT IN ('fn_company_month_shadow', 'fn_team_month_tax_debt', 'rpc_ledger_append')));
+SELECT t_assert('J-102 = A (1): the named groupings are marker-aware — spoon alert counts, team מס קיפוח / Happiness Debt refresh, cuckoo window, emergency team status, board adoption units',
+  (SELECT count(*) = 9 AND bool_and(marker_aware) FROM t_dept_scan
+    WHERE fn IN ('fn_team_spoon_reports', 'fn_team_aggregate_contributors', 'rpc_team_aggregate_refresh',
+                 'fn_shadow_balance_contributors', 'rpc_shadow_balance_refresh', 'fn_team_activity_contributors',
+                 'fn_cuckoo_raise', 'rpc_emergency_team_status', 'fn_board_layer_adoption')));
+-- J-102 = A (2), board adoption units: company R — 4 real 'General' reporters + 5 defaulted reporters (same label).
+SELECT t_pcq('genR' || i, (SELECT m FROM t_m), 60) FROM generate_series(1, 4) i;
+SELECT t_mk(t_u('cR'), 'adR' || i, NULL) IS NOT NULL AS defaulted_r FROM generate_series(1, 5) i;   -- 5 defaulted (marker true)
+SELECT t_pcq('adR' || i, (SELECT m FROM t_m), 60) FROM generate_series(1, 5) i;
+CREATE TEMP TABLE t_adopt_r AS SELECT fn_board_layer_adoption(t_u('cR'), (SELECT m FROM t_m)) AS j;
+SELECT t_assert('J-102 = A (2): adoption — the real "General" unit has 4 מדווחים בפועל (< 5) and stays suppressed although 9 share the label; no "ללא מחלקה" unit',
+  (SELECT NOT EXISTS (SELECT 1 FROM jsonb_array_elements(j->'coverage_by_unit') e WHERE e->>'unit' IN ('General', 'ללא מחלקה'))
+     FROM t_adopt_r));
+SELECT t_assert('J-102 = A (2): adoption — the defaulted reporters count only in the company total (4 + 5 = 9)',
+  (SELECT (j->'coverage_company'->>'reporters_count')::int = 9 AND t_ids_free(j) FROM t_adopt_r));
 SELECT t_assert('B3: governance = role name only (no person), exec pay tied, complaint time 4.5 days',
   (SELECT j->>'accountable_exec_role_name' = 'סמנכ"ל משאבי אנוש' AND (j->>'exec_pay_tied_to_metrics')::boolean
           AND (j->>'mean_complaint_handling_days')::numeric = 4.5 AND t_ids_free(j) FROM t_outputs WHERE label = 'governance_put'));

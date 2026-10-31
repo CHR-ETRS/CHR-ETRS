@@ -1,7 +1,7 @@
-<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.6.20-mvp r1 (2026-10-31; r1 = J-96 A: counts, upgrade marker check, terminology greps) — supersedes the v1.6.20 TESTING.md. How the v1.6.20-r1 results were produced. -->
+<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.6.20-mvp r2 (2026-10-31; r2 = J-101 A + J-102 A: counts, upgrade from 4d5faf9 + d149bc9 with the one-time notice check, terminology greps) — supersedes the v1.6.20-r1 TESTING.md. How the v1.6.20-r2 results were produced. -->
 # How to run the CHR-ETRS code-pack tests (v1.6.20-mvp)
 
-These are the exact steps used for the v1.6.20-r1 run on 2026-10-31. Everything runs locally against a **throw-away
+These are the exact steps used for the v1.6.20-r2 run on 2026-10-31. Everything runs locally against a **throw-away
 PostgreSQL 17 cluster**. Nothing touches Supabase, staging or production.
 
 ## 1. What you need
@@ -54,18 +54,18 @@ python3 -m venv /tmp/venv-oas
 ```bash
 cd db                                   # the folder holding schema.sql, rpc.sql, openapi.yaml, tests/
 ./tests/run_tests.sh 2>&1 | tee /tmp/run_tests.log; echo "exit ${PIPESTATUS[0]}"
-grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (v1.6.20-r1: 1259)
+grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (v1.6.20-r2: 1285)
 grep -c "WARNING:  FAIL" /tmp/run_tests.log            # must be 0 (a FAIL also stops the run with exit ≠ 0)
-grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 112 passed, 0 failed · nosuper: 106 passed, 0 failed
+grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 113 passed, 0 failed · nosuper: 107 passed, 0 failed
 /tmp/venv-oas/bin/openapi-spec-validator openapi.yaml   # → openapi.yaml: OK
 ```
 
 What `run_tests.sh` does, in order (each on a fresh database):
 
 1. `ref_country_calendar.sql` → `schema.sql` → `rpc.sql`, then the same three again (idempotency) →
-   `tests/test_v1_5.sql` (756 checks in v1.6.20-r1).
+   `tests/test_v1_5.sql` (767 checks in v1.6.20-r2; +11 J-102 thresholds / tax-debt).
 2. Fresh DB → pack → `tests/test_agents_v1_6_16.sql` (agents; 299 checks).
-3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 204 checks).
+3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 219 checks in v1.6.20-r2; +15 J-101 notice, J-102 catalog scan and adoption).
 4. `MIG_MODE=super ./tests/test_migration.sh` — v1.4 → v1.6.20 migration as superuser (event-trigger DDL guard +
    timezone preflight): dry run, apply, counts, catalog = fresh, idempotence, rollback.
 5. `MIG_MODE=nosuper ./tests/test_migration.sh` — the same as a **non-superuser** owner: the script itself creates
@@ -89,7 +89,7 @@ connection the non-superuser cannot end). Re-run the same command; it is not a p
 
 ## 6. In-place upgrade check (old pack already loaded, with data → apply the new pack twice)
 
-`OLD` = folder of the old pack (e.g. `git archive 4d5faf9 db | tar -x -C /tmp/old_4d5` → `/tmp/old_4d5/db`,
+`OLD` = folder of the old pack (e.g. `git archive 4d5faf9 db | tar -x -C /tmp/old_4d5` from the repo root → `/tmp/old_4d5/db`,
 or a v1.6.18 pack folder). `NEW` = this folder.
 
 ```bash
@@ -104,9 +104,28 @@ psql -qc "DROP DATABASE IF EXISTS $D" postgres; psql -qc "CREATE DATABASE $D" po
 # old pack + its agents test as realistic data
 (cd $OLD && psql -d $D -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql >/dev/null 2>&1 \
   && psql -d $D -v ON_ERROR_STOP=1 -qAt -f tests/test_agents_v1_6_16.sql > $W/old_data.log 2>&1) || { echo "old load FAILED"; exit 1; }
+# J-101 data: one company whose department reads 'General' (2 employees + its vp_hr), written with the OLD pack
+psql -d $D -v ON_ERROR_STOP=1 -q <<'SQL' || { echo "J-101 data FAILED"; exit 1; }
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
+VALUES (md5('up-gen-co')::uuid, 'Upgrade General Co', 'IL', 0, 4, 'Asia/Jerusalem');
+INSERT INTO auth.users (id) SELECT md5('up-gen-' || k)::uuid FROM unnest(ARRAY['hr', 'e1', 'e2']) k;
+INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+SELECT md5('up-gen-' || k)::uuid, md5('up-gen-co')::uuid, k || '@upgen', 'Up ' || k, 'General',
+       CASE k WHEN 'hr' THEN 'vp_hr' ELSE 'employee' END, CASE k WHEN 'hr' THEN 'vp' ELSE 'employee' END,
+       'Asia/Jerusalem', CURRENT_DATE - 100
+  FROM unnest(ARRAY['hr', 'e1', 'e2']) k;
+SQL
 before=$(psql -d $D -Atc "$counts")
+notices="SELECT count(*) FROM notification WHERE kind = 'default_department_review'"
 for i in 1 2; do (cd $NEW && psql -d $D -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql > $W/apply$i.log 2>&1) \
-  && echo "apply $i OK" || { echo "apply $i FAILED"; grep ERROR $W/apply$i.log | head; exit 1; }; done
+  && echo "apply $i OK" || { echo "apply $i FAILED"; grep ERROR $W/apply$i.log | head; exit 1; }
+  n=$(psql -d $D -Atc "$notices"); if [ $i = 1 ]; then notice1=$n; else notice2=$n; fi; done
+# J-101: the notice goes once to every active vp_hr of a company with a 'General' (marker false) — the same after apply 2
+exp=$(psql -d $D -Atc "SELECT count(*) FROM users v WHERE v.app_role = 'vp_hr' AND v.employment_ended_at IS NULL AND fn_general_department_ambiguous_count(v.company_id) > 0")
+dup=$(psql -d $D -Atc "SELECT count(*) FROM (SELECT 1 FROM notification WHERE kind = 'default_department_review' GROUP BY recipient_id, ref_id HAVING count(*) > 1) x")
+[ "$notice1" = "$exp" ] && [ "$notice2" = "$exp" ] && [ "$dup" = 0 ] && [ "$exp" -ge 1 ] \
+  && echo "PASS J-101 notice once: after apply 1 = $notice1, after apply 2 = $notice2 (expected $exp), duplicates 0" \
+  || echo "FAIL J-101 notice: apply1 $notice1 apply2 $notice2 expected $exp dup $dup"
 after=$(psql -d $D -Atc "$counts")
 [ "$before" = "$after" ] && echo "PASS data unchanged ($after)" || echo "FAIL data changed: $before → $after"
 psql -qc "DROP DATABASE IF EXISTS $F" postgres; psql -qc "CREATE DATABASE $F" postgres
@@ -114,18 +133,19 @@ psql -qc "DROP DATABASE IF EXISTS $F" postgres; psql -qc "CREATE DATABASE $F" po
 psql -d $D -Atc "$cat_q" > $W/up.cat; psql -d $F -Atc "$cat_q" > $W/fresh.cat
 # the old test's own helper objects (t_*) are expected extras in the upgraded DB
 n=$(diff $W/fresh.cat $W/up.cat | grep '^[<>]' | grep -vcE "^[<>] (t_[a-z_]+\(|col t_[a-z_]+\.|acl t_[a-z_]+ |trg t_|pol t_)")
-# J-101: the upgrade marks NO existing row as the default department; ambiguous 'General' rows are only counted
+# J-101 = A: the upgrade marks NO existing row as the default department; ambiguous 'General' rows are only counted
 echo "J-101: marked default after upgrade = $(psql -d $D -Atc "SELECT count(*) FROM users WHERE department_is_default") (expected 0), ambiguous 'General' = $(psql -d $D -Atc "SELECT fn_general_department_ambiguous_count(NULL)")"
 [ "$n" = 0 ] && echo "PASS catalog = fresh ($(wc -l < $W/fresh.cat) entries, test helpers ignored)" || { echo "FAIL catalog: $n lines differ"; diff $W/fresh.cat $W/up.cat | head -20; }
 SH
 chmod +x /tmp/upgrade_check.sh
-git archive 4d5faf9 db | (mkdir -p /tmp/old_4d5 && tar -x -C /tmp/old_4d5)
+git -C "$(git rev-parse --show-toplevel)" archive 4d5faf9 db | (mkdir -p /tmp/old_4d5 && tar -x -C /tmp/old_4d5)
 /tmp/upgrade_check.sh s4d5 /tmp/old_4d5/db "$PWD"
-git archive f848795 db | (mkdir -p /tmp/old_f848 && tar -x -C /tmp/old_f848)
-/tmp/upgrade_check.sh sf848 /tmp/old_f848/db "$PWD"
+git -C "$(git rev-parse --show-toplevel)" archive d149bc9 db | (mkdir -p /tmp/old_d149 && tar -x -C /tmp/old_d149)
+/tmp/upgrade_check.sh sd149 /tmp/old_d149/db "$PWD"
 ```
 
-(v1.6.20 used 4d5faf9 and a v1.6.18 pack folder; v1.6.20-r1 used 4d5faf9 and f848795.)
+(v1.6.20 used 4d5faf9 and a v1.6.18 pack folder; v1.6.20-r1 used 4d5faf9 and f848795; v1.6.20-r2 used 4d5faf9 and
+d149bc9 — the r1 commit already on PR #9.)
 
 ## 7. Greps used as release gates (must print 0)
 
@@ -139,7 +159,7 @@ grep -rnP '(?<![\p{Hebrew}])כפות(?![\p{Hebrew}])' $INC --exclude=TESTING.md 
 grep -rn 'צבן' $INC --exclude=TESTING.md . | wc -l                                                                        # the name is spelled צבאן
 ```
 
-To keep a full log (as for v1.6.20-r1): `mkdir -p /workspace/test-logs && ./tests/run_tests.sh 2>&1 | tee /workspace/test-logs/v1.6.20-r1_run_tests_$(git rev-parse --short HEAD).log`.
+To keep a full log (as for v1.6.20-r2): `mkdir -p /workspace/test-logs && ./tests/run_tests.sh 2>&1 | tee /workspace/test-logs/v1.6.20-r2_run_tests_$(git rev-parse --short HEAD).log`.
 
 The "no person_id / user_id / pseudonym in agent and board outputs" rule, the A-10 binding text, G-3
 identical responses, the B_t 0.37 weight and the J-88 exact absence definition are checked **inside** the SQL
@@ -148,5 +168,5 @@ suites (`t_ids_free`, the A-10 / G-3 / J-88 checks) — they are part of the PAS
 ## 8. Clean up
 
 ```bash
-pg_ctl -D /tmp/pg17 stop && rm -rf /tmp/pg17 /tmp/venv-oas /tmp/old_4d5 /tmp/old_f848 /tmp/upgrade_*
+pg_ctl -D /tmp/pg17 stop && rm -rf /tmp/pg17 /tmp/venv-oas /tmp/old_4d5 /tmp/old_d149 /tmp/upgrade_*
 ```

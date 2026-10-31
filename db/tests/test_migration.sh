@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CHR-ETRS MVP v1.6.20 · tests/test_migration.sh — v1.4 → v1.6.20 migration tests (PostgreSQL 17).
 # v1.6.20 (2026-10-31): runs migrate_v1_4_to_v1_6_20.sql; catalog compared with a fresh v1.6.20 pack.
-# Version: 1.6.20-mvp r1 (2026-10-31; r1 = J-96 A: counts users.general_department_ambiguous; base 1.6.13-mvp 2026-10-21) — supersedes the 1.6.9 test. Two modes (MIG_MODE):
+# Version: 1.6.20-mvp r2 (2026-10-31; r1 = J-96 A: counts users.general_department_ambiguous; r2 = J-101 A: counts notification.default_department_review; base 1.6.13-mvp 2026-10-21) — supersedes the 1.6.9 test. Two modes (MIG_MODE):
 #   super   (default): the app connection is a superuser → the runner installs the event-trigger guard;
 #                      + the timezone preflight block (non-UTC source DB with / without --source-tz).
 #   nosuper          : the app connection is chr_app_owner (LOGIN CREATEDB CREATEROLE, NOT superuser, like a
@@ -147,7 +147,8 @@ for kv in "users.migrated 12" "users.org_role_needs_review 3" "users.manager_id_
           "spoon_budget.rows_kept 12" "avatar_state.golden_spoons_to_numeric 2" \
           "companies.reminders_on_hold_no_country 2" "companies.timezone_needs_review 2" \
           "legacy.team_aggregate 1" "legacy.employee_value_asset 1" "legacy.shop_item_catalog 8" \
-          "legacy.role_cost_config 4" "project.legacy_set_non_core 0" "users.general_department_ambiguous 0"; do
+          "legacy.role_cost_config 4" "project.legacy_set_non_core 0" "users.general_department_ambiguous 0" \
+          "notification.default_department_review 0"; do
   set -- $kv
   grep -qE "^ ${1//./\\.} +\| +$2$" "$W/apply.log" && ok "apply count $1 = $2" || bad "apply count $1 = $2"
 done

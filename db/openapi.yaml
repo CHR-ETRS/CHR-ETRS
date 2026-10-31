@@ -1,5 +1,5 @@
 # CHR-ETRS MVP v1.6.20 · openapi.yaml
-# Version: 1.6.20-mvp r1 (2026-10-31 IL; r1 = J-96 A, the default-department marker) — supersedes 1.6.19-mvp (2026-10-31 IL), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
+# Version: 1.6.20-mvp r2 (2026-10-31 IL; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
@@ -1110,13 +1110,15 @@ paths:
               type: object
               required:
               - p_org_id
+              - p_department
               properties:
                 p_org_id:
                   type: string
                   format: uuid
                 p_department:
                   type: string
-                  default: General
+                  description: v1.6.20-r2 (J-102 = A) — required, no default. A real team only; employees
+                    without a department (marker) never count in a team (403 below the threshold).
       responses:
         '200':
           description: Aggregate row
@@ -1317,13 +1319,15 @@ paths:
               type: object
               required:
               - p_org_id
+              - p_department
               properties:
                 p_org_id: &id028
                   type: string
                   format: uuid
                 p_department:
                   type: string
-                  default: General
+                  description: v1.6.20-r2 (J-102 = A) — required, no default. A real team only; employees
+                    without a department (marker) never count in a team (403 below the threshold).
                 p_gaap_reported_ebitda:
                   type: number
                   nullable: true
@@ -1584,13 +1588,15 @@ paths:
               type: object
               required:
               - p_org_id
+              - p_department
               properties:
                 p_org_id: &id001
                   type: string
                   format: uuid
                 p_department:
                   type: string
-                  default: General
+                  description: v1.6.20-r2 (J-102 = A) — required, no default. A real team only; employees
+                    without a department (marker) never count in a team (403 below the threshold).
       responses:
         '200':
           description: OK
@@ -4588,6 +4594,35 @@ paths:
               schema:
                 $ref: '#/components/schemas/AgentJson'
         '403': *id025
+  /rpc/rpc_notification_message_he:
+    post:
+      tags:
+      - agents
+      summary: v1.6.20-r2 (J-101 = A) — the fixed Hebrew text of a notification kind
+      description: 'default_department_review → "יש אצלכם מחלקה בשם General. אם זו ברירת המחדל ולא מחלקה אמיתית,
+        אפשר לסמן אותה כך." (then /rpc/rpc_mark_general_as_default_department). Other kinds → null. The text is
+        fixed per kind (no names, no ids) and is never stored in the notification row. The notice itself is
+        created once per vp_hr and company by the pack after an upgrade (re-runs add none); it is visible only
+        to its recipient (/notification, RLS).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_kind
+              properties:
+                p_kind:
+                  type: string
+      responses:
+        '200':
+          description: Text or null
+          content:
+            application/json:
+              schema:
+                type: string
+                nullable: true
   /rpc/rpc_put_company_governance:
     post:
       tags:
@@ -6074,6 +6109,9 @@ components:
           - emergency_hr_review
           - emergency_misuse_notice
           - emergency_cosign_request
+          - default_department_review
+          description: v1.6.20-r2 (J-101 = A) default_department_review = one-time notice to vp_hr (ref_id = the
+            company) that a department named "General" exists; its fixed text = /rpc/rpc_notification_message_he.
         ref_id: *id005
         silent:
           type: boolean

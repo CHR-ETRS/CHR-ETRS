@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.20 · rpc.sql
--- Version: 1.6.20-mvp r1 (2026-10-31 IL; r1 = J-96 A, the default-department marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- Version: 1.6.20-mvp r2 (2026-10-31 IL; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -921,7 +921,9 @@ BEGIN
   END IF;
 
   PERFORM fn_assert_privacy_threshold(
-    fn_cuckoo_recent_reporters(v_user.company_id, v_user.department),   -- rolling 30 days (locked 20.10)
+    -- rolling 30 days (locked 20.10). J-102 = A: an employee without a department has no team ('ללא מחלקה' is
+    -- never a team) → 0 team reporters → below the threshold, the alert is refused.
+    fn_cuckoo_recent_reporters(v_user.company_id, fn_user_group_key(v_user.department, v_user.department_is_default)),
     'cuckoo');
 
   INSERT INTO cuckoo_alert (
@@ -929,7 +931,7 @@ BEGIN
     trigger_reason, nlp_flag_codes, sovereign_veto_window_expiry, logic_hash
   ) VALUES (
     v_id, v_user.reports_to, p_target_user_id, v_user.display_pseudonym, v_user.company_id,
-    v_user.department, p_trigger_reason, COALESCE(p_nlp_flag_codes, '[]'::jsonb), v_exp,
+    fn_user_group_key(v_user.department, v_user.department_is_default), p_trigger_reason, COALESCE(p_nlp_flag_codes, '[]'::jsonb), v_exp,
     fn_sha256_hex(jsonb_build_object(
       'alert_id', v_id, 'manager_id', v_user.reports_to, 'target_pseudonym', v_user.display_pseudonym,
       'trigger_reason', p_trigger_reason, 'expiry', v_exp)::text)
@@ -2013,17 +2015,17 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT count(DISTINCT c.user_id)::int FROM (
     SELECT sb.user_id FROM spoon_budget sb JOIN users u ON u.user_id = sb.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department AND u.app_role = 'employee'
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department) AND u.app_role = 'employee'
        AND sb.reported_at IS NOT NULL
        AND sb.budget_date = (clock_timestamp() AT TIME ZONE u.timezone)::date
     UNION
     SELECT q.user_id FROM questionnaire_submission q JOIN users u ON u.user_id = q.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department)
        AND q.questionnaire_code IN ('TPS-12', 'IHS')
        AND q.period_key = fn_period_key('quarterly', (clock_timestamp() AT TIME ZONE u.timezone)::date)
     UNION
     SELECT e.user_id FROM employee_value_asset e JOIN users u ON u.user_id = e.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department AND u.app_role = 'employee'
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department) AND u.app_role = 'employee'
        AND e.annual_salary IS NOT NULL
   ) c
 $$;
@@ -2039,10 +2041,10 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT count(DISTINCT c.user_id)::int FROM (
     SELECT sb.user_id FROM spoon_budget sb JOIN users u ON u.user_id = sb.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department AND sb.reported_at > p_since
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department) AND sb.reported_at > p_since
     UNION
     SELECT q.user_id FROM questionnaire_submission q JOIN users u ON u.user_id = q.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department AND q.submitted_at > p_since
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department) AND q.submitted_at > p_since
   ) c
 $$;
 
@@ -2066,7 +2068,7 @@ AS $$
     FROM spoon_budget sb
     JOIN users u ON u.user_id = sb.user_id
    WHERE u.company_id = p_org_id
-     AND u.department = p_department
+     AND fn_user_in_team(u.department, u.department_is_default, p_department)
      AND u.app_role = 'employee'
      AND sb.reported_at IS NOT NULL
      AND sb.budget_date = (clock_timestamp() AT TIME ZONE u.timezone)::date
@@ -2088,7 +2090,10 @@ $$;
 -- rpc_team_spoon_alert — manager reads the team trend only. ≥5 employees who actually
 -- reported spoons today (lock #3), otherwise 403 aggregation_privacy_threshold.
 -- Returns no names, no pseudonyms, no individual scores.
-CREATE OR REPLACE FUNCTION rpc_team_spoon_alert(p_org_id uuid, p_department varchar DEFAULT 'General')
+-- v1.6.20-r2 (J-102 = A): the 'General' default input is removed — the team must be named (drop + create,
+-- because PostgreSQL cannot remove a parameter default in place).
+DROP FUNCTION IF EXISTS rpc_team_spoon_alert(uuid, varchar);
+CREATE OR REPLACE FUNCTION rpc_team_spoon_alert(p_org_id uuid, p_department varchar)
 RETURNS TABLE (alert_level dichotomous_alert_enum, team_spoon_avg numeric, reporter_count int)
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -2293,7 +2298,7 @@ BEGIN
     SELECT e.user_id
       FROM employee_value_asset e
       JOIN users u ON u.user_id = e.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department)
        AND u.employment_ended_at IS NULL
        AND fn_effective_turnover_tier(u.user_id) IS NOT NULL
        AND e.annual_salary IS NOT NULL
@@ -2301,7 +2306,7 @@ BEGIN
     SELECT sb.user_id
       FROM spoon_budget sb
       JOIN users u ON u.user_id = sb.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department)
        AND u.employment_ended_at IS NULL
        AND fn_effective_turnover_tier(u.user_id) IS NOT NULL
        AND sb.reported_at IS NOT NULL
@@ -2311,7 +2316,7 @@ BEGIN
     SELECT w.user_id
       FROM workload_self_report w
       JOIN users u ON u.user_id = w.user_id
-     WHERE u.company_id = p_org_id AND u.department = p_department
+     WHERE u.company_id = p_org_id AND fn_user_in_team(u.department, u.department_is_default, p_department)
        AND u.employment_ended_at IS NULL
        AND fn_effective_turnover_tier(u.user_id) IS NOT NULL
        AND w.week_start_date = COALESCE(p_week_start_date, fn_local_week_start(u.user_id))
@@ -2327,9 +2332,10 @@ REVOKE ALL ON FUNCTION fn_shadow_balance_contributors(uuid, varchar, date) FROM 
 --   Uses company-wide turnover tier avg_annual_salary (O-4), midpoint (O-1), O-3 deprivation,
 --   and TPS-12 + IHS quarterly team averages (O-6, ≥5 respondents each).
 -- ---------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS rpc_team_aggregate_refresh(uuid, varchar);   -- v1.6.20-r2 (J-102 = A): no 'General' default
 CREATE OR REPLACE FUNCTION rpc_team_aggregate_refresh(
   p_org_id     uuid,
-  p_department varchar DEFAULT 'General'
+  p_department varchar
 )
 RETURNS team_aggregate
 LANGUAGE plpgsql
@@ -2377,7 +2383,7 @@ BEGIN
       FROM employee_value_asset e
       JOIN users u ON u.user_id = e.user_id
      WHERE u.company_id = p_org_id
-       AND u.department = p_department
+       AND fn_user_in_team(u.department, u.department_is_default, p_department)
        AND u.app_role = 'employee'
        AND e.annual_salary IS NOT NULL
   )
@@ -2400,7 +2406,7 @@ BEGIN
     FROM questionnaire_submission q
     JOIN users u ON u.user_id = q.user_id
    WHERE u.company_id = p_org_id
-     AND u.department = p_department
+     AND fn_user_in_team(u.department, u.department_is_default, p_department)
      AND q.questionnaire_code = 'TPS-12'
      AND q.period_key = fn_period_key('quarterly', (clock_timestamp() AT TIME ZONE u.timezone)::date);
   IF v_tps_n < fn_privacy_min_n('regular') THEN
@@ -2413,7 +2419,7 @@ BEGIN
     FROM questionnaire_submission q
     JOIN users u ON u.user_id = q.user_id
    WHERE u.company_id = p_org_id
-     AND u.department = p_department
+     AND fn_user_in_team(u.department, u.department_is_default, p_department)
      AND q.questionnaire_code = 'IHS'
      AND q.period_key = fn_period_key('quarterly', (clock_timestamp() AT TIME ZONE u.timezone)::date);
   IF v_ihs_n < fn_privacy_min_n('regular') THEN
@@ -2459,9 +2465,10 @@ GRANT EXECUTE ON FUNCTION rpc_team_aggregate_refresh(uuid, varchar) TO authentic
 --   * shadow_balance_sum = happiness_debt_sum + deprivation_tax_amount.
 --   * chr_real_ebitda = gaap_reported_ebitda − happiness_debt_balance − deprivation_tax_amount (O-18).
 -- ---------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS rpc_shadow_balance_refresh(uuid, varchar, numeric);   -- v1.6.20-r2 (J-102 = A): no 'General' default
 CREATE OR REPLACE FUNCTION rpc_shadow_balance_refresh(
   p_org_id               uuid,
-  p_department           varchar DEFAULT 'General',
+  p_department           varchar,
   p_gaap_reported_ebitda numeric DEFAULT NULL
 )
 RETURNS shadow_balance_aggregate
@@ -2491,7 +2498,7 @@ BEGIN
            fn_company_tier_avg_salary(p_org_id, fn_effective_turnover_tier(u.user_id)) AS tier_salary
       FROM users u
      WHERE u.company_id = p_org_id
-       AND u.department = p_department
+       AND fn_user_in_team(u.department, u.department_is_default, p_department)
        AND u.employment_ended_at IS NULL
        AND fn_effective_turnover_tier(u.user_id) IS NOT NULL
   )
@@ -3418,7 +3425,7 @@ BEGIN
   END IF;
   PERFORM fn_audit_view('chro_named_view', '{}'::jsonb, p_user_id, trim(p_reason));
   RETURN QUERY
-  SELECT u.user_id, u.full_name, u.department::varchar, u.org_role_code,
+  SELECT u.user_id, u.full_name, fn_user_group_key(u.department, u.department_is_default)::varchar, u.org_role_code,   -- J-102 = A
          (SELECT sb.day_status FROM spoon_budget sb WHERE sb.user_id = u.user_id ORDER BY sb.budget_date DESC LIMIT 1),
          (SELECT max(l.local_date) FROM early_leave_log l WHERE l.user_id = u.user_id)
     FROM users u WHERE u.user_id = p_user_id;
@@ -3625,7 +3632,7 @@ BEGIN
     PERFORM fn_raise_business('access_denied');
   END IF;
   SELECT count(*)::int INTO v_n FROM emergency_safe_report s JOIN users u ON u.user_id = s.user_id
-   WHERE s.event_id = p_event_id AND u.department = p_department;
+   WHERE s.event_id = p_event_id AND fn_user_in_team(u.department, u.department_is_default, p_department);
   PERFORM fn_assert_privacy_threshold(v_n, 'emergency');
   PERFORM fn_audit_view('emergency_team_status', jsonb_build_object('event_id', p_event_id, 'department', p_department));
   RETURN QUERY SELECT v_n;
@@ -5541,33 +5548,8 @@ GRANT SELECT ON everstore_budget_summary_v TO authenticated;
 
 -- Employees of a team during a company month: everyone employed at any time that month — leavers of the
 -- month stay in the denominator (v3 §4.5). Governance-only users (no employee profile) are not counted.
--- v1.6.20-r1 (J-96 = A): who is "without a department" — the SYSTEM MARKER department_is_default (no department
--- was assigned; label 'General'), or a blank / literal 'ללא מחלקה' department. A real department named 'General'
--- (marker false) is a normal team. Defined here because team membership below depends on it.
-CREATE OR REPLACE FUNCTION fn_no_department_key()
-RETURNS text
-LANGUAGE sql
-IMMUTABLE
-AS $$ SELECT 'ללא מחלקה'::text $$;
-
-CREATE OR REPLACE FUNCTION fn_is_no_department(p_department text)
-RETURNS boolean
-LANGUAGE sql
-IMMUTABLE
-AS $$ SELECT NULLIF(btrim(p_department), '') IS NULL OR btrim(p_department) = fn_no_department_key() $$;
-
-CREATE OR REPLACE FUNCTION fn_user_is_no_department(p_department text, p_is_default boolean)
-RETURNS boolean
-LANGUAGE sql
-IMMUTABLE
-AS $$ SELECT COALESCE(p_is_default, false) OR fn_is_no_department(p_department) $$;
-
--- A user belongs to team p_group only with that department AND not "without a department" (J-96 = A).
-CREATE OR REPLACE FUNCTION fn_user_in_team(p_department text, p_is_default boolean, p_group text)
-RETURNS boolean
-LANGUAGE sql
-IMMUTABLE
-AS $$ SELECT p_department = p_group AND NOT fn_user_is_no_department(p_department, p_is_default) $$;
+-- fn_no_department_key, fn_is_no_department, fn_user_is_no_department, fn_user_in_team, fn_user_group_key:
+-- defined in schema.sql (v1.6.20-r2) — SQL functions below call them at creation time.
 
 -- The group named p_group is the DEFAULT department of the company (only defaulted employees carry that
 -- label, no real member) → it is not a team (burnout refuses it; its absences go to the 'ללא מחלקה' row).
@@ -5578,7 +5560,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT EXISTS (SELECT 1 FROM users u WHERE u.company_id = p_company AND u.department = p_group AND u.department_is_default)
+  SELECT EXISTS (SELECT 1 FROM users u WHERE u.company_id = p_company AND u.department = p_group AND u.department_is_default)   -- the marker IS checked
      AND NOT EXISTS (SELECT 1 FROM users u WHERE u.company_id = p_company
                                             AND fn_user_in_team(u.department, u.department_is_default, p_group))
 $$;
@@ -5623,10 +5605,10 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
   SELECT ((SELECT count(*) FROM early_leave_log e JOIN users u ON u.user_id = e.user_id
-            WHERE u.company_id = p_company AND u.department = p_group
+            WHERE u.company_id = p_company AND fn_user_in_team(u.department, u.department_is_default, p_group)
               AND e.local_date >= p_month AND e.local_date < fn_month_shift(p_month, 1))
         + (SELECT count(*) FROM approved_absence_entry a JOIN users u ON u.user_id = a.user_id
-            WHERE u.company_id = p_company AND u.department = p_group AND a.schedule_status <> 'cancelled'
+            WHERE u.company_id = p_company AND fn_user_in_team(u.department, u.department_is_default, p_group) AND a.schedule_status <> 'cancelled'
               AND a.requested_date >= p_month AND a.requested_date < fn_month_shift(p_month, 1)))::numeric
 $$;
 
@@ -5931,6 +5913,53 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION fn_general_department_ambiguous_count(uuid), fn_is_default_department_group(uuid, text) FROM PUBLIC;
+
+-- v1.6.20-r2 (J-101 = A, Karin 31.10): the exact one-time notice for vp_hr when the company has a department named
+-- 'General' (marker false). Letter for letter as decided; no name, no id.
+CREATE OR REPLACE FUNCTION fn_default_department_notice_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'יש אצלכם מחלקה בשם General. אם זו ברירת המחדל ולא מחלקה אמיתית, אפשר לסמן אותה כך.'::text $$;
+
+-- Creates the J-101 notice once per active vp_hr of every company that has a department named 'General' (rows
+-- with the marker false). Idempotent: the unique index uq_notification_default_department_review makes a re-run
+-- (pack re-apply, migration re-run) add nothing. ref_id = the company; no names, no ids of people in the row
+-- beyond the recipient; the text comes from rpc_notification_message_he. Run by the pack (end of rpc.sql).
+-- Returns how many notices THIS run created.
+CREATE OR REPLACE FUNCTION fn_notify_general_department_review()
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_n int;
+BEGIN
+  INSERT INTO notification (recipient_id, kind, ref_id)
+  SELECT v.user_id, 'default_department_review', v.company_id
+    FROM users v
+   WHERE v.app_role = 'vp_hr' AND v.employment_ended_at IS NULL AND v.company_id IS NOT NULL
+     AND fn_general_department_ambiguous_count(v.company_id) > 0
+  ON CONFLICT (recipient_id, kind, ref_id) WHERE kind = 'default_department_review' DO NOTHING;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_notify_general_department_review() FROM PUBLIC;
+
+-- The fixed Hebrew text of a notification kind (v1.6.20-r2: 'default_department_review' → the J-101 text; other
+-- kinds have no server text → NULL). The text is fixed per kind, so it is never stored in the notification row.
+CREATE OR REPLACE FUNCTION rpc_notification_message_he(p_kind text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog, public
+AS $$ SELECT CASE p_kind WHEN 'default_department_review' THEN fn_default_department_notice_he() END $$;
+
+REVOKE ALL ON FUNCTION rpc_notification_message_he(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_notification_message_he(text) TO authenticated;
 REVOKE ALL ON FUNCTION rpc_mark_general_as_default_department(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_mark_general_as_default_department(uuid) TO authenticated, service_role;
 
@@ -6109,12 +6138,12 @@ BEGIN
   IF COALESCE(v_amount, 0) > 0 AND NEW.company_id IS NOT NULL THEN
     v_month := fn_agent_month_start(NEW.company_id, NEW.employment_ended_at);
     INSERT INTO happiness_debt_events (company_id, group_id, period_month, event_type, amount)
-    VALUES (NEW.company_id, NEW.department, v_month, 'leaver_transfer', v_amount)
+    VALUES (NEW.company_id, fn_user_group_key(NEW.department, NEW.department_is_default), v_month, 'leaver_transfer', v_amount)   -- J-102 = A
     RETURNING event_id INTO v_event;
     -- v1.6.17 (A-8): internal, closed link so a reversed offboarding can find this transfer
     INSERT INTO happiness_debt_leaver_link (event_id, user_id) VALUES (v_event, NEW.user_id);
     INSERT INTO happiness_debt_ledger (company_id, group_id, period_month, obligation_class, amount, exported_on_exit)
-    VALUES (NEW.company_id, NEW.department, v_month, NULL, v_amount, true);
+    VALUES (NEW.company_id, fn_user_group_key(NEW.department, NEW.department_is_default), v_month, NULL, v_amount, true);
   END IF;
   RETURN NULL;
 END;
@@ -8004,11 +8033,16 @@ BEGIN
     INTO v_unit
     FROM (SELECT u.department AS dept, fn_team_month_members(p_company, u.department, p_month) AS mem,
                  (SELECT count(DISTINCT q.user_id)::int FROM questionnaire_submission q JOIN users u2 ON u2.user_id = q.user_id
-                   WHERE u2.company_id = p_company AND u2.department = u.department
+                   WHERE u2.company_id = p_company AND fn_user_in_team(u2.department, u2.department_is_default, u.department)
                      AND q.local_date >= p_month AND q.local_date < fn_month_shift(p_month, 1)) AS rep
             FROM users u WHERE u.company_id = p_company AND u.department IS NOT NULL
+             AND NOT fn_user_is_no_department(u.department, u.department_is_default)   -- J-102 = A: no unit for them
            GROUP BY u.department) d;
-  v_rep := (SELECT COALESCE(sum((r->>'n')::int), 0) FROM jsonb_array_elements(v_unit) r);
+  -- J-102 = A: company reporters counted directly (employees without a department included), so the units'
+  -- complement (company − shown units) also covers the no-department reporters.
+  v_rep := (SELECT count(DISTINCT q.user_id)::int FROM questionnaire_submission q JOIN users u ON u.user_id = q.user_id
+             WHERE u.company_id = p_company AND u.department IS NOT NULL
+               AND q.local_date >= p_month AND q.local_date < fn_month_shift(p_month, 1));
   v_mem := fn_team_month_members(p_company, NULL, p_month);
   v_unit_keys := fn_complement_safe_keys(v_unit, v_rep, v_min_r);
 
@@ -8518,3 +8552,6 @@ BEGIN
     PERFORM fn_leaver_memo_try_snapshot(c);
   END LOOP;
 END $$;
+
+-- v1.6.20-r2 (J-101 = A): after every pack apply / migration — the one-time 'General' notice for vp_hr (idempotent).
+DO $$ BEGIN PERFORM fn_notify_general_department_review(); END $$;
