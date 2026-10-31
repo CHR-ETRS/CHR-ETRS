@@ -1,6 +1,8 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.17 · tests/test_v1_5.sql (filename kept per Drive rule) — scratch PostgreSQL 17 validation
 -- Version: 1.6.17-mvp (2026-10-31) — supersedes the 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25), 1.6.12-mvp, 1.6.11-mvp, 1.6.10-mvp, 1.6.9-mvp, 1.6.8-mvp and 1.6.7-mvp versions of this file
+-- v1.6.21 (2026-10-31, Karin J-115 = A / J-112 = A): the no-department share of the company Shadow Balance total
+--   (differencing guard N ≥ 10, same total in CHR Real EBITDA) and company-level Cuckoo for employees without a department.
 -- v1.6.20-r2 (2026-10-31, Karin J-102 = A): + a real 'General' team never grows by default-department employees
 --   (small team stays suppressed at N≥5 and N≥10; tax / Happiness Debt exclude them).
 -- v1.6.10: UZ keeps Asia/Tashkent (Samarkand excluded); a pinned zone (UA → Kyiv) is never needs_review;
@@ -2487,6 +2489,143 @@ SELECT t_assert('J-102: the burnout-agent tax/debt terms read the same team rows
           AND d.happiness_debt = round(2 * fn_company_tier_avg_salary(md5('j102-tax')::uuid, 'junior')
                                        * fn_turnover_tier_midpoint_factor('junior'), 2)
      FROM fn_team_month_tax_debt(md5('j102-tax')::uuid, 'General', date_trunc('month', (clock_timestamp() AT TIME ZONE 'Asia/Jerusalem'))::date) d));
+
+-- ============ v1.6.21 J-115 = A (Karin 31.10): employees without a department ARE in the company מס קיפוח /
+-- Happiness Debt total and in CHR Real EBITDA (same total); never a row of their own; differencing guard N ≥ 10 ============
+-- J115A: real team 'Ops' (10, 1 flagged deprived) + 3 defaulted (2 flagged deprived) → remainder 3 → suppressed.
+-- J115B: real team 'Ops' (10, 1 flagged deprived) + 12 defaulted (2 flagged deprived) → included and shown.
+DO $$
+DECLARE
+  v_c uuid; v_uid uuid; i int; k text; v_nd int;
+BEGIN
+  FOREACH k IN ARRAY ARRAY['a', 'b'] LOOP
+    v_c := md5('j115-' || k)::uuid;
+    v_nd := CASE k WHEN 'a' THEN 3 ELSE 12 END;
+    INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
+    VALUES (v_c, 'J115 ' || k, 'IL', 0, 4, 'Asia/Jerusalem');
+    INSERT INTO auth.users (id) VALUES (md5('j115-mgr-' || k)::uuid), (md5('j115-chair-' || k)::uuid);
+    INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date, has_employee_profile) VALUES
+      (md5('j115-mgr-' || k)::uuid, v_c, 'mgr@j115' || k, 'J115 Mgr ' || k, 'Exec', 'manager', 'direct_manager', 'Asia/Jerusalem', CURRENT_DATE - 200, true),
+      (md5('j115-chair-' || k)::uuid, v_c, 'chair@j115' || k, 'J115 Chair ' || k, 'Board', 'board_chair', 'board_chair', 'Asia/Jerusalem', CURRENT_DATE - 200, false);
+    FOR i IN 1..(10 + v_nd) LOOP
+      v_uid := md5('j115-' || k || '-' || i)::uuid;
+      INSERT INTO auth.users (id) VALUES (v_uid);
+      INSERT INTO users (user_id, company_id, reports_to, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+      VALUES (v_uid, v_c, md5('j115-mgr-' || k)::uuid, k || i || '@j115', 'J115 ' || k || ' ' || i,
+              CASE WHEN i <= 10 THEN 'Ops' END, 'employee', 'employee', 'Asia/Jerusalem', CURRENT_DATE - 100);
+      INSERT INTO employee_value_asset (user_id, company_id, annual_salary, is_deprived)
+      VALUES (v_uid, v_c, 100000, i IN (1, 11, 12));   -- Ops: 1 deprived; no-department group: 2 deprived
+    END LOOP;
+  END LOOP;
+END $$;
+SELECT t_as(md5('j115-mgr-a')::uuid);
+SET ROLE authenticated;
+SELECT (rpc_shadow_balance_refresh(md5('j115-a')::uuid, 'Ops', NULL)).contributor_count AS j115a_ops_n;
+RESET ROLE;
+SELECT t_as(md5('j115-mgr-b')::uuid);
+SET ROLE authenticated;
+SELECT (rpc_shadow_balance_refresh(md5('j115-b')::uuid, 'Ops', NULL)).contributor_count AS j115b_ops_n;
+RESET ROLE;
+CREATE TEMP TABLE t_j115 AS
+SELECT k, md5('j115-' || k)::uuid AS c, date_trunc('month', (clock_timestamp() AT TIME ZONE 'Asia/Jerusalem'))::date AS m,
+       fn_company_tier_avg_salary(md5('j115-' || k)::uuid, 'junior') AS sal
+  FROM unnest(ARRAY['a', 'b']) k;
+SELECT t_assert('J-115 = A: the team refresh also takes the no-department share (A: 3 employees, B: 12), stored outside any team row',
+  (SELECT employee_count = 3 AND deprived_count = 2 FROM shadow_balance_no_department WHERE company_id = md5('j115-a')::uuid)
+  AND (SELECT employee_count = 12 AND deprived_count = 2 FROM shadow_balance_no_department WHERE company_id = md5('j115-b')::uuid)
+  AND NOT EXISTS (SELECT 1 FROM shadow_balance_aggregate WHERE org_id IN (md5('j115-a')::uuid, md5('j115-b')::uuid) AND department <> 'Ops'));
+SELECT t_assert('J-115 = A (2): group of 12 — the company total = the Ops row + the no-department share (3 deprived in all), shown',
+  (SELECT d.happiness_debt_balance = round(3 * x.sal * fn_turnover_tier_midpoint_factor('junior'), 2)
+          AND d.deprivation_tax = round(3 * x.sal * fn_chr_productivity_factor(), 2)
+          AND NOT fn_company_shadow_suppressed(x.c, x.m)
+     FROM t_j115 x, fn_company_month_shadow(x.c, x.m) d WHERE x.k = 'b'));
+SELECT t_assert('J-115 = A (1): group of 3 — total − the Ops row would reveal them → the company total is suppressed',
+  (SELECT fn_company_month_shadow_remainder(x.c, x.m) = 3 AND fn_company_shadow_suppressed(x.c, x.m) FROM t_j115 x WHERE x.k = 'a'));
+-- Finance inputs (first period), with the 4-line split equal to each company's system total.
+SELECT period_month FROM t_j115 x, rpc_put_board_reconciliation(x.c, x.m, 1000000, 400000, true);
+SELECT jsonb_array_length(rpc_put_happiness_debt_split(x.c, x.m, d.happiness_debt_balance - 3 * round(d.happiness_debt_balance / 4, 2),
+         round(d.happiness_debt_balance / 4, 2), round(d.happiness_debt_balance / 4, 2), round(d.happiness_debt_balance / 4, 2))) AS split_lines
+  FROM t_j115 x, fn_company_month_shadow(x.c, x.m) d;
+CREATE TEMP TABLE t_j115_rep AS SELECT x.k, rpc_build_board_report(x.c, x.m) AS j FROM t_j115 x;
+SELECT t_assert('J-115 = A (1): group of 3 — the board report shows "אין מספיק נתונים להצגה בתקופה זו" instead of the company total, CHR Real EBITDA, the debt lines and מס קיפוח',
+  (SELECT j->>'company_total_display_he' = 'אין מספיק נתונים להצגה בתקופה זו'
+          AND j->'chr_real_ebitda'->>'value' IS NULL
+          AND j->'chr_real_ebitda'->>'display_he' = 'אין מספיק נתונים להצגה בתקופה זו'
+          AND j->'happiness_debt_balance' = 'null'::jsonb AND j->'shadow_balance' = 'null'::jsonb
+          AND j->'deprivation_tax'->>'stored_amount' IS NULL
+          AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(j->'reconciliation') r
+                           WHERE r->>'line' <> 'gaap_ebitda' AND r->'current' <> 'null'::jsonb)
+     FROM t_j115_rep WHERE k = 'a'));
+SELECT t_assert('J-115 = A (3): group of 12 — CHR Real EBITDA uses the SAME total: GAAP − company Happiness Debt − company מס קיפוח',
+  (SELECT (r.j->'chr_real_ebitda'->>'value')::numeric = fn_chr_real_ebitda(1000000, d.happiness_debt_balance, d.deprivation_tax)
+          AND (r.j->>'happiness_debt_balance')::numeric = d.happiness_debt_balance
+          AND (r.j->'deprivation_tax'->>'stored_amount')::numeric = d.deprivation_tax
+          AND NOT r.j ? 'company_total_display_he'
+     FROM t_j115_rep r, t_j115 x, fn_company_month_shadow(x.c, x.m) d WHERE r.k = 'b' AND x.k = 'b'));
+SELECT t_as(md5('j115-chair-a')::uuid);
+SET ROLE authenticated;
+CREATE TEMP TABLE t_j115_macro_a AS SELECT * FROM rpc_get_board_macro_metrics(1000000);
+RESET ROLE;
+SELECT t_as(md5('j115-chair-b')::uuid);
+SET ROLE authenticated;
+CREATE TEMP TABLE t_j115_macro_b AS SELECT * FROM rpc_get_board_macro_metrics(1000000);
+RESET ROLE;
+SELECT t_assert('J-115 = A (1): group of 3 — the governance macro figures give no Happiness Debt, מס קיפוח, Shadow Balance or CHR Real EBITDA',
+  (SELECT shadow_contributor_count >= 10 AND happiness_debt_balance IS NULL AND deprivation_tax_amount IS NULL
+          AND shadow_balance_sum IS NULL AND chr_real_ebitda IS NULL FROM t_j115_macro_a));
+SELECT t_assert('J-115 = A (3): group of 12 — the governance macro figures carry the same company total and the same CHR Real EBITDA as the board report',
+  (SELECT m.happiness_debt_balance = d.happiness_debt_balance AND m.deprivation_tax_amount = d.deprivation_tax
+          AND m.chr_real_ebitda = (r.j->'chr_real_ebitda'->>'value')::numeric
+     FROM t_j115_macro_b m, t_j115_rep r, t_j115 x, fn_company_month_shadow(x.c, x.m) d WHERE r.k = 'b' AND x.k = 'b'));
+SELECT t_assert('J-115 = A: no "ללא מחלקה" row ever appears — not in the board reports, not in the team rows, not in the macro figures; the share table is closed to clients',
+  NOT EXISTS (SELECT 1 FROM t_j115_rep WHERE j::text LIKE '%ללא מחלקה%')
+  AND NOT EXISTS (SELECT 1 FROM shadow_balance_aggregate WHERE fn_is_no_department(department))
+  AND NOT EXISTS (SELECT 1 FROM t_j115_macro_a m WHERE row_to_json(m)::text LIKE '%ללא מחלקה%')
+  AND NOT has_table_privilege('authenticated', 'shadow_balance_no_department', 'SELECT')
+  AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'shadow_balance_no_department'::regclass)
+  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shadow_balance_no_department'
+                     AND column_name ~* '(person|user|employee_id|pseudonym|department$)'));
+
+-- ============ v1.6.21 J-112 = A (Karin 31.10): Cuckoo for employees without a department — company level, N ≥ 10 ============
+DO $$
+DECLARE v_c uuid := md5('j112')::uuid; v_uid uuid; i int;
+BEGIN
+  INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
+  VALUES (v_c, 'J112 Co', 'IL', 0, 4, 'Asia/Jerusalem');
+  INSERT INTO auth.users (id) VALUES (md5('j112-mgr')::uuid);
+  INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+  VALUES (md5('j112-mgr')::uuid, v_c, 'mgr@j112', 'J112 Mgr', 'Exec', 'manager', 'direct_manager', 'Asia/Jerusalem', CURRENT_DATE - 200);
+  FOR i IN 1..13 LOOP   -- 1..10 no department (marker); 11..13 real team 'Ops'
+    v_uid := md5('j112-' || i)::uuid;
+    INSERT INTO auth.users (id) VALUES (v_uid);
+    INSERT INTO users (user_id, company_id, reports_to, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+    VALUES (v_uid, v_c, md5('j112-mgr')::uuid, 'e' || i || '@j112', 'J112 ' || i, CASE WHEN i > 10 THEN 'Ops' END,
+            'employee', 'employee', 'Asia/Jerusalem', CURRENT_DATE - 100);
+  END LOOP;
+END $$;
+SELECT fn_ensure_local_spoon_budget(md5('j112-' || i)::uuid) IS NOT NULL FROM generate_series(1, 13) i;
+UPDATE spoon_budget sb SET reported_at = clock_timestamp()
+  FROM users u WHERE u.user_id = sb.user_id AND u.company_id = md5('j112')::uuid AND u.email <> 'e10@j112';
+SELECT t_assert('J-112 = A: 9 no-department reporters at company level; they count in no team ("General" / "ללא מחלקה" = 0)',
+  fn_cuckoo_no_department_reporters(md5('j112')::uuid) = 9
+  AND fn_cuckoo_recent_reporters(md5('j112')::uuid, 'General') = 0
+  AND fn_cuckoo_recent_reporters(md5('j112')::uuid, 'ללא מחלקה') = 0);
+SELECT t_expect_err('J-112 = A: group of 9 → no company-level Cuckoo (403)',
+  format($$SELECT fn_cuckoo_raise(%L, 'nlp_distress')$$, md5('j112-1')::uuid), 'aggregation_privacy_threshold');
+UPDATE spoon_budget sb SET reported_at = clock_timestamp()
+  FROM users u WHERE u.user_id = sb.user_id AND u.email = 'e10@j112';
+CREATE TEMP TABLE t_j112 AS SELECT * FROM fn_cuckoo_raise(md5('j112-1')::uuid, 'nlp_distress');
+SELECT t_assert('J-112 = A: group of 10 reporters → the company-level Cuckoo signal is raised, with no team on it (department empty)',
+  (SELECT count(*) = 1 AND bool_and(department IS NULL AND status = 'VETO_WINDOW_ACTIVE') FROM t_j112));
+SELECT t_expect_err('J-112 = A: differencing safe — a real team of 3 reporters is still refused (the company group never lifts a team)',
+  format($$SELECT fn_cuckoo_raise(%L, 'nlp_distress')$$, md5('j112-11')::uuid), 'aggregation_privacy_threshold');
+UPDATE cuckoo_alert SET sovereign_veto_window_expiry = clock_timestamp() - interval '1 second' WHERE alert_id = (SELECT alert_id FROM t_j112);
+SELECT t_as(md5('j112-mgr')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-112 = A: the manager sees the pseudonym only — no team, no count, no "ללא מחלקה", no user id',
+  (SELECT count(*) = 1 AND bool_and(row_to_json(v)::text NOT LIKE '%ללא מחלקה%' AND row_to_json(v)::text NOT LIKE '%' || md5('j112-1')::uuid::text || '%')
+     FROM cuckoo_alert_manager_v v));
+RESET ROLE;
 
 -- 7. (O-5) Morning & midday check-in RPCs
 SELECT t_assert('v1.6.11 O-5: morning half-point scores floored in employee favor (4.5→0 deducted, 5.0→2, 5.5→2, 6.0→3, 7.5→3, 8.0→4)',
