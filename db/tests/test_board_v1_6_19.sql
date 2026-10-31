@@ -611,9 +611,14 @@ SELECT t_assert('A-10: every "r = 0.37" in every published report is inside the 
   (SELECT bool_and(t_count(j::text, 'r = 0.37') = t_count(j::text, (SELECT to_jsonb(txt)::text FROM t_binding) )
                    AND t_count(j::text, 'r = 0.37') = 1)
      FROM t_outputs WHERE label LIKE 'board_r%'));
+-- J-135: an output text without its timestamps (e.g. a dossier's last_kept_at "…:10.371234+02" holds "0.37" by the
+-- clock alone), so the A-10 check below looks at figures and wording only (test helper; no product change).
+CREATE OR REPLACE FUNCTION t_no_ts(p_text text) RETURNS text LANGUAGE sql IMMUTABLE AS
+  $$ SELECT regexp_replace(p_text, '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}(:\d{2})?|Z)?', '<ts>', 'g') $$;
 SELECT t_assert('A-10: 0.37 is never shown alone: without sources_note no report holds 0.37 (no "link to profit" wording)',
-  (SELECT bool_and(strpos((j - 'sources_note')::text, '0.37') = 0) FROM t_outputs WHERE label LIKE 'board_%')
-  AND (SELECT bool_and(strpos(j::text, '0.37') = 0) FROM t_outputs WHERE label NOT LIKE 'board_r%'));
+  (SELECT bool_and(strpos(t_no_ts((j - 'sources_note')::text), '0.37') = 0) FROM t_outputs WHERE label LIKE 'board_%')
+  AND (SELECT bool_and(strpos(t_no_ts(j::text), '0.37') = 0) FROM t_outputs WHERE label NOT LIKE 'board_r%')
+  AND t_no_ts('{"last_kept_at": "2027-04-01T00:30:10.371234+03:00", "x": 0.37}') = '{"last_kept_at": "<ts>", "x": 0.37}');
 SELECT t_assert('A-10: 0.37 always next to 0.14–0.16 (same sentence block of the binding text)',
   position('0.14–0.16' IN fn_board_binding_text_he()) > position('r = 0.37' IN fn_board_binding_text_he())
   AND position('r = 0.37' IN fn_board_binding_text_he()) > 0);

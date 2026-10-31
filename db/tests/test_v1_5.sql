@@ -799,7 +799,8 @@ SELECT t_u('e' || i), 'TPS-12', 'hist-' || p.k, p.d::date, '{3,3,3,3,3,3,3,3,3,3
   FROM (VALUES ('q-1', date_trunc('quarter', now()) - interval '1 month', 60, 20),
                ('q-2', date_trunc('quarter', now()) - interval '4 months', 40, 19),
                ('y-1', date_trunc('year', now()) - interval '9 months', 50, 20),
-               ('now', now() - interval '1 hour', 90, 24)) AS p(k, d, score, n),
+               -- J-135: never before the current quarter's start (in its first hour, now() - 1 hour is the closed quarter)
+               ('now', greatest(now() - interval '1 hour', date_trunc('quarter', now())), 90, 24)) AS p(k, d, score, n),
        generate_series(1, 24) i
  WHERE i <= p.n;
 SELECT t_as(t_u('chair'));
@@ -2734,6 +2735,8 @@ SELECT fn_ensure_local_spoon_budget('00000000-0000-0000-0000-00000000cb11');
 UPDATE spoon_budget SET current_spoon_count = 9, reported_at = clock_timestamp()
  WHERE user_id = '00000000-0000-0000-0000-00000000cb11'
    AND budget_date = fn_user_local_date('00000000-0000-0000-0000-00000000cb11');
+-- J-135: remember the local day of the borrowed zone (near midnight it can differ from cb11's Asia/Jerusalem day)
+CREATE TEMP TABLE t_j135_midday AS SELECT fn_user_local_date('00000000-0000-0000-0000-00000000cb11') AS d;
 SELECT t_as('00000000-0000-0000-0000-00000000cb11');
 SET ROLE authenticated;
 SELECT t_expect_err('v1.6.11 O-5: rpc_midday_checkin rejects delta > +4 (+5)', $$SELECT rpc_midday_checkin(5)$$, 'checkin_invalid_delta');
@@ -2750,6 +2753,23 @@ SELECT t_assert('v1.6.11 O-5: …and logs early leave automatically when midday 
   EXISTS (SELECT 1 FROM early_leave_log WHERE user_id = '00000000-0000-0000-0000-00000000cb11'));
 RESET ROLE;
 UPDATE users SET timezone = 'Asia/Jerusalem' WHERE user_id = '00000000-0000-0000-0000-00000000cb11';
+-- J-135 (date independence): the midday checks above ran in a borrowed Etc/GMT zone chosen for its CURRENT local
+-- hour; near midnight (Asia/Jerusalem) its local date is another day than cb11's own day. The company figures below
+-- (O-25: cb11 is a reporter of TODAY with 0 spoons after GO_HOME, deprived this week only) assume that end-of-day
+-- state on cb11's own local day, so it is carried to that day when the two dates differ (test fixture only).
+DELETE FROM spoon_budget sb USING t_j135_midday m
+ WHERE sb.user_id = '00000000-0000-0000-0000-00000000cb11'
+   AND m.d <> fn_user_local_date('00000000-0000-0000-0000-00000000cb11')
+   AND sb.budget_date = fn_user_local_date('00000000-0000-0000-0000-00000000cb11');
+UPDATE spoon_budget sb SET budget_date = fn_user_local_date('00000000-0000-0000-0000-00000000cb11')
+  FROM t_j135_midday m
+ WHERE sb.user_id = '00000000-0000-0000-0000-00000000cb11' AND sb.budget_date = m.d
+   AND m.d <> fn_user_local_date('00000000-0000-0000-0000-00000000cb11');
+SELECT t_assert('J-135: cb11 ends today (its own Asia/Jerusalem day) as a reporter with 0 spoons, and has no other reported day this or last week',
+  (SELECT current_spoon_count = 0 AND reported_at IS NOT NULL FROM spoon_budget
+    WHERE user_id = '00000000-0000-0000-0000-00000000cb11' AND budget_date = fn_user_local_date('00000000-0000-0000-0000-00000000cb11'))
+  AND NOT EXISTS (SELECT 1 FROM spoon_budget WHERE user_id = '00000000-0000-0000-0000-00000000cb11' AND reported_at IS NOT NULL
+                     AND budget_date <> fn_user_local_date('00000000-0000-0000-0000-00000000cb11')));
 
 -- 8 & 9. (Q5 & O-16 / Q11) Task costs (0, 1, 2) and golden spoon rewards visible; 10 golden spoons at signup, 2 per shift, 0.5 daily; CHR Coins v2
 INSERT INTO auth.users (id) VALUES ('00000000-0000-0000-0000-00000000cb99');

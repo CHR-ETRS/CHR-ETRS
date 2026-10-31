@@ -1072,8 +1072,11 @@ SELECT t_expect_err('happiness_debt_events is WORM', $$DELETE FROM happiness_deb
 SELECT t_expect_err('remediation_records is WORM', $$UPDATE remediation_records SET reduction_amount = 1$$, 'ledger_immutable');
 SELECT t_assert('v1.6.18 A-12: the team-level remediation was attributed to the team''s open transfer (leaverA''s, 20,000; open balance 30,000)',
   (SELECT count(*) = 1 AND sum(a.amount) = 20000 AND bool_and(fn_transfer_open_balance(a.transfer_event_id) = 30000)
-     FROM happiness_debt_remediation_allocation a JOIN happiness_debt_leaver_link l ON l.event_id = a.transfer_event_id
-    WHERE l.user_id = t_u('leaverA')));
+     FROM happiness_debt_remediation_allocation a JOIN happiness_debt_events e ON e.event_id = a.transfer_event_id
+    -- J-135: the transfer is found by its event (cA, team REST, 2026-10 — leaverA's is the only one), not through
+    -- happiness_debt_leaver_link: leaverA left on 2026-10-10, so from 2026-11-09 on the offboarding trigger shreds
+    -- the key at once (≥ 30 days, O-14) and drops that internal link by design.
+    WHERE e.company_id = t_u('cA') AND e.group_id = 'REST' AND e.event_type = 'leaver_transfer' AND e.period_month = DATE '2026-10-01'));
 
 -- ============ 9b. v1.6.17 A-8 · reversed offboarding returns the memo-line debt to the team ============
 -- retD (8,000) and otherD (5,000) leave TEAMD 3 days before the run (inside the 30-day reversal window).
