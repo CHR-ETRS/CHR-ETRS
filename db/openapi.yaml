@@ -1,5 +1,5 @@
 # CHR-ETRS MVP v1.6.20 · openapi.yaml
-# Version: 1.6.20-mvp (2026-10-31 IL) — supersedes 1.6.19-mvp (2026-10-31 IL), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
+# Version: 1.6.20-mvp r1 (2026-10-31 IL; r1 = J-96 A, the default-department marker) — supersedes 1.6.19-mvp (2026-10-31 IL), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
@@ -31,7 +31,10 @@ info:
     \ + unplanned only (r3: Σ `/rpc/rpc_put_team_absences` rows, also the burnout source); burnout guard adds שימוע / שיחת בירור / התראה בכתב / מעקב\
     \ ביצועים.\n- v1.6.20: the absence input `/rpc/rpc_put_team_absences` takes a \"ללא מחלקה\" row (company total\
     \ of employees without a department; only inside the board total, never shown alone, never a burnout team);\
-    \ vp_hr only (J-91); the absence definition is Karin's approved text (J-88).\n\nPostgREST reads + RPC writes. Version 1.6.20-mvp (2026-10-31) — supersedes 1.6.19-mvp (2026-10-31), 1.6.18-mvp\
+    \ vp_hr only (J-91); the absence definition is Karin's approved text (J-88).\n- v1.6.20-r1 (J-96 = A): the\
+    \ default department is a system marker (users.department_is_default), not the name \"General\"; defaulted\
+    \ employees are in the \"ללא מחלקה\" row; a real \"General\" is a team (`/rpc/rpc_mark_general_as_default_department`\
+    \ resolves existing ambiguous rows, J-101).\n\nPostgREST reads + RPC writes. Version 1.6.20-mvp (2026-10-31) — supersedes 1.6.19-mvp (2026-10-31), 1.6.18-mvp\
     \ (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were\
     \ planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp\
     \ (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20),\
@@ -944,7 +947,10 @@ paths:
                   nullable: true
                 p_department:
                   type: string
-                  default: General
+                  nullable: true
+                  description: v1.6.20-r1 (J-96 = A) — omitted / blank → the default department (label "General"
+                    + system marker department_is_default, counted in the "ללא מחלקה" absence row); an explicit
+                    "General" is a real team. A re-signup without it keeps the current department.
                 p_app_role:
                   type: string
                   enum:
@@ -4509,7 +4515,10 @@ paths:
         (J-92): p_team_id "ללא מחלקה" = the company-level total of the active employees without a department (blank
         or "ללא מחלקה" department) — same fields, validation, audit and vp_hr-only access (J-91); it is part of the
         board total (required when such employees exist), never shown separately and never a burnout team. With no
-        such employee it is refused (400 invalid_team).'
+        such employee it is refused (400 invalid_team). v1.6.20-r1 (J-96 = A): employees of the DEFAULT department
+        (system marker users.department_is_default — no department was assigned; label "General") belong to the
+        "ללא מחלקה" row, and its maximum is that group × days (J-98). The default department is not a team (400
+        invalid_team); a REAL department named "General" (marker false) is a normal team.'
       requestBody:
         required: true
         content:
@@ -4551,6 +4560,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_mark_general_as_default_department:
+    post:
+      tags:
+      - agents
+      summary: v1.6.20-r1 (J-101) — mark a company's existing "General" rows as the default department (vp_hr only)
+      description: 'Rows that read "General" before the marker existed cannot be proven defaulted, so the upgrade
+        left them a normal team. Run ONLY after Karin decides that this company''s "General" is the default
+        department: every "General" row with marker false gets department_is_default = true (they move to the
+        "ללא מחלקה" absence row; burnout then refuses "General"). Audited (company + count only). Returns {status:
+        marked, marked}.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_company_id: *id023
+              required:
+              - p_company_id
+      responses:
+        '200':
+          description: '{status: marked, marked}'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentJson'
+        '403': *id025
   /rpc/rpc_put_company_governance:
     post:
       tags:

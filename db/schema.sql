@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.20 · schema.sql
--- Version: 1.6.20-mvp (2026-10-31 IL) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- Version: 1.6.20-mvp r1 (2026-10-31 IL; r1 = J-96 A, the default-department marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
 -- New in 1.6.20 (Karin 31.10): no schema change except comments — the 'ללא מחלקה' absence row (J-92) is a
@@ -373,7 +373,9 @@ CREATE TABLE IF NOT EXISTS users (
     last_location text CHECK (last_location IS NULL OR last_location IN ('home', 'office', 'site')),
     email         varchar(255) NOT NULL UNIQUE,
     full_name     varchar(255) NOT NULL,
-    department    varchar(255) NOT NULL DEFAULT 'General',
+    -- v1.6.20-r1 (J-96 = A): no column default any more — an insert without a department (NULL / blank) is
+    -- stored as the display label 'General' WITH department_is_default = true (trg_users_department_default).
+    department    varchar(255) NOT NULL,   -- + department_is_default (J-96 = A), added below by ALTER (same column order fresh / upgraded)
     -- ADR-068: employee | manager | vp_hr | legal_ethics — no ROOT_ADMIN.
     -- v1.6 / v1.6.12 (O-19, O-20, O-25): governance roles (board_chair, board_member, owner_shareholder)
     -- have whole-company macro read access only; has_employee_profile defaults to false for tier 5 roles
@@ -417,6 +419,14 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS hire_date date;   -- v1.6.8 upgrade (O-49)
+-- v1.6.20-r1 upgrade (J-96 = A, J-101): existing rows get department_is_default = false — an existing
+-- 'General' is NOT proven defaulted, so it stays a normal team (no silent reclassification; question for
+-- Karin, resolvable per company with rpc_mark_general_as_default_department). The column default goes.
+-- department_is_default = the SYSTEM MARKER of the default department (set only when no department was
+-- assigned). The default department is identified by this flag, never by the name: a real department named
+-- 'General' (flag false) is a normal team. Defaulted employees count only in the 'ללא מחלקה' absence row.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS department_is_default boolean NOT NULL DEFAULT false;
+ALTER TABLE users ALTER COLUMN department DROP DEFAULT;
 
 -- v1.6.16 upgrade: add 'cfo' to an existing app_role CHECK (same expression as the fresh table).
 DO $$
@@ -507,6 +517,48 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+-- v1.6.20-r1 (J-96 = A): the default-department marker. No department (NULL / blank) → label 'General' +
+-- department_is_default = true. An explicit department — 'General' included — is never the default. An
+-- explicit department change clears it; the marker can be cleared (department confirmed) but set again only
+-- by the system (no department) or the audited per-company resolver (chr.default_department_backfill).
+-- Fires before trg_users_team_joined (trigger names run in order), so that one sees the final department.
+CREATE OR REPLACE FUNCTION fn_default_department_label()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'General'::text $$;
+
+CREATE OR REPLACE FUNCTION fn_users_department_default()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_backfill boolean := COALESCE(current_setting('chr.default_department_backfill', true), '') = 'on';
+BEGIN
+  IF NULLIF(btrim(COALESCE(NEW.department, '')), '') IS NULL THEN
+    IF TG_OP = 'UPDATE' AND OLD.department_is_default THEN
+      NEW.department := OLD.department;
+    ELSE
+      NEW.department := fn_default_department_label();
+    END IF;
+    NEW.department_is_default := true;
+  ELSIF TG_OP = 'INSERT' THEN
+    NEW.department_is_default := NEW.department_is_default AND v_backfill;
+  ELSIF NEW.department IS DISTINCT FROM OLD.department THEN
+    NEW.department_is_default := false;
+  ELSIF NEW.department_is_default AND NOT OLD.department_is_default AND NOT v_backfill THEN
+    NEW.department_is_default := false;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_users_department_default ON users;
+CREATE TRIGGER trg_users_department_default
+    BEFORE INSERT OR UPDATE OF department, department_is_default ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_users_department_default();
 
 DROP TRIGGER IF EXISTS trg_users_team_joined ON users;
 CREATE TRIGGER trg_users_team_joined

@@ -1,10 +1,12 @@
 -- =============================================================================
 -- CHR-ETRS MVP · migrations/migrate_v1_4_to_v1_6_20.sql
--- Version: 1.6.20-mvp (2026-10-31) — supersedes migrate_v1_4_to_v1_6_20.sql (1.6.19-mvp, 2026-10-31), migrate_v1_4_to_v1_6_18.sql (1.6.18-mvp, 2026-10-31),
+-- Version: 1.6.20-mvp r1 (2026-10-31; r1 = J-96 A) — supersedes migrate_v1_4_to_v1_6_19.sql (1.6.19-mvp, 2026-10-31), migrate_v1_4_to_v1_6_18.sql (1.6.18-mvp, 2026-10-31),
 --          migrate_v1_4_to_v1_6_17.sql (1.6.17-mvp, 2026-10-31),
 --          migrate_v1_4_to_v1_6_16.sql (1.6.16-mvp, 2026-10-30) and
 --          migrate_v1_4_to_v1_6_13.sql (1.6.13-mvp, 2026-10-25).
 -- v1.6.20: same steps; the pack it installs is v1.6.20 (adds the 'ללא מחלקה' absence row, J-92).
+-- v1.6.20-r1 (J-96 = A): users.department_is_default added (false for every existing row — an existing 'General'
+--   is not proven defaulted, J-101); the report counts them as users.general_department_ambiguous.
 -- v1.6.19: same steps; the pack it installs is v1.6.19 (leaver batching of 10, aggregate leaver list, A-3
 --          3-month ILS estimate, computed verification levels + 'תיק אימות', pay linkage, social events, report
 --          layers + governance, the 5 sources). The pack's upgrade blocks also upgrade a v1.6.18 database in
@@ -357,6 +359,9 @@ SELECT pg_temp.mig_add('legacy.tables_read_only',
   (SELECT count(*) FROM pg_trigger WHERE tgname = 'trg_legacy_read_only_row') - (SELECT n FROM mig_before WHERE k = 'legacy_guarded'));
 SELECT pg_temp.mig_add('companies.timezone_needs_review',
   (SELECT count(*) FROM companies WHERE timezone_status = 'needs_review') - (SELECT n FROM mig_before WHERE k = 'needs_review'));
+-- v1.6.20-r1 (J-96 = A, J-101): users whose department already reads 'General' cannot be proven defaulted → left
+-- as a normal team (marker false), NOT reclassified; counted here for Karin's decision (no names).
+SELECT pg_temp.mig_add('users.general_department_ambiguous', fn_general_department_ambiguous_count(NULL));
 
 -- ---------------------------------------------------------------------------
 -- 4. Report + commit (or roll back for a dry run).

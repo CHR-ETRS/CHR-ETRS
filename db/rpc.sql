@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.20 · rpc.sql
--- Version: 1.6.20-mvp (2026-10-31 IL) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- Version: 1.6.20-mvp r1 (2026-10-31 IL; r1 = J-96 A, the default-department marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -2536,7 +2536,7 @@ CREATE OR REPLACE FUNCTION rpc_signup_profile(
   p_timezone     text,                    -- REQUIRED valid IANA
   p_country_code char(2) DEFAULT NULL,    -- optional ISO 3166-1 alpha-2
   p_company_id   uuid DEFAULT NULL,
-  p_department   varchar DEFAULT 'General',
+  p_department   varchar DEFAULT NULL,      -- v1.6.20-r1 (J-96 = A): none → the default department (marker)
   p_app_role     text DEFAULT 'employee'
 )
 RETURNS users
@@ -2602,7 +2602,7 @@ BEGIN
     v_tz,
     v_cc,
     p_company_id,
-    COALESCE(NULLIF(btrim(p_department), ''), 'General'),
+    NULLIF(btrim(p_department), ''),   -- J-96 = A: NULL → label 'General' + department_is_default (trigger)
     p_app_role
   )
   ON CONFLICT (user_id) DO UPDATE
@@ -2610,7 +2610,8 @@ BEGIN
         full_name = EXCLUDED.full_name,
         -- Do not overwrite timezone/country on re-signup conflict; use profile RPCs
         company_id = COALESCE(EXCLUDED.company_id, users.company_id),
-        department = COALESCE(EXCLUDED.department, users.department)
+        -- J-96 = A: a re-signup without a department keeps the current one (and its marker)
+        department = CASE WHEN NULLIF(btrim(p_department), '') IS NULL THEN users.department ELSE EXCLUDED.department END
   RETURNING * INTO v_row;
 
   -- v1.6.11 (O-16 / Q11): golden spoons at signup (once per employee profile; CHR Coins stay 0 / v2).
@@ -5540,6 +5541,48 @@ GRANT SELECT ON everstore_budget_summary_v TO authenticated;
 
 -- Employees of a team during a company month: everyone employed at any time that month — leavers of the
 -- month stay in the denominator (v3 §4.5). Governance-only users (no employee profile) are not counted.
+-- v1.6.20-r1 (J-96 = A): who is "without a department" — the SYSTEM MARKER department_is_default (no department
+-- was assigned; label 'General'), or a blank / literal 'ללא מחלקה' department. A real department named 'General'
+-- (marker false) is a normal team. Defined here because team membership below depends on it.
+CREATE OR REPLACE FUNCTION fn_no_department_key()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'ללא מחלקה'::text $$;
+
+CREATE OR REPLACE FUNCTION fn_is_no_department(p_department text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT NULLIF(btrim(p_department), '') IS NULL OR btrim(p_department) = fn_no_department_key() $$;
+
+CREATE OR REPLACE FUNCTION fn_user_is_no_department(p_department text, p_is_default boolean)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT COALESCE(p_is_default, false) OR fn_is_no_department(p_department) $$;
+
+-- A user belongs to team p_group only with that department AND not "without a department" (J-96 = A).
+CREATE OR REPLACE FUNCTION fn_user_in_team(p_department text, p_is_default boolean, p_group text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT p_department = p_group AND NOT fn_user_is_no_department(p_department, p_is_default) $$;
+
+-- The group named p_group is the DEFAULT department of the company (only defaulted employees carry that
+-- label, no real member) → it is not a team (burnout refuses it; its absences go to the 'ללא מחלקה' row).
+CREATE OR REPLACE FUNCTION fn_is_default_department_group(p_company uuid, p_group text)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM users u WHERE u.company_id = p_company AND u.department = p_group AND u.department_is_default)
+     AND NOT EXISTS (SELECT 1 FROM users u WHERE u.company_id = p_company
+                                            AND fn_user_in_team(u.department, u.department_is_default, p_group))
+$$;
+
 CREATE OR REPLACE FUNCTION fn_team_month_members(p_company uuid, p_group varchar, p_month date)
 RETURNS int
 LANGUAGE sql
@@ -5548,7 +5591,8 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
   SELECT count(*)::int FROM users u
-   WHERE u.company_id = p_company AND (p_group IS NULL OR u.department = p_group) AND u.has_employee_profile
+   WHERE u.company_id = p_company AND u.has_employee_profile
+     AND (p_group IS NULL OR fn_user_in_team(u.department, u.department_is_default, p_group))   -- J-96 = A
      AND (u.hire_date IS NULL OR u.hire_date < fn_month_shift(p_month, 1))
      AND (u.employment_ended_at IS NULL OR fn_agent_local_ts(p_company, u.employment_ended_at)::date >= p_month)
 $$;
@@ -5563,7 +5607,7 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT round(avg(q.pcq12_score), 2), count(DISTINCT q.user_id)::int
     FROM questionnaire_submission q JOIN users u ON u.user_id = q.user_id
-   WHERE u.company_id = p_company AND (p_group IS NULL OR u.department = p_group)
+   WHERE u.company_id = p_company AND (p_group IS NULL OR fn_user_in_team(u.department, u.department_is_default, p_group))
      AND q.questionnaire_code = 'PCQ-12'
      AND q.local_date >= p_month AND q.local_date < fn_month_shift(p_month, 1)
 $$;
@@ -5719,7 +5763,8 @@ AS $$
   SELECT NOT fn_is_client_call()
       OR fn_is_finance_viewer(p_company)
       OR (fn_is_org_manager(p_company) AND EXISTS (
-            SELECT 1 FROM users u WHERE u.company_id = p_company AND u.department = p_group
+            SELECT 1 FROM users u WHERE u.company_id = p_company
+                                    AND fn_user_in_team(u.department, u.department_is_default, p_group)
                                     AND fn_in_solid_subtree(auth.uid(), u.user_id)))
 $$;
 
@@ -5750,18 +5795,7 @@ $$;
 
 -- v1.6.20 (Karin 31.10, J-92): the key of the 'ללא מחלקה' absence row — one company-level monthly total for the
 -- active employees without a department. It is not a team: never shown separately, never a burnout team.
-CREATE OR REPLACE FUNCTION fn_no_department_key()
-RETURNS text
-LANGUAGE sql
-IMMUTABLE
-AS $$ SELECT 'ללא מחלקה'::text $$;
-
--- True for a department value that means "no department" (J-96): NULL, blank, or literally 'ללא מחלקה'.
-CREATE OR REPLACE FUNCTION fn_is_no_department(p_department text)
-RETURNS boolean
-LANGUAGE sql
-IMMUTABLE
-AS $$ SELECT NULLIF(btrim(p_department), '') IS NULL OR btrim(p_department) = fn_no_department_key() $$;
+-- fn_no_department_key / fn_is_no_department: defined above with fn_user_is_no_department (v1.6.20-r1).
 
 -- Active employees of an absence-input group in a month: a real team (fn_team_month_members), or, for the
 -- 'ללא מחלקה' key, the active employees without a department (same population rules).
@@ -5774,7 +5808,8 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT CASE WHEN fn_is_no_department(p_group) THEN
            (SELECT count(*)::int FROM users u
-             WHERE u.company_id = p_company AND fn_is_no_department(u.department) AND u.has_employee_profile
+             WHERE u.company_id = p_company AND fn_user_is_no_department(u.department, u.department_is_default)
+               AND u.has_employee_profile
                AND (u.hire_date IS NULL OR u.hire_date < fn_month_shift(p_month, 1))
                AND (u.employment_ended_at IS NULL OR fn_agent_local_ts(p_company, u.employment_ended_at)::date >= p_month))
          ELSE fn_team_month_members(p_company, p_group, p_month) END
@@ -5858,6 +5893,47 @@ REVOKE ALL ON FUNCTION fn_team_absence_days(uuid, varchar, date),
 REVOKE ALL ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) TO authenticated, service_role;
 
+-- v1.6.20-r1 (J-101): rows that already said 'General' before the marker existed are AMBIGUOUS (defaulted, or a
+-- real team named 'General'?) and were left as a normal team (marker false). Count per company (no names):
+CREATE OR REPLACE FUNCTION fn_general_department_ambiguous_count(p_company uuid)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(*)::int FROM users u
+   WHERE (p_company IS NULL OR u.company_id = p_company)
+     AND u.department = fn_default_department_label() AND NOT u.department_is_default
+$$;
+
+-- J-101 resolver, for use ONLY after Karin decides a company's existing 'General' is the default department:
+-- vp_hr of the company marks every 'General' row (marker false) as defaulted. Audited (company + count only);
+-- never run by the migration. Returns {status, marked}.
+CREATE OR REPLACE FUNCTION rpc_mark_general_as_default_department(p_company_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_n int;
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  PERFORM set_config('chr.default_department_backfill', 'on', true);
+  UPDATE users SET department_is_default = true
+   WHERE company_id = p_company_id AND department = fn_default_department_label() AND NOT department_is_default;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  PERFORM set_config('chr.default_department_backfill', '', true);
+  PERFORM fn_audit_view('default_department_marked', jsonb_build_object('company_id', p_company_id, 'marked', v_n));
+  RETURN jsonb_build_object('status', 'marked', 'marked', v_n);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_general_department_ambiguous_count(uuid), fn_is_default_department_group(uuid, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rpc_mark_general_as_default_department(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_mark_general_as_default_department(uuid) TO authenticated, service_role;
+
 -- get_burnout_trend(team) — coverage full (≥ 10 מדווחים בפועל) / partial (5–9: PCQ-12 + absences only) /
 -- none (< 5). "סיכון עולה" = ≥ 1 indicator crosses its threshold in 2 consecutive periods of the 3-month
 -- moving average. 12 כפיות are never read. Output is group level only — never an employee identifier, and
@@ -5884,8 +5960,8 @@ DECLARE
   v_na constant text := 'אין מספיק מדווחים בפועל להצגה';
   v_rising boolean;
 BEGIN
-  IF p_team_id IS NULL OR fn_is_no_department(p_team_id) THEN
-    PERFORM fn_raise_bad_request('invalid_team');   -- v1.6.20 (J-92): 'ללא מחלקה' is never a burnout team
+  IF p_team_id IS NULL OR fn_is_no_department(p_team_id) OR fn_is_default_department_group(p_company_id, p_team_id) THEN
+    PERFORM fn_raise_bad_request('invalid_team');   -- J-92 / J-96 = A: 'ללא מחלקה' / the default department is never a burnout team
   END IF;
   IF NOT fn_may_read_team_agent(p_company_id, p_team_id) THEN
     PERFORM fn_raise_business('insufficient_privilege');
@@ -8142,7 +8218,8 @@ BEGIN
   WITH teams AS (   -- real teams + (J-92) the 'ללא מחלקה' group, required when it has active employees (J-95)
     SELECT d.department AS team, fn_team_month_members(p_company, d.department, p_month) AS members, false AS no_dept
       FROM (SELECT DISTINCT u.department FROM users u
-             WHERE u.company_id = p_company AND NOT fn_is_no_department(u.department) AND u.has_employee_profile) d
+             WHERE u.company_id = p_company AND NOT fn_user_is_no_department(u.department, u.department_is_default)
+               AND u.has_employee_profile) d
     UNION ALL
     SELECT fn_no_department_key(), fn_absence_group_members(p_company, fn_no_department_key(), p_month), true)
   SELECT count(*) FILTER (WHERE t.members > 0 AND x.team_id IS NULL) AS missing,

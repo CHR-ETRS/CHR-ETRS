@@ -1,7 +1,7 @@
-<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.6.20-mvp (2026-10-31) — new file. How the v1.6.20 results were produced. -->
+<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.6.20-mvp r1 (2026-10-31; r1 = J-96 A: counts, upgrade marker check, terminology greps) — supersedes the v1.6.20 TESTING.md. How the v1.6.20-r1 results were produced. -->
 # How to run the CHR-ETRS code-pack tests (v1.6.20-mvp)
 
-These are the exact steps used for the v1.6.20 run on 2026-10-31. Everything runs locally against a **throw-away
+These are the exact steps used for the v1.6.20-r1 run on 2026-10-31. Everything runs locally against a **throw-away
 PostgreSQL 17 cluster**. Nothing touches Supabase, staging or production.
 
 ## 1. What you need
@@ -54,18 +54,18 @@ python3 -m venv /tmp/venv-oas
 ```bash
 cd db                                   # the folder holding schema.sql, rpc.sql, openapi.yaml, tests/
 ./tests/run_tests.sh 2>&1 | tee /tmp/run_tests.log; echo "exit ${PIPESTATUS[0]}"
-grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (v1.6.20: 1236)
+grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (v1.6.20-r1: 1259)
 grep -c "WARNING:  FAIL" /tmp/run_tests.log            # must be 0 (a FAIL also stops the run with exit ≠ 0)
-grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 111 passed, 0 failed · nosuper: 105 passed, 0 failed
+grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 112 passed, 0 failed · nosuper: 106 passed, 0 failed
 /tmp/venv-oas/bin/openapi-spec-validator openapi.yaml   # → openapi.yaml: OK
 ```
 
 What `run_tests.sh` does, in order (each on a fresh database):
 
 1. `ref_country_calendar.sql` → `schema.sql` → `rpc.sql`, then the same three again (idempotency) →
-   `tests/test_v1_5.sql` (756 checks in v1.6.20).
+   `tests/test_v1_5.sql` (756 checks in v1.6.20-r1).
 2. Fresh DB → pack → `tests/test_agents_v1_6_16.sql` (agents; 299 checks).
-3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 181 checks).
+3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 204 checks).
 4. `MIG_MODE=super ./tests/test_migration.sh` — v1.4 → v1.6.20 migration as superuser (event-trigger DDL guard +
    timezone preflight): dry run, apply, counts, catalog = fresh, idempotence, rollback.
 5. `MIG_MODE=nosuper ./tests/test_migration.sh` — the same as a **non-superuser** owner: the script itself creates
@@ -114,20 +114,32 @@ psql -qc "DROP DATABASE IF EXISTS $F" postgres; psql -qc "CREATE DATABASE $F" po
 psql -d $D -Atc "$cat_q" > $W/up.cat; psql -d $F -Atc "$cat_q" > $W/fresh.cat
 # the old test's own helper objects (t_*) are expected extras in the upgraded DB
 n=$(diff $W/fresh.cat $W/up.cat | grep '^[<>]' | grep -vcE "^[<>] (t_[a-z_]+\(|col t_[a-z_]+\.|acl t_[a-z_]+ |trg t_|pol t_)")
+# J-101: the upgrade marks NO existing row as the default department; ambiguous 'General' rows are only counted
+echo "J-101: marked default after upgrade = $(psql -d $D -Atc "SELECT count(*) FROM users WHERE department_is_default") (expected 0), ambiguous 'General' = $(psql -d $D -Atc "SELECT fn_general_department_ambiguous_count(NULL)")"
 [ "$n" = 0 ] && echo "PASS catalog = fresh ($(wc -l < $W/fresh.cat) entries, test helpers ignored)" || { echo "FAIL catalog: $n lines differ"; diff $W/fresh.cat $W/up.cat | head -20; }
 SH
 chmod +x /tmp/upgrade_check.sh
 git archive 4d5faf9 db | (mkdir -p /tmp/old_4d5 && tar -x -C /tmp/old_4d5)
 /tmp/upgrade_check.sh s4d5 /tmp/old_4d5/db "$PWD"
-/tmp/upgrade_check.sh v1618 /path/to/chr-etrs-mvp-v1.6.18 "$PWD"
+git archive f848795 db | (mkdir -p /tmp/old_f848 && tar -x -C /tmp/old_f848)
+/tmp/upgrade_check.sh sf848 /tmp/old_f848/db "$PWD"
 ```
+
+(v1.6.20 used 4d5faf9 and a v1.6.18 pack folder; v1.6.20-r1 used 4d5faf9 and f848795.)
 
 ## 7. Greps used as release gates (must print 0)
 
 ```bash
 grep -rnE '10{1}50{3}' --include='*.sql' --include='*.yaml' --include='*.md' --include='*.sh' --include='*.py' . | wc -l   # salary literal
-grep -rn 'משיבים' --include='*.sql' --include='*.yaml' --include='*.md' --exclude=TESTING.md . | wc -l                                        # terminology: always "מדווחים בפועל"
+export LC_ALL=C.UTF-8                                                                                                      # needed for \p{Hebrew} in grep -P
+INC="--include=*.sql --include=*.yaml --include=*.md --include=*.sh --include=*.py"
+grep -rn 'משיבים' $INC --exclude=TESTING.md . | wc -l                                        # terminology: always "מדווחים בפועל"
+grep -rn 'מס החסך' $INC --exclude=TESTING.md . | wc -l                                                                    # terminology: always "מס קיפוח"
+grep -rnP '(?<![\p{Hebrew}])כפות(?![\p{Hebrew}])' $INC --exclude=TESTING.md . | wc -l                                    # the word "כפות" on its own
+grep -rn 'צבן' $INC --exclude=TESTING.md . | wc -l                                                                        # the name is spelled צבאן
 ```
+
+To keep a full log (as for v1.6.20-r1): `mkdir -p /workspace/test-logs && ./tests/run_tests.sh 2>&1 | tee /workspace/test-logs/v1.6.20-r1_run_tests_$(git rev-parse --short HEAD).log`.
 
 The "no person_id / user_id / pseudonym in agent and board outputs" rule, the A-10 binding text, G-3
 identical responses, the B_t 0.37 weight and the J-88 exact absence definition are checked **inside** the SQL
@@ -136,5 +148,5 @@ suites (`t_ids_free`, the A-10 / G-3 / J-88 checks) — they are part of the PAS
 ## 8. Clean up
 
 ```bash
-pg_ctl -D /tmp/pg17 stop && rm -rf /tmp/pg17 /tmp/venv-oas /tmp/old_4d5 /tmp/upgrade_*
+pg_ctl -D /tmp/pg17 stop && rm -rf /tmp/pg17 /tmp/venv-oas /tmp/old_4d5 /tmp/old_f848 /tmp/upgrade_*
 ```
