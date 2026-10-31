@@ -3,6 +3,9 @@
 -- Version: 1.6.19-mvp (2026-10-31 IL) — supersedes 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
+-- v1.6.19-r3 (Karin 31.10, J-80 = A): team_absence_input (total days per team per month: sickness + unplanned +
+--   early leave not pre-approved; vp_hr; no person column) is the only absence source for burnout AND the board
+--   (board = Σ team rows); board_absence_input is no longer used (kept, rows kept).
 -- v1.6.19-r2 (Karin 31.10, after PR #8): happiness_debt_remediation_allocation may hold several rows per remediation
 --   (FIFO split, G-3); company_key_role_setting (key role NAMES marked by vp_hr, WORM history, no person column) and
 --   board_absence_input (sickness + unplanned absence days per month; no vacation / time-benefit column) — J-53.
@@ -4577,6 +4580,7 @@ CREATE INDEX IF NOT EXISTS idx_ckrs_company ON company_key_role_setting (company
 -- board_absence_input — v1.6.19-r2 (Karin 31.10, J-53): board absences = sickness + unplanned absence only, as
 -- aggregate monthly day counts entered by cfo / vp_hr (the system holds no sickness / unplanned-absence data;
 -- planned vacation and EverStore time benefits are not counted and have no column here).
+-- v1.6.19-r3 (J-85): NO LONGER USED — the board total is the sum of team_absence_input rows; kept (rows not deleted).
 CREATE TABLE IF NOT EXISTS board_absence_input (
     company_id              uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
     period_month            date NOT NULL CHECK (extract(day FROM period_month) = 1),
@@ -4584,6 +4588,21 @@ CREATE TABLE IF NOT EXISTS board_absence_input (
     unplanned_absence_days  numeric(10, 1) NOT NULL CHECK (unplanned_absence_days >= 0),
     entered_at              timestamptz NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (company_id, period_month)
+);
+
+-- team_absence_input — v1.6.19-r3 (Karin 31.10, J-80 = A): the ONLY source of absences for the burnout agent and
+-- the board. TOTAL days per team per month, entered by vp_hr: sickness + unplanned absence + early leave that was
+-- NOT pre-approved. Approved absences / refresh time, planned vacation, EverStore time benefits and pre-approved
+-- early leave are not counted and have no column. No per-employee row, no person column (aggregate only).
+CREATE TABLE IF NOT EXISTS team_absence_input (
+    company_id                   uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    team_id                      varchar(255) NOT NULL CHECK (length(btrim(team_id)) > 0),
+    period_month                 date NOT NULL CHECK (extract(day FROM period_month) = 1),
+    sickness_days                numeric(10, 1) NOT NULL CHECK (sickness_days >= 0),
+    unplanned_absence_days       numeric(10, 1) NOT NULL CHECK (unplanned_absence_days >= 0),
+    unapproved_early_leave_days  numeric(10, 1) NOT NULL CHECK (unapproved_early_leave_days >= 0),
+    entered_at                   timestamptz NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (company_id, team_id, period_month)
 );
 
 -- WORM tables of v1.6.19.
@@ -4607,7 +4626,8 @@ BEGIN
                            'verification_dossier', 'questionnaire_item_version', 'measurement_change_log',
                            'org_event', 'payroll_population_input', 'metric_pay_linkage', 'social_event',
                            'wellbeing_spend_input', 'safety_incident_monthly', 'key_role_turnover_input',
-                           'company_governance', 'company_key_role_setting', 'board_absence_input'] LOOP
+                           'company_governance', 'company_key_role_setting', 'board_absence_input',
+                           'team_absence_input'] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
     EXECUTE format('REVOKE ALL ON TABLE %I FROM PUBLIC, anon, authenticated', t);

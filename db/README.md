@@ -7,6 +7,8 @@
 **Pack version:** `1.6.19-mvp`  
 **Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
 
+> **v1.6.19-r3 (2026-10-31):** Karin closed J-80 (A — align): the burnout agent's team-absences signal and the board absences use ONE definition and ONE source — `rpc_put_team_absences` (vp_hr only, audited): **total days per team per month** of sickness + unplanned absence + early leave that was not pre-approved; approved absences / refresh time, planned vacation, EverStore time benefits and pre-approved early leave are not counted. Missing month → 'חסר: team_absence_input' and the term is skipped (the other signals and B_t unchanged). Board = Σ team rows; `rpc_put_board_absences` removed; `signals.approved_absences` renamed `signals.absences`. J-85 – J-94 in `ADR_GAPS.md`.
+>
 > **v1.6.19-r2 (2026-10-31, after PR #8):** Karin closed G-3 and A-16:
 > - **G-3 / A-12:** `rpc_record_remediation` never returns 422 for the amount. It is allocated **FIFO (oldest first)** across the team's open leaver_transfers (several allocation rows allowed); a **leftover** becomes a team remediation not attributed to any transfer. The response is always `{status: 'recorded', label_he: 'יצא עם העוזבים'}` — no amount, balance or count. A reversal returns the transfer minus the allocations to that transfer.
 > - **A-16 closed:** causal note approved (J-65, no 'טיוטה'); dossier non-reporting text = Karin's exact text (J-70); burnout guard adds שימוע, שיחת בירור, התראה בכתב, מעקב ביצועים (J-52); J-53 definitions — **שיעור מימוש** = redeemers ÷ active employees; **תפקיד מפתח** = role names marked by vp_hr (`rpc_put_key_roles` / `rpc_get_key_roles`, audited, table `company_key_role_setting`); board **היעדרות** = sickness + unplanned absence only (`rpc_put_board_absences`, table `board_absence_input`; planned vacation and EverStore time benefits not counted).
@@ -125,6 +127,10 @@ The SECURITY DEFINER functions assume the owner role bypasses RLS (Supabase `pos
 Do **not** run Supabase tests from this pack until Stage A 27/27 (Karin).
 
 ### CHANGELOG
+
+#### 1.6.19-mvp r3 — 2026-10-31 (Karin: J-80 = A)
+- **Absences:** table `team_absence_input`; `rpc_put_team_absences`, `fn_team_absence_days`, `fn_team_absence_signal`, `fn_absence_definition_he`; `rpc_get_burnout_trend` reads only the team input (`signals.absences`); `fn_board_absences_json` = Σ team rows; `rpc_put_board_absences` dropped (`board_absence_input` kept, unused).
+- **Tests:** agents §8b (input counted, system rows excluded, 'חסר' + other signals intact, access, audit, catalog: no absence-day field next to a person); board §10 (Σ teams, missing teams, small-team rule).
 
 #### 1.6.19-mvp r2 — 2026-10-31 (Karin, after PR #8: G-3 and A-16 closed)
 - **Remediation:** `fn_remediation_fifo_plan`, `fn_assert_remediation_input`, `fn_insert_remediation_event`, `fn_remediation_response`; `rpc_record_remediation` returns the status object (was a uuid), no 422; `fn_pending_adjusted_transfers` counts split remediations per transfer; `fn_remediation_target` dropped.

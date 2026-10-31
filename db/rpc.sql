@@ -8,6 +8,10 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- v1.6.19-r3 (Karin 31.10, J-80 = A): the burnout absences signal and the board absences both come ONLY from
+--   rpc_put_team_absences (vp_hr; total days per team per month: sickness + unplanned + early leave not
+--   pre-approved). Missing month → 'חסר: team_absence_input' and the signal is skipped (other signals unchanged);
+--   board = Σ team rows; rpc_put_board_absences dropped; fn_team_month_absences no longer used by burnout.
 -- v1.6.19-r2 (Karin 31.10, after PR #8):
 --   * G-3 / A-12: rpc_record_remediation never returns 422 for an amount; it is split FIFO (oldest first) over the
 --     team's open transfers (one allocation row per transfer); any leftover is a team remediation not attributed to
@@ -16,7 +20,7 @@
 --   * A-16 closed: J-65 causal note approved (no 'טיוטה'); J-70 dossier text = Karin's exact text; J-52 guard adds
 --     שימוע / שיחת בירור / התראה בכתב / מעקב ביצועים; J-53 definitions: redemption rate (redeemers ÷ active
 --     employees), key roles (role names marked by vp_hr, rpc_put_key_roles / rpc_get_key_roles, audited), board
---     absences = sickness + unplanned only (rpc_put_board_absences; time benefits / planned vacation not counted).
+--     absences = sickness + unplanned only (r3: from rpc_put_team_absences; time benefits / planned vacation not counted).
 -- New in 1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; full module list in the v1.6.19 section at the end):
 --   * J-43 decided: the memo line "יצא עם העוזבים" and rpc_list_leaver_transfers move only in batches of 10 NEW
 --     leavers (distinct employees); remediations / reversals only as a batch touching ≥ 10 transfers; the list is
@@ -5558,7 +5562,8 @@ AS $$
 $$;
 
 -- Approved absences of a team in a month as ONE aggregate count: early leave + approved absence entries
--- (v1.6.19, J-54: cancelled entries are not absences).
+-- (v1.6.19, J-54: cancelled entries are not absences). v1.6.19-r3 (J-80 = A): NO LONGER USED by the burnout agent
+-- (it counts approved / time-benefit entries, which the decided definition excludes) — kept, data untouched.
 CREATE OR REPLACE FUNCTION fn_team_month_absences(p_company uuid, p_group varchar, p_month date)
 RETURNS numeric
 LANGUAGE sql
@@ -5711,6 +5716,104 @@ AS $$
                                     AND fn_in_solid_subtree(auth.uid(), u.user_id)))
 $$;
 
+-- ---------- v1.6.19-r3 (Karin 31.10, J-80 = A): team absences = sickness + unplanned (incl. unapproved early leave) ----------
+
+-- The one absence definition of the burnout agent AND the board (J-80 = A; my Hebrew wording → 'טיוטה').
+CREATE OR REPLACE FUNCTION fn_absence_definition_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'היעדרות = ימי מחלה + היעדרות לא מתוכננת (כולל יציאה מוקדמת שלא אושרה מראש) בלבד; היעדרויות מאושרות וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש אינן נספרות'::text $$;
+
+-- Total absence days of a team month from team_absence_input (sickness + unplanned + unapproved early leave);
+-- NULL when vp_hr has not entered the month (never 0 by default — 'חסר').
+CREATE OR REPLACE FUNCTION fn_team_absence_days(p_company uuid, p_team varchar, p_month date)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT x.sickness_days + x.unplanned_absence_days + x.unapproved_early_leave_days
+    FROM team_absence_input x WHERE x.company_id = p_company AND x.team_id = p_team AND x.period_month = p_month
+$$;
+
+-- The burnout absences signal (J-80 = A). The month's input missing → 'חסר: team_absence_input' and the signal is
+-- SKIPPED (it never counts toward rising_risk; the other signals run unchanged). Fewer than 5 active employees in
+-- the team → not shown and skipped (same threshold as the board). Otherwise the usual 3-month moving-average rise
+-- test over the months that have an input (months without one are ignored by fn_ma).
+CREATE OR REPLACE FUNCTION fn_team_absence_signal(p_company uuid, p_vals numeric[], p_w int, p_k int, p_members int)
+RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_n int := cardinality(p_vals);
+  v_d jsonb := jsonb_build_object('definition_he', fn_absence_definition_he(), 'text_status', fn_text_status_draft(),
+                                  'aggregate_only', true);
+BEGIN
+  IF p_vals[v_n] IS NULL THEN
+    RETURN v_d || jsonb_build_object('display_he', 'חסר: team_absence_input', 'rising', false, 'used_in_risk', false);
+  END IF;
+  IF p_members < fn_privacy_min_n('regular') THEN
+    RETURN v_d || jsonb_build_object('display_he', 'אין מספיק עובדים להצגה', 'rising', false, 'used_in_risk', false);
+  END IF;
+  RETURN fn_burnout_signal(p_company, 'rise', p_vals, p_w, p_k, fn_agent_setting_num(p_company, 'rise_pct'))
+         || v_d || jsonb_build_object('days', p_vals[v_n], 'used_in_risk', true);
+END;
+$$;
+
+-- vp_hr enters the TOTAL absence days of one team month (J-80 = A): sickness, unplanned absence, early leave that
+-- was not pre-approved. Aggregate only — no employee, no name. Each value ≥ 0 with one decimal; the team must have
+-- active employees in the month (else 400 invalid_team) and the total cannot exceed team size × days of the month
+-- (else 400 invalid_amount). Replaces that month's row; audited (team + month only).
+CREATE OR REPLACE FUNCTION rpc_put_team_absences(p_company_id uuid, p_team_id varchar, p_month date,
+                                                 p_sickness_days numeric, p_unplanned_absence_days numeric,
+                                                 p_unapproved_early_leave_days numeric)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_m date := fn_month_of(p_month);
+  v_members int;
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  IF p_month IS NULL OR p_team_id IS NULL OR length(btrim(p_team_id)) = 0 THEN
+    PERFORM fn_raise_bad_request('invalid_team');
+  END IF;
+  v_members := fn_team_month_members(p_company_id, p_team_id, v_m);
+  IF v_members = 0 THEN
+    PERFORM fn_raise_bad_request('invalid_team');
+  END IF;
+  IF p_sickness_days IS NULL OR p_unplanned_absence_days IS NULL OR p_unapproved_early_leave_days IS NULL
+     OR least(p_sickness_days, p_unplanned_absence_days, p_unapproved_early_leave_days) < 0
+     OR p_sickness_days <> round(p_sickness_days, 1) OR p_unplanned_absence_days <> round(p_unplanned_absence_days, 1)
+     OR p_unapproved_early_leave_days <> round(p_unapproved_early_leave_days, 1)
+     OR p_sickness_days + p_unplanned_absence_days + p_unapproved_early_leave_days
+        > v_members * extract(day FROM fn_month_shift(v_m, 1) - 1) THEN
+    PERFORM fn_raise_bad_request('invalid_amount');
+  END IF;
+  INSERT INTO team_absence_input (company_id, team_id, period_month, sickness_days, unplanned_absence_days,
+                                  unapproved_early_leave_days)
+  VALUES (p_company_id, p_team_id, v_m, p_sickness_days, p_unplanned_absence_days, p_unapproved_early_leave_days)
+  ON CONFLICT (company_id, team_id, period_month) DO UPDATE
+    SET sickness_days = EXCLUDED.sickness_days, unplanned_absence_days = EXCLUDED.unplanned_absence_days,
+        unapproved_early_leave_days = EXCLUDED.unapproved_early_leave_days, entered_at = clock_timestamp();
+  PERFORM fn_audit_view('team_absences_put', jsonb_build_object('company_id', p_company_id, 'team', p_team_id,
+                                                                'period_month', v_m));
+  RETURN jsonb_build_object('team', p_team_id, 'period_month', v_m, 'status', 'saved');
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_team_absence_days(uuid, varchar, date),
+                       fn_team_absence_signal(uuid, numeric[], int, int, int) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) TO authenticated, service_role;
+
 -- get_burnout_trend(team) — coverage full (≥ 10 מדווחים בפועל) / partial (5–9: PCQ-12 + absences only) /
 -- none (< 5). "סיכון עולה" = ≥ 1 indicator crosses its threshold in 2 consecutive periods of the 3-month
 -- moving average. 12 כפיות are never read. Output is group level only — never an employee identifier, and
@@ -5748,7 +5851,7 @@ BEGIN
     v_mem := v_mem || fn_team_month_members(p_company_id, p_team_id, v_m);
     SELECT * INTO r FROM fn_team_month_tax_debt(p_company_id, p_team_id, v_m);
     v_tax := v_tax || r.deprivation_tax; v_debt := v_debt || r.happiness_debt;
-    v_abs := v_abs || fn_team_month_absences(p_company_id, p_team_id, v_m);
+    v_abs := v_abs || fn_team_absence_days(p_company_id, p_team_id, v_m);   -- r3: team input only (J-80 = A)
   END LOOP;
 
   v_cov := CASE WHEN v_rep[v_n] >= fn_privacy_min_n('shadow_balance') THEN 'full'
@@ -5767,8 +5870,7 @@ BEGIN
   IF NOT (v_sig_pcq->>'comparable_with_previous_month')::boolean THEN
     v_sig_pcq := v_sig_pcq || jsonb_build_object('display_he', 'אין הבדל שאפשר לקבוע');
   END IF;
-  v_sig_abs := fn_burnout_signal(p_company_id, 'rise', v_abs, v_w, v_k, fn_agent_setting_num(p_company_id, 'rise_pct'))
-               || jsonb_build_object('count', v_abs[v_n], 'aggregate_only', true);
+  v_sig_abs := fn_team_absence_signal(p_company_id, v_abs, v_w, v_k, v_mem[v_n]);   -- missing → 'חסר', skipped
 
   IF v_cov = 'full' THEN
     v_sig_tax := fn_burnout_signal(p_company_id, 'rise', v_tax, v_w, v_k, fn_agent_setting_num(p_company_id, 'rise_pct'));
@@ -5803,14 +5905,14 @@ BEGIN
     'comparable', (v_sig_pcq->>'comparable_with_previous_month')::boolean,
     'card_label_he', CASE WHEN v_cov = 'partial' THEN 'מגמה חלקית' END,
     'how_calculated_short_he', CASE WHEN v_cov = 'partial' THEN 'המגמה חלקית: מבוססת רק על PCQ-12 והיעדרויות.' END,
-    'signals', jsonb_build_object('pcq12', v_sig_pcq, 'approved_absences', v_sig_abs,
+    'signals', jsonb_build_object('pcq12', v_sig_pcq, 'absences', v_sig_abs,
                                   'deprivation_tax', v_sig_tax, 'happiness_debt', v_sig_debt,
                                   'team_movements', v_sig_mov),
     'rising_risk', v_rising,
     'rising_risk_label_he', CASE WHEN v_rising THEN 'סיכון עולה' END,
     'how_calculated_he', CASE WHEN v_cov = 'partial'
       THEN 'המגמה חלקית. היא מבוססת רק על PCQ-12 והיעדרויות, כי יש בקבוצה פחות מ-10 מדווחים בפועל.'
-      ELSE 'ממוצע נע של 3 חודשים; סיכון עולה כשסימן אחד לפחות חוצה את הסף בשתי תקופות רצופות. נכנסים: PCQ-12, מס קיפוח, חוב אושר, היעדרויות מאושרות (מספר מצטבר) ועזיבות רצוניות ובקשות מעבר ברמת צוות. לא נכנסים: 12 כפיות, נתון ברמת עובד ונתונים ביומטריים.' END)
+      ELSE 'ממוצע נע של 3 חודשים; סיכון עולה כשסימן אחד לפחות חוצה את הסף בשתי תקופות רצופות. נכנסים: PCQ-12, מס קיפוח, חוב אושר, היעדרויות (מחלה והיעדרות לא מתוכננת, כולל יציאה מוקדמת שלא אושרה מראש — סך ימים לצוות) ועזיבות רצוניות ובקשות מעבר ברמת צוות. לא נכנסים: 12 כפיות, נתון ברמת עובד ונתונים ביומטריים.' END)
     || fn_burnout_recommendation(v_rising);   -- v1.6.19 (Part A4)
 END;
 $$;
@@ -7966,39 +8068,18 @@ BEGIN
 END;
 $$;
 
--- cfo / vp_hr enter the board absences of a month (J-53): sickness days + unplanned absence days (aggregate only).
-CREATE OR REPLACE FUNCTION rpc_put_board_absences(p_company_id uuid, p_month date, p_sickness_days numeric,
-                                                  p_unplanned_absence_days numeric)
-RETURNS jsonb
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-  PERFORM fn_assert_finance_viewer(p_company_id);
-  IF p_month IS NULL OR p_sickness_days IS NULL OR p_unplanned_absence_days IS NULL OR p_sickness_days < 0
-     OR p_unplanned_absence_days < 0 OR p_sickness_days <> round(p_sickness_days, 1)
-     OR p_unplanned_absence_days <> round(p_unplanned_absence_days, 1) THEN
-    PERFORM fn_raise_bad_request('invalid_amount');
-  END IF;
-  INSERT INTO board_absence_input (company_id, period_month, sickness_days, unplanned_absence_days)
-  VALUES (p_company_id, fn_month_of(p_month), p_sickness_days, p_unplanned_absence_days)
-  ON CONFLICT (company_id, period_month) DO UPDATE SET sickness_days = EXCLUDED.sickness_days,
-    unplanned_absence_days = EXCLUDED.unplanned_absence_days, entered_at = clock_timestamp();
-  RETURN jsonb_build_object('period_month', fn_month_of(p_month), 'status', 'saved');
-END;
-$$;
-
 -- Karin's definition of board absences (J-53), my Hebrew wording (J-74 → 'טיוטה').
 CREATE OR REPLACE FUNCTION fn_board_absence_definition_he()
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
-AS $$ SELECT 'היעדרות לדוח = ימי מחלה + היעדרות לא מתוכננת בלבד; חופשה מתוכננת והטבות זמן מ-EverStore אינן נספרות'::text $$;
+AS $$ SELECT fn_absence_definition_he() $$;   -- r3: one definition for the board and the burnout agent (J-80 = A)
 
--- Board absences of a month (J-53): sickness + unplanned absence days from board_absence_input only — approved
--- absence / refresh entries (incl. EverStore time benefits) and early leave are NOT counted. Missing → 'חסר: …';
--- fewer than 5 active employees → not shown.
+-- Board absences of a month (J-53, r3 J-85): the SUM of the month's team_absence_input rows (sickness + unplanned
+-- + unapproved early leave) — approved absence / refresh entries, time benefits, vacation and pre-approved early
+-- leave are NOT counted. A team with active employees but no row → 'חסר: team_absence_input' (+ how many teams);
+-- fewer than 5 active employees in the company, or teams of < 5 employees whose combined size is 1–4 (their days
+-- could be derived from the total minus the shown teams) → not shown.
 CREATE OR REPLACE FUNCTION fn_board_absences_json(p_company uuid, p_month date)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -8007,28 +8088,42 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  b   board_absence_input;
   v_d jsonb := jsonb_build_object('definition_he', fn_board_absence_definition_he(), 'text_status', fn_text_status_draft());
+  r record;
 BEGIN
-  SELECT * INTO b FROM board_absence_input x WHERE x.company_id = p_company AND x.period_month = p_month;
-  IF b.company_id IS NULL THEN
-    RETURN v_d || jsonb_build_object('display_he', 'חסר: board_absence_input');
+  WITH teams AS (
+    SELECT d.department AS team, fn_team_month_members(p_company, d.department, p_month) AS members
+      FROM (SELECT DISTINCT u.department FROM users u
+             WHERE u.company_id = p_company AND u.department IS NOT NULL AND u.has_employee_profile) d)
+  SELECT count(*) FILTER (WHERE t.members > 0 AND x.team_id IS NULL) AS missing,
+         COALESCE(sum(t.members) FILTER (WHERE x.team_id IS NOT NULL AND t.members < fn_privacy_min_n('regular')), 0) AS small_members,
+         sum(x.sickness_days) AS sick, sum(x.unplanned_absence_days) AS unplanned,
+         sum(x.unapproved_early_leave_days) AS early, count(x.team_id) AS teams
+    INTO r
+    FROM teams t LEFT JOIN team_absence_input x
+      ON x.company_id = p_company AND x.team_id = t.team AND x.period_month = p_month;
+  IF r.missing > 0 OR r.teams = 0 THEN
+    RETURN v_d || jsonb_build_object('display_he', 'חסר: team_absence_input', 'teams_missing_count', r.missing);
   END IF;
-  IF fn_team_month_members(p_company, NULL, p_month) < fn_privacy_min_n('regular') THEN
+  IF fn_team_month_members(p_company, NULL, p_month) < fn_privacy_min_n('regular')
+     OR r.small_members BETWEEN 1 AND fn_privacy_min_n('regular') - 1 THEN
     RETURN v_d || jsonb_build_object('display_he', 'אין מספיק עובדים להצגה');
   END IF;
-  RETURN v_d || jsonb_build_object('days', b.sickness_days + b.unplanned_absence_days,
-                                   'sickness_days', b.sickness_days, 'unplanned_absence_days', b.unplanned_absence_days);
+  RETURN v_d || jsonb_build_object('days', r.sick + r.unplanned + r.early, 'sickness_days', r.sick,
+                                   'unplanned_absence_days', r.unplanned, 'unapproved_early_leave_days', r.early,
+                                   'teams_count', r.teams);
 END;
 $$;
+
+-- v1.6.19-r3 (J-85): the company-level board absence input is replaced by the team rows (board = Σ teams); the
+-- function goes, the table board_absence_input and its rows stay.
+DROP FUNCTION IF EXISTS rpc_put_board_absences(uuid, date, numeric, numeric);
 
 REVOKE ALL ON FUNCTION fn_active_in_month(uuid, uuid, date), fn_month_redeemers(uuid, date, text),
                        fn_redemption_rate_json(uuid, date, text), fn_assert_vp_hr(uuid), fn_key_roles(uuid),
                        fn_key_role_definition_json(uuid), fn_board_absences_json(uuid, date) FROM PUBLIC;
-REVOKE ALL ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid),
-                       rpc_put_board_absences(uuid, date, numeric, numeric) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid),
-                          rpc_put_board_absences(uuid, date, numeric, numeric) TO authenticated, service_role;
+REVOKE ALL ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_put_key_roles(uuid, text[]), rpc_get_key_roles(uuid) TO authenticated, service_role;
 
 -- System absence records of a company month (approved absence entries + early leave), cancelled entries excluded
 -- (J-54). v1.6.19-r2: no longer the board absences (J-53 → fn_board_absences_json); kept, unused by the report.

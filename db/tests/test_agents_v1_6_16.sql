@@ -904,7 +904,7 @@ SELECT t_assert('v3-T11: team with 7 מדווחים בפועל → partial, "מ�
           AND j->>'how_calculated_short_he' = 'המגמה חלקית: מבוססת רק על PCQ-12 והיעדרויות.'
           AND j->'signals'->'deprivation_tax'->>'display_he' = 'אין מספיק מדווחים בפועל להצגה'
           AND j->'signals'->'happiness_debt'->>'display_he' = 'אין מספיק מדווחים בפועל להצגה'
-          AND j->'signals' ? 'pcq12' AND j->'signals' ? 'approved_absences'
+          AND j->'signals' ? 'pcq12' AND j->'signals' ? 'absences'
           AND (j->>'reporters_count')::int = 7
      FROM t_outputs WHERE label = 'trend_seven'));
 SELECT t_assert('v3 §4.4: fewer than 5 מדווחים בפועל → none, the whole card says "אין מספיק מדווחים בפועל להצגה" (no signals)',
@@ -913,13 +913,21 @@ SELECT t_assert('v3 §4.4: fewer than 5 מדווחים בפועל → none, the 
 SELECT t_assert('get_burnout_trend: full coverage (12) returns response_rate, margin, comparable (v3 §6.4 fields)',
   (SELECT j->>'coverage' = 'full' AND (j->>'response_rate')::numeric = 1 AND (j->>'margin')::numeric = 0 AND j ? 'comparable'
      FROM t_outputs WHERE label = 'trend_big_oct'));
-SELECT t_assert('v3-T2: absences only as one aggregate count (count + aggregate_only), and only from 5 מדווחים בפועל',
-  (SELECT (j->'signals'->'approved_absences'->>'aggregate_only')::boolean AND j->'signals'->'approved_absences' ? 'count'
+SELECT t_assert('v3-T2 + r3: absences only as one aggregate team figure (aggregate_only), only from 5 מדווחים בפועל; no input yet → "חסר: team_absence_input", skipped',
+  (SELECT (j->'signals'->'absences'->>'aggregate_only')::boolean
+          AND j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input'
+          AND NOT (j->'signals'->'absences'->>'used_in_risk')::boolean AND NOT (j->'signals'->'absences') ? 'days'
      FROM t_outputs WHERE label = 'trend_seven')
-  AND (SELECT NOT (j::text LIKE '%approved_absences%') FROM t_outputs WHERE label = 'trend_three'));
+  AND (SELECT NOT (j::text LIKE '%absences%') FROM t_outputs WHERE label = 'trend_three')
+  AND (SELECT bool_and(NOT (j::text LIKE '%approved_absences%')) FROM t_outputs WHERE label LIKE 'trend_%'));
+SELECT t_assert('r3 (J-80 = A): a missing absence input does not stop the agent — partial SEVEN still has its PCQ-12 signal, and BIG October is still "סיכון עולה" from the 5th signal',
+  (SELECT j->>'coverage' = 'partial' AND j->'signals'->'pcq12' ? 'moving_average' FROM t_outputs WHERE label = 'trend_seven')
+  AND (SELECT (j->>'rising_risk')::boolean AND j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input'
+         FROM t_outputs WHERE label = 'trend_big_oct'));
 SELECT t_assert('v3-T1: Agent 2 never reads the 12-spoons data (no spoon_budget / spoon columns in its functions)',
   NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname IN ('rpc_get_burnout_trend', 'fn_team_month_members', 'fn_team_month_pcq',
                                                       'fn_team_month_absences', 'fn_team_month_tax_debt', 'fn_burnout_signal',
+                                                      'fn_team_absence_days', 'fn_team_absence_signal',
                                                       'fn_movement_events', 'fn_movement_period', 'fn_ma', 'fn_pooled_rate',
                                                       'fn_may_read_team_agent')
                  AND prosrc ~* '(spoon_budget|current_spoon_count|team_spoon_avg|spoons_company_avg|spoon_reporter)'));
@@ -949,6 +957,94 @@ RESET ROLE;
 SELECT t_assert('team_movements: group counts only (no person / user / name column), RLS forced, closed to clients',
   NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_movements' AND column_name ~* '(person|user|name|pseudonym)')
   AND NOT has_table_privilege('authenticated', 'team_movements', 'SELECT'));
+
+-- ============ 8b. v1.6.19-r3 (Karin 31.10, J-80 = A) · burnout absences = team input (sick + unplanned + unapproved early leave) ============
+-- System rows that must NOT count: approved absence / refresh entries (incl. a time benefit) and pre-approved early leave.
+INSERT INTO approved_absence_entry (user_id, company_id, requested_date, schedule_status)
+SELECT t_u('big' || i), t_u('cA'), DATE '2026-10-12', 'coordinated' FROM generate_series(1, 4) i;
+INSERT INTO early_leave_log (user_id, local_date) SELECT t_u('big' || i), DATE '2026-10-13' FROM generate_series(5, 7) i;
+SELECT t_as(t_u('hrA'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'trend_big_sys_only', rpc_get_burnout_trend(t_u('cA'), 'BIG', '2026-10-01');
+RESET ROLE;
+SELECT t_assert('r3: approved absences / time benefits (4) and pre-approved early leave (3) exist for BIG in October but are NOT counted → still "חסר"',
+  fn_team_month_absences(t_u('cA'), 'BIG', '2026-10-01') = 7
+  AND (SELECT j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input' FROM t_outputs WHERE label = 'trend_big_sys_only'));
+-- vp_hr enters TOTAL days per team month: Jun–Aug 10, Sep 20, Oct 30 (sick 20 + unplanned 6 + unapproved early leave 4).
+SELECT t_as(t_u('hrA'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'team_abs_put', rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 20, 6, 4);
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cA'), 'BIG', m, 8, 2, 0)) AS earlier
+  FROM unnest(ARRAY[DATE '2026-06-01', '2026-07-01', '2026-08-01']) m;
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cA'), 'BIG', '2026-09-15', 12, 4, 4)) AS sep;
+SELECT t_expect_http('r3: negative days → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', -1, 0, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('r3: two decimals → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1.25, 0, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('r3: more days than team size × days of the month (12 × 31 = 372) → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 300, 70, 3)$$, 'invalid_amount', 400);
+SELECT t_expect_http('r3: a team with no active employee → 400 invalid_team', $$SELECT rpc_put_team_absences(t_u('cA'), 'NOPE', '2026-10-01', 1, 0, 0)$$, 'invalid_team', 400);
+SELECT t_expect_http('r3: a missing value is not 0 → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, NULL, 0)$$, 'invalid_amount', 400);
+INSERT INTO t_outputs SELECT 'trend_big_abs', rpc_get_burnout_trend(t_u('cA'), 'BIG', '2026-10-01');
+INSERT INTO t_outputs SELECT 'trend_seven_abs', rpc_get_burnout_trend(t_u('cA'), 'SEVEN', '2026-10-01');
+RESET ROLE;
+SELECT t_assert('r3: BIG October absences = 30 days = sick 20 + unplanned 6 + unapproved early leave 4 (the 7 system rows not added)',
+  (SELECT (j->'signals'->'absences'->>'days')::numeric = 30 AND (j->'signals'->'absences'->>'used_in_risk')::boolean
+          AND (j->'signals'->'absences'->>'aggregate_only')::boolean
+          AND j->'signals'->'absences'->>'definition_he' = fn_absence_definition_he()
+          AND j->'signals'->'absences'->>'text_status' = 'טיוטה'
+     FROM t_outputs WHERE label = 'trend_big_abs')
+  AND fn_team_absence_days(t_u('cA'), 'BIG', '2026-10-01') = 30 AND fn_team_absence_days(t_u('cA'), 'BIG', '2026-09-01') = 20);
+SELECT t_assert('r3: the absence term uses the existing rise test — 10, 10, 10, 20, 30 → crosses in 2 consecutive periods → rising',
+  (SELECT (j->'signals'->'absences'->>'rising')::boolean AND j->'signals'->'absences'->'crossed_last_periods' = '[true, true]'::jsonb
+     FROM t_outputs WHERE label = 'trend_big_abs'));
+SELECT t_assert('r3: the other signals are unchanged by the absence input (PCQ-12, מס קיפוח, Happiness Debt, 5th signal identical to the run without it)',
+  (SELECT a.j->'signals'->'pcq12' = b.j->'signals'->'pcq12' AND a.j->'signals'->'deprivation_tax' = b.j->'signals'->'deprivation_tax'
+          AND a.j->'signals'->'happiness_debt' = b.j->'signals'->'happiness_debt'
+          AND a.j->'signals'->'team_movements' = b.j->'signals'->'team_movements'
+     FROM t_outputs a, t_outputs b WHERE a.label = 'trend_big_abs' AND b.label = 'trend_big_oct'));
+SELECT t_assert('r3: a team without its month input (SEVEN) keeps "חסר" while BIG has data — per team, per month',
+  (SELECT j->'signals'->'absences'->>'display_he' = 'חסר: team_absence_input' FROM t_outputs WHERE label = 'trend_seven_abs'));
+SELECT t_assert('r3: the input is audited (team + month only, no person) and its output is team + month + status',
+  (SELECT count(*) = 5 AND bool_and(t_ids_free(a.scope) AND a.subject_user_id IS NULL AND a.viewer_id = t_u('hrA')
+                                    AND a.scope ? 'team' AND NOT a.scope ? 'sickness_days')
+     FROM access_audit_log a WHERE a.action = 'team_absences_put')
+  AND (SELECT j = jsonb_build_object('team', 'BIG', 'period_month', DATE '2026-10-01', 'status', 'saved') FROM t_outputs WHERE label = 'team_abs_put'));
+SELECT t_as(t_u('cfoA'));
+SET ROLE authenticated;
+SELECT t_expect_http('r3: cfo → 403 on the team absences input (vp_hr only)', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('mgrA'));
+SET ROLE authenticated;
+SELECT t_expect_http('r3: manager → 403 on the team absences input', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('big1'));
+SET ROLE authenticated;
+SELECT t_expect_http('r3: employee → 403 on the team absences input', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_expect_http('r3: service call (no caller) → 403 on the team absences input', $$SELECT rpc_put_team_absences(t_u('cA'), 'BIG', '2026-10-01', 1, 0, 0)$$, 'insufficient_privilege', 403);
+SELECT t_assert('r3: team_absence_input is closed (RLS forced, no client grant) and has no person / user / employee / name column',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_absence_input' AND column_name ~* '(person|user|employee|pseudonym|name|email)')
+  AND NOT has_table_privilege('authenticated', 'team_absence_input', 'SELECT')
+  AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'team_absence_input'::regclass));
+SELECT t_assert('r3 catalog: NO table and NO function accepts absence / sick days next to a person (no person_id / user_id / employee id / name / e-mail column or argument beside absence-day count fields)',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns d JOIN information_schema.columns p
+                ON p.table_schema = d.table_schema AND p.table_name = d.table_name
+               WHERE d.table_schema = 'public' AND d.column_name ~* '(sick|unplanned|absence_days|absent_days|early_leave_days)'
+                 AND d.data_type IN ('numeric', 'integer', 'smallint', 'bigint', 'real', 'double precision')
+                 AND p.column_name ~* '(person|user|employee|pseudonym|name|email)')
+  AND NOT EXISTS (SELECT 1 FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
+                   WHERE n.nspname = 'public' AND f.proargnames IS NOT NULL
+                     AND EXISTS (SELECT 1 FROM unnest(f.proargnames) a WHERE a ~* '(sick|unplanned|absence_days|absent_days|early_leave_days)')
+                     AND EXISTS (SELECT 1 FROM unnest(f.proargnames) a WHERE a ~* '(person|user|employee|pseudonym|name|email)'))
+  AND (SELECT count(DISTINCT table_name) >= 2 FROM information_schema.columns WHERE table_schema = 'public' AND column_name ~* 'sick')
+  AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rpc_put_team_absences'));
+SELECT t_expect_err('r3: the per-employee early-leave flag sick_day_deducted stays locked false (an early leave is never a sick day)',
+  $$INSERT INTO early_leave_log (user_id, local_date, sick_day_deducted) VALUES (t_u('big1'), DATE '2026-10-20', true)$$, '23514');
+SELECT t_assert('r3: the system absence tables carry no sick-day field (approved_absence_entry / early_leave_log are never sick days)',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name IN ('approved_absence_entry', 'early_leave_log')
+               AND column_name ~* '(sick_days|unplanned|absence_days)'));
+SELECT t_assert('r3: the burnout agent no longer reads the old system absence count',
+  (SELECT prosrc !~ 'fn_team_month_absences' AND prosrc ~ 'fn_team_absence_days' FROM pg_proc WHERE proname = 'rpc_get_burnout_trend'));
+SELECT t_assert('r3: B_t is unchanged (0.41·S + 0.37·O + 0.22·D, no absence term): B_t(5, 10, 1) = 0.78, B_t(1, 10, 1) = 0.37',
+  fn_b_t(5, 10, 1) = 0.78 AND fn_b_t(1, 10, 1) = 0.37 AND fn_b_t(3, 5, 3) = 0.5);
 
 -- ============ 9. v3-T13 · Happiness Debt on exit → memo line "יצא עם העוזבים" ============
 INSERT INTO employee_value_asset (user_id, company_id, annual_salary) VALUES (t_u('leaverA'), t_u('cA'), 100000);

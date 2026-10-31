@@ -716,9 +716,11 @@ SELECT t_assert('B1c: outcomes — PCQ-12, IHS / TPS-12 below 5 reporters say so
 SELECT t_assert('J-54: a cancelled absence is not an absence (team OPS 1 — of 2 rows; team level unchanged)',
   fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 1
   AND fn_company_month_absences(t_u('cS'), (SELECT m FROM t_m)) = 1);
-SELECT t_assert('J-53 absences: no board input → "חסר: board_absence_input" with the definition (טיוטה); the approved refresh entry is NOT counted',
-  (SELECT j->'outcomes'->'absences'->>'display_he' = 'חסר: board_absence_input'
-          AND j->'outcomes'->'absences'->>'definition_he' = 'היעדרות לדוח = ימי מחלה + היעדרות לא מתוכננת בלבד; חופשה מתוכננת והטבות זמן מ-EverStore אינן נספרות'
+SELECT t_assert('J-53 / r3: no team input → "חסר: team_absence_input" (3 teams missing) with the shared definition (טיוטה); the approved refresh entry is NOT counted',
+  (SELECT j->'outcomes'->'absences'->>'display_he' = 'חסר: team_absence_input'
+          AND (j->'outcomes'->'absences'->>'teams_missing_count')::int = 3
+          AND j->'outcomes'->'absences'->>'definition_he' = 'היעדרות = ימי מחלה + היעדרות לא מתוכננת (כולל יציאה מוקדמת שלא אושרה מראש) בלבד; היעדרויות מאושרות וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש אינן נספרות'
+          AND j->'outcomes'->'absences'->>'definition_he' = fn_absence_definition_he()
           AND j->'outcomes'->'absences'->>'text_status' = 'טיוטה' AND NOT (j->'outcomes'->'absences') ? 'days' FROM t_lay));
 SELECT t_assert('B3: governance missing → "חסר: …" / "לא הוגדר"',
   (SELECT j->'governance'->>'accountable_exec_display_he' = 'חסר: company_governance.accountable_exec_role_name'
@@ -730,8 +732,7 @@ SELECT jsonb_typeof(rpc_put_wellbeing_spend(t_u('cS'), (SELECT m FROM t_m), 1000
 SELECT jsonb_typeof(rpc_put_safety_incidents(t_u('cS'), (SELECT m FROM t_m), 2)) AS safety;
 SELECT jsonb_typeof(rpc_put_key_role_turnover(t_u('cS'), (SELECT m FROM t_m), 1, 4)) AS keyrole_small;
 SELECT t_expect_http('J-53 key roles: only vp_hr marks key roles (cfo → 403)', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY['מנהל משמרת'])$$, 'insufficient_privilege', 403);
-INSERT INTO t_outputs SELECT 'absences_put', rpc_put_board_absences(t_u('cS'), (SELECT m FROM t_m), 6, 2.5);
-SELECT t_expect_http('J-53 absences: negative days → 400 invalid_amount', $$SELECT rpc_put_board_absences(t_u('cS'), (SELECT m FROM t_m), -1, 0)$$, 'invalid_amount', 400);
+SELECT t_expect_http('r3 J-85: cfo cannot enter team absences (vp_hr only) → 403', $$SELECT rpc_put_team_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m), 1, 0, 0)$$, 'insufficient_privilege', 403);
 INSERT INTO t_outputs SELECT 'governance_put', rpc_put_company_governance(t_u('cS'), 'סמנכ"ל משאבי אנוש', true, 4.5);
 SELECT t_expect_http('B1c: more exits than key roles → 400', $$SELECT rpc_put_key_role_turnover(t_u('cS'), (SELECT m FROM t_m), 5, 4)$$, 'invalid_amount', 400);
 RESET ROLE;
@@ -757,7 +758,7 @@ SELECT t_as(t_u('empS1'));
 SET ROLE authenticated;
 SELECT t_expect_http('J-53 key roles: employee → 403 on put', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY['x'])$$, 'insufficient_privilege', 403);
 SELECT t_expect_http('J-53 key roles: employee → 403 on get', $$SELECT rpc_get_key_roles(t_u('cS'))$$, 'insufficient_privilege', 403);
-SELECT t_expect_http('J-53 absences: employee → 403 on the input', $$SELECT rpc_put_board_absences(t_u('cS'), CURRENT_DATE, 1, 1)$$, 'insufficient_privilege', 403);
+SELECT t_expect_http('r3: employee → 403 on the team absences input', $$SELECT rpc_put_team_absences(t_u('cS'), 'OPS', CURRENT_DATE, 1, 1, 0)$$, 'insufficient_privilege', 403);
 RESET ROLE;
 SELECT t_expect_http('J-53 key roles: a service call (no caller) → 403 (vp_hr only)', $$SELECT rpc_put_key_roles(t_u('cS'), ARRAY['x'])$$, 'insufficient_privilege', 403);
 SELECT t_assert('J-53 key roles: stored as 2 distinct trimmed role names (no person id), vp_hr and cfo read the same list',
@@ -784,20 +785,46 @@ SELECT jsonb_typeof(rpc_put_key_role_turnover(t_u('cS'), (SELECT m FROM t_m), 1,
 RESET ROLE;
 SELECT t_assert('J-53 key roles: headcount 5 → the aggregate rate is shown (1 / 5)',
   (SELECT (j->'outcomes'->'key_role_turnover'->>'rate')::numeric = 0.2 FROM (SELECT fn_board_layers(t_u('cS'), (SELECT m FROM t_m)) j) x));
--- J-53 absences: sickness + unplanned only. An EverStore time benefit / approved refresh entry and an early leave do not count.
+-- J-53 / r3 (J-80 = A, J-85): board absences = Σ team_absence_input rows. Approved refresh / time-benefit entries,
+-- pre-approved early leave (early_leave_log) and vacation are not counted.
 INSERT INTO approved_absence_entry (user_id, company_id, requested_date, schedule_status)
 VALUES (t_u('empS3'), t_u('cS'), (SELECT m FROM t_m) + 5, 'coordinated');
-SELECT t_assert('J-53 absences: board days = sickness 6 + unplanned 2.5 = 8.5; the 2 approved refresh / time-benefit entries (incl. a new one) are not added',
-  (SELECT (j->'outcomes'->'absences'->>'days')::numeric = 8.5 AND (j->'outcomes'->'absences'->>'sickness_days')::numeric = 6
-          AND (j->'outcomes'->'absences'->>'unplanned_absence_days')::numeric = 2.5
+INSERT INTO early_leave_log (user_id, local_date) VALUES (t_u('empS4'), (SELECT m FROM t_m) + 2);
+SELECT t_as(t_u('hrS'));
+SET ROLE authenticated;
+INSERT INTO t_outputs SELECT 'absences_put', rpc_put_team_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m), 6, 2.5, 1);
+SELECT t_expect_http('r3: negative days → 400 invalid_amount', $$SELECT rpc_put_team_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m), -1, 0, 0)$$, 'invalid_amount', 400);
+RESET ROLE;
+INSERT INTO t_outputs SELECT 'board_abs_one_team', fn_board_absences_json(t_u('cS'), (SELECT m FROM t_m));
+SELECT t_as(t_u('hrS'));
+SET ROLE authenticated;
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cS'), 'Mgmt', (SELECT m FROM t_m), 0, 1, 0)) AS mgmt;
+SELECT jsonb_typeof(rpc_put_team_absences(t_u('cS'), 'Board', (SELECT m FROM t_m), 1, 0, 0)) AS board_team;
+RESET ROLE;
+INSERT INTO t_outputs SELECT 'board_abs_small', fn_board_absences_json(t_u('cS'), (SELECT m FROM t_m));
+SELECT t_assert('r3: only OPS entered → still "חסר: team_absence_input" (2 teams missing) — no partial total',
+  (SELECT j->>'display_he' = 'חסר: team_absence_input' AND (j->>'teams_missing_count')::int = 2 AND NOT j ? 'days'
+     FROM t_outputs WHERE label = 'board_abs_one_team'));
+SELECT t_assert('r3 J-87: all teams entered, but the teams below 5 (Mgmt 3 + Board 1 = 4 employees) could be derived → not shown',
+  (SELECT j->>'display_he' = 'אין מספיק עובדים להצגה' AND NOT j ? 'days' FROM t_outputs WHERE label = 'board_abs_small'));
+SELECT t_mk(t_u('cS'), 'mgmtS2', 'Mgmt', 'employee', 'employee', 'mgrS') IS NOT NULL AS mgmt_fifth;
+SELECT t_assert('J-53 / r3: board days = Σ team rows = OPS (6 + 2.5 + 1) + Mgmt 1 + Board 1 = 11.5; the 2 approved refresh entries and the pre-approved early leave are NOT added',
+  (SELECT (j->'outcomes'->'absences'->>'days')::numeric = 11.5 AND (j->'outcomes'->'absences'->>'sickness_days')::numeric = 7
+          AND (j->'outcomes'->'absences'->>'unplanned_absence_days')::numeric = 3.5
+          AND (j->'outcomes'->'absences'->>'unapproved_early_leave_days')::numeric = 1
+          AND (j->'outcomes'->'absences'->>'teams_count')::int = 3
      FROM (SELECT fn_board_layers(t_u('cS'), (SELECT m FROM t_m)) j) x)
-  AND fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 2);
-SELECT t_assert('J-53 absences: planned vacation and time benefits have no input field at all (only sickness / unplanned columns)',
+  AND (SELECT sum(fn_team_absence_days(t_u('cS'), d, (SELECT m FROM t_m))) FROM unnest(ARRAY['OPS', 'Mgmt', 'Board']) d) = 11.5
+  AND fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 3);
+SELECT t_assert('J-53 / r3: planned vacation, time benefits, refresh and pre-approved early leave have no input field (only sickness / unplanned / unapproved early leave)',
   (SELECT array_agg(column_name::text ORDER BY column_name::text) FROM information_schema.columns
-    WHERE table_name = 'board_absence_input' AND column_name ~ '_days$') = ARRAY['sickness_days', 'unplanned_absence_days']
-  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'board_absence_input' AND column_name ~* '(vacation|benefit|refresh|^planned)'));
-SELECT t_assert('J-53 absences: the input output is status only',
-  (SELECT j->>'status' = 'saved' AND t_ids_free(j) FROM t_outputs WHERE label = 'absences_put'));
+    WHERE table_name = 'team_absence_input' AND column_name ~ '_days$') = ARRAY['sickness_days', 'unapproved_early_leave_days', 'unplanned_absence_days']
+  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_absence_input' AND column_name ~* '(vacation|benefit|refresh|^planned|^approved)'));
+SELECT t_assert('r3 J-85: the company-level input RPC is gone (board = Σ teams); board_absence_input kept',
+  NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rpc_put_board_absences')
+  AND EXISTS (SELECT 1 FROM pg_class WHERE relname = 'board_absence_input'));
+SELECT t_assert('J-53 / r3: the input output is team + month + status only',
+  (SELECT j->>'status' = 'saved' AND j->>'team' = 'OPS' AND t_ids_free(j) FROM t_outputs WHERE label = 'absences_put'));
 SELECT t_assert('B3: governance = role name only (no person), exec pay tied, complaint time 4.5 days',
   (SELECT j->>'accountable_exec_role_name' = 'סמנכ"ל משאבי אנוש' AND (j->>'exec_pay_tied_to_metrics')::boolean
           AND (j->>'mean_complaint_handling_days')::numeric = 4.5 AND t_ids_free(j) FROM t_outputs WHERE label = 'governance_put'));
@@ -816,13 +843,13 @@ SELECT t_assert('privacy: every v1.6.19 table is closed (RLS forced, no client g
      FROM pg_class c WHERE c.relname IN ('leaver_memo_snapshot', 'leaver_memo_inclusion', 'metric_verification_evidence',
        'verification_dossier', 'questionnaire_item_version', 'measurement_change_log', 'org_event', 'payroll_population_input',
        'metric_pay_linkage', 'social_event', 'wellbeing_spend_input', 'safety_incident_monthly', 'key_role_turnover_input',
-       'company_governance', 'company_key_role_setting', 'board_absence_input'))
+       'company_governance', 'company_key_role_setting', 'board_absence_input', 'team_absence_input'))
   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public'
                    AND table_name IN ('leaver_memo_snapshot', 'leaver_memo_inclusion', 'metric_verification_evidence',
                      'verification_dossier', 'questionnaire_item_version', 'measurement_change_log', 'org_event',
                      'payroll_population_input', 'metric_pay_linkage', 'social_event', 'wellbeing_spend_input',
                      'safety_incident_monthly', 'key_role_turnover_input', 'company_governance', 'company_key_role_setting',
-                     'board_absence_input')
+                     'board_absence_input', 'team_absence_input')
                    AND column_name ~* '(person|user|employee_id|pseudonym)'));
 -- The four rejected glossary terms are assembled from pieces so that the pack itself greps clean for them.
 SELECT t_assert('forbidden terms: none of the 4 rejected glossary terms (standalone spoon plural included) in any report or function text',

@@ -28,7 +28,7 @@ info:
     \ `/rpc/rpc_list_social_events`) are \"ללא הערכה מקצועית\": no attendance, no Golden Spoons. Cancelled absences\
     \ are not absences (J-54).\n- v1.6.19-r2 (A-16 closed): redemption rate = redeemers ÷ active employees; key\
     \ roles = role names marked by vp_hr (`/rpc/rpc_put_key_roles`, `/rpc/rpc_get_key_roles`); board absences = sickness\
-    \ + unplanned only (`/rpc/rpc_put_board_absences`); burnout guard adds שימוע / שיחת בירור / התראה בכתב / מעקב\
+    \ + unplanned only (r3: Σ `/rpc/rpc_put_team_absences` rows, also the burnout source); burnout guard adds שימוע / שיחת בירור / התראה בכתב / מעקב\
     \ ביצועים.\n\nPostgREST reads + RPC writes. Version 1.6.19-mvp (2026-10-31) — supersedes 1.6.18-mvp\
     \ (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 were\
     \ planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp\
@@ -3627,13 +3627,17 @@ paths:
       tags:
       - agents
       summary: Agent 2 — get_burnout_trend(team) (v3 GET /agents/burnout/{team_id})
-      description: 'coverage full (≥ 10 מדווחים בפועל) | partial (5–9: PCQ-12 + approved absences only, "מגמה חלקית")
+      description: 'coverage full (≥ 10 מדווחים בפועל) | partial (5–9: PCQ-12 + absences only, "מגמה חלקית")
         | none (< 5: "אין מספיק מדווחים בפועל להצגה"); response_rate, margin, comparable. "סיכון עולה" = ≥ 1 signal
         crossing its threshold in 2 consecutive periods of the 3-month moving average. 5th signal (team_movements):
         events of the last 3 months ÷ team employees ≥ 1.5 × organization average AND ≥ 2 events, shown only with
         full coverage and ≥ 10 employees. 12 כפיות are never read. cfo / vp_hr or a manager whose subtree holds
         a team member. v1.6.19 (A4): recommendation_he = "לבדוק את תנאי העבודה בצוות" (recommendation_text_status
-        טיוטה) only when rising_risk; never more feedback, documentation or an improvement plan / PIP.'
+        טיוטה) only when rising_risk; never more feedback, documentation or an improvement plan / PIP. v1.6.19-r3
+        (J-80 = A): signals.absences (was approved_absences) = total team days from /rpc/rpc_put_team_absences
+        (sickness + unplanned + unapproved early leave; approved / refresh / time benefits / vacation / pre-approved
+        early leave not counted); month input missing → display_he "חסר: team_absence_input", used_in_risk false
+        (the term is skipped, the other signals run unchanged); < 5 active employees → not shown.'
       requestBody:
         required: true
         content:
@@ -4481,14 +4485,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/AgentJson'
         '403': *id025
-  /rpc/rpc_put_board_absences:
+  /rpc/rpc_put_team_absences:
     post:
       tags:
       - agents
-      summary: J-53 — board absences of a month = sickness days + unplanned absence days (cfo / vp_hr)
-      description: 'Aggregate day counts (≥ 0, one decimal). Planned vacation and EverStore time benefits are not
-        counted and have no field. The board shows the sum; no input → "חסר: board_absence_input"; fewer than 5
-        active employees → not shown.'
+      summary: v1.6.19-r3 (J-80 = A) — TOTAL absence days of one team month (vp_hr only)
+      description: 'The only absence source of the burnout agent and the board. Total days per team per month
+        — sickness, unplanned absence, early leave that was NOT pre-approved (each ≥ 0, one decimal). Approved
+        absences / refresh time, planned vacation, EverStore time benefits and pre-approved early leave are not
+        counted and have no field. No employee, no name. The team must have active employees in the month (400
+        invalid_team); the total may not exceed team size × days of the month (400 invalid_amount). Replaces
+        that month''s row; audited (team + month only). Board absences = Σ team rows (no row for a team with
+        employees → "חסר: team_absence_input"). Replaces /rpc/rpc_put_board_absences (removed in r3).'
       requestBody:
         required: true
         content:
@@ -4497,6 +4505,8 @@ paths:
               type: object
               properties:
                 p_company_id: *id023
+                p_team_id:
+                  type: string
                 p_month: *id027
                 p_sickness_days:
                   type: number
@@ -4504,21 +4514,26 @@ paths:
                 p_unplanned_absence_days:
                   type: number
                   minimum: 0
+                p_unapproved_early_leave_days:
+                  type: number
+                  minimum: 0
               required:
               - p_company_id
+              - p_team_id
               - p_month
               - p_sickness_days
               - p_unplanned_absence_days
+              - p_unapproved_early_leave_days
       responses:
         '200':
-          description: '{period_month, status: saved}'
+          description: '{team, period_month, status: saved}'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentJson'
         '403': *id025
         '400':
-          description: invalid_amount
+          description: invalid_team | invalid_amount
           content:
             application/json:
               schema:
@@ -4892,6 +4907,7 @@ components:
           - no_open_leaver_transfer
           - invalid_requested_date
           - invalid_key_roles
+          - invalid_team
         message:
           type: string
           description: 'Must equal code (or human text WITHOUT spoon/HRV numbers). Glass Box.
