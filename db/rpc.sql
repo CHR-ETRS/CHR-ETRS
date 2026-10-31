@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.21 · rpc.sql
--- Version: 1.6.21-mvp (2026-10-31 IL; J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- Version: 1.6.21-mvp r1 (2026-11-01 IL; r1 = J-123 B company-level Cuckoo without identifiers + vp_hr group notice, J-128 A reminder count never with a group metric, J-121 A 'אחר' merge in the board-member figures, J-126 A audited automatic close of the 'General' notice; 2026-10-31: J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -8,6 +8,9 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- New in 1.6.21-r1 (Karin 01.11): J-123 = B (company-level Cuckoo without pseudonym / id; vp_hr group wording,
+--   kind 'no_department_cuckoo'), J-128 = A (reminder count only on its own), J-121 = A ('אחר' merge, then the
+--   placeholder, in rpc_get_board_macro_metrics), J-126 = A (fn_auto_close_default_department_review, audited).
 -- New in 1.6.21 (Karin 31.10, after PR #9 merged as c3a57b6):
 --   * J-115 = A: employees without a real department are inside the company totals of מס קיפוח / Happiness Debt and
 --     of CHR Real EBITDA (fn_shadow_no_department_snapshot, fn_company_month_shadow); never a separate row. J-118:
@@ -901,9 +904,64 @@ GRANT EXECUTE ON FUNCTION rpc_upsert_anchor_ciphertext(uuid, bytea, bytea, bytea
 
 -- ---------------------------------------------------------------------------
 -- Cuckoo (locked 2026-10-12 16:14 + 60-second window)
--- fn_cuckoo_raise — system path (service_role): ≥10 ACTUAL contributors in the team
--- (lock #3), direct manager from users.reports_to (solid line), pseudonym snapshot. The employee sees it first (base table RLS).
+-- v1.6.21 (J-123 = B, Karin 01.11): the company-level alert of an employee WITHOUT a department (J-112: ≥ 10 actual
+-- reporters of the company's no-department group). It carries NO manager, NO pseudonym and NO team: only the
+-- employee herself sees it (base table RLS = target only, her own data, with the usual 60-second veto); vp_hr gets
+-- group wording only (kind 'no_department_cuckoo', fn_notify_no_department_cuckoo). No manager inbox row.
 -- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION fn_cuckoo_company_level_hash(p_alert_id uuid, p_trigger_reason varchar, p_expiry timestamptz)
+RETURNS char(64)
+LANGUAGE sql
+IMMUTABLE
+SET search_path = pg_catalog, public
+AS $$
+  SELECT fn_sha256_hex(jsonb_build_object(
+    'alert_id', p_alert_id, 'scope', 'company_no_department', 'trigger_reason', p_trigger_reason,
+    'expiry', p_expiry)::text)::char(64)
+$$;
+
+REVOKE ALL ON FUNCTION fn_cuckoo_company_level_hash(uuid, varchar, timestamptz) FROM PUBLIC;
+
+-- v1.6.21 (J-112 = A, J-123 = B): raise the company-level alert — the company's no-department group must have
+-- ≥ 10 actual reporters in the rolling window (sensitive threshold), else 403. Stored without manager / pseudonym /
+-- department (cuckoo_alert_scope_check).
+CREATE OR REPLACE FUNCTION fn_cuckoo_raise_company_level(
+  p_user users,
+  p_trigger_reason varchar,
+  p_nlp_flag_codes jsonb
+)
+RETURNS cuckoo_alert
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_row cuckoo_alert;
+  v_id  uuid := gen_random_uuid();
+  v_exp timestamptz := clock_timestamp() + interval '60 seconds';
+BEGIN
+  IF NOT fn_user_is_no_department(p_user.department, p_user.department_is_default) THEN
+    PERFORM fn_raise_business('anti_get_blocked');
+  END IF;
+  PERFORM fn_assert_privacy_threshold(fn_cuckoo_no_department_reporters(p_user.company_id), 'cuckoo');
+  INSERT INTO cuckoo_alert (
+    alert_id, manager_id, target_user_id, target_pseudonym, org_id, department, company_level,
+    trigger_reason, nlp_flag_codes, sovereign_veto_window_expiry, logic_hash
+  ) VALUES (
+    v_id, NULL, p_user.user_id, NULL, p_user.company_id, NULL, true,
+    p_trigger_reason, COALESCE(p_nlp_flag_codes, '[]'::jsonb), v_exp,
+    fn_cuckoo_company_level_hash(v_id, p_trigger_reason, v_exp)
+  )
+  RETURNING * INTO v_row;
+  RETURN v_row;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_cuckoo_raise_company_level(users, varchar, jsonb) FROM PUBLIC;
+
+-- fn_cuckoo_raise — system path (service_role): ≥10 ACTUAL contributors in the team
+-- (lock #3), direct manager from users.reports_to (solid line), pseudonym snapshot. The employee sees it first (base
+-- table RLS). v1.6.21 (J-112 = A / J-123 = B): an employee without a department (marker) → the company-level alert.
 CREATE OR REPLACE FUNCTION fn_cuckoo_raise(
   p_target_user_id uuid,
   p_trigger_reason varchar,
@@ -919,32 +977,29 @@ DECLARE
   v_row  cuckoo_alert;
   v_id   uuid := gen_random_uuid();
   v_exp  timestamptz := clock_timestamp() + interval '60 seconds';
-  v_no_dept boolean;
 BEGIN
   SELECT * INTO v_user FROM users WHERE user_id = p_target_user_id;
-  IF NOT FOUND OR v_user.reports_to IS NULL THEN
+  IF NOT FOUND THEN
+    PERFORM fn_raise_business('anti_get_blocked');
+  END IF;
+  IF fn_user_is_no_department(v_user.department, v_user.department_is_default) THEN
+    RETURN fn_cuckoo_raise_company_level(v_user, p_trigger_reason, p_nlp_flag_codes);
+  END IF;
+  IF v_user.reports_to IS NULL THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
   IF v_user.display_pseudonym IS NULL OR length(trim(v_user.display_pseudonym)) = 0 THEN
     PERFORM fn_raise_business('pseudonym_required');
   END IF;
 
-  -- rolling 30 days (locked 20.10). v1.6.21 (J-112 = A, Karin 31.10): an employee without a department (marker)
-  -- has no team; she is counted at COMPANY level — the company's no-department group must have ≥ 10 actual
-  -- reporters in the window (sensitive threshold), else the alert is refused. 'ללא מחלקה' is never a team.
-  v_no_dept := fn_user_is_no_department(v_user.department, v_user.department_is_default);
-  IF v_no_dept THEN
-    PERFORM fn_assert_privacy_threshold(fn_cuckoo_no_department_reporters(v_user.company_id), 'cuckoo');
-  ELSE
-    PERFORM fn_assert_privacy_threshold(fn_cuckoo_recent_reporters(v_user.company_id, v_user.department), 'cuckoo');
-  END IF;
+  -- rolling 30 days (locked 20.10): the team must have ≥ 10 actual reporters in the window.
+  PERFORM fn_assert_privacy_threshold(fn_cuckoo_recent_reporters(v_user.company_id, v_user.department), 'cuckoo');
 
   INSERT INTO cuckoo_alert (
     alert_id, manager_id, target_user_id, target_pseudonym, org_id, department,
     trigger_reason, nlp_flag_codes, sovereign_veto_window_expiry, logic_hash
   ) VALUES (
-    v_id, v_user.reports_to, p_target_user_id, v_user.display_pseudonym, v_user.company_id,
-    CASE WHEN v_no_dept THEN NULL ELSE v_user.department END,   -- J-112: company-level → no team on the alert
+    v_id, v_user.reports_to, p_target_user_id, v_user.display_pseudonym, v_user.company_id, v_user.department,
     p_trigger_reason, COALESCE(p_nlp_flag_codes, '[]'::jsonb), v_exp,
     fn_sha256_hex(jsonb_build_object(
       'alert_id', v_id, 'manager_id', v_user.reports_to, 'target_pseudonym', v_user.display_pseudonym,
@@ -988,7 +1043,8 @@ REVOKE ALL ON FUNCTION rpc_cuckoo_veto(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_cuckoo_veto(uuid) TO authenticated;
 
 -- rpc_cuckoo_commit_expired_job — cron: mark windows that passed without veto as
--- EXPIRED_COMMITTED (delivery to the manager view does not depend on this job).
+-- EXPIRED_COMMITTED (delivery to the manager view does not depend on this job). v1.6.21 (J-123 = B): it also gives
+-- vp_hr the group notice of a delivered company-level alert (J-130: at the job run, not at the 60th second).
 CREATE OR REPLACE FUNCTION rpc_cuckoo_commit_expired_job()
 RETURNS int
 LANGUAGE plpgsql
@@ -1003,6 +1059,7 @@ BEGIN
    WHERE status = 'VETO_WINDOW_ACTIVE'
      AND sovereign_veto_window_expiry <= clock_timestamp();
   GET DIAGNOSTICS v_n = ROW_COUNT;
+  PERFORM fn_notify_no_department_cuckoo(NULL);   -- v1.6.21 (J-123 = B): vp_hr group notice (idempotent)
   RETURN v_n;
 END;
 $$;
@@ -3036,6 +3093,55 @@ END;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- v1.6.21 (J-121 = A, Karin 01.11): the parts of the live company Shadow Balance total (active employees with a
+-- turnover tier) that NO displayed team row covers: small_team_n = employees of real teams that have no
+-- shadow_balance_aggregate row (teams below 10; executives…), no_dept_n = employees without a department (J-115).
+CREATE OR REPLACE FUNCTION fn_company_undisplayed_split(p_company uuid)
+RETURNS TABLE (small_team_n int, no_dept_n int)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(*) FILTER (WHERE NOT x.no_dept AND NOT x.has_row)::int, count(*) FILTER (WHERE x.no_dept)::int
+    FROM (SELECT fn_user_is_no_department(u.department, u.department_is_default) AS no_dept,
+                 EXISTS (SELECT 1 FROM shadow_balance_aggregate s
+                          WHERE s.org_id = p_company
+                            AND s.department = fn_user_group_key(u.department, u.department_is_default)) AS has_row
+            FROM users u
+           WHERE u.company_id = p_company AND u.employment_ended_at IS NULL
+             AND fn_effective_turnover_tier(u.user_id) IS NOT NULL) x
+$$;
+
+REVOKE ALL ON FUNCTION fn_company_undisplayed_split(uuid) FROM PUBLIC;
+
+-- v1.6.21 (J-121 = A): the small teams are merged into ONE 'אחר' row only when that row meets the sensitive
+-- threshold (≥ 10) AND what is still left undisplayed (the no-department group, never a row of its own, J-115 /
+-- J-132) is 0 or ≥ 10.
+CREATE OR REPLACE FUNCTION fn_other_group_shown(p_small_team_n int, p_no_dept_n int)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT p_small_team_n >= fn_privacy_min_n('shadow_balance')
+     AND (p_no_dept_n = 0 OR p_no_dept_n >= fn_privacy_min_n('shadow_balance'))
+$$;
+
+-- v1.6.21 (J-121 = A): employees left undisplayed after the 'אחר' merge (the no-department group when 'אחר' is
+-- shown, else small teams + no-department group). The company total may be shown only when this is 0 or ≥ 10.
+CREATE OR REPLACE FUNCTION fn_undisplayed_remainder(p_small_team_n int, p_no_dept_n int)
+RETURNS int
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT CASE WHEN fn_other_group_shown(p_small_team_n, p_no_dept_n) THEN p_no_dept_n ELSE p_small_team_n + p_no_dept_n END $$;
+
+-- v1.6.21 (J-121 = A): the label of the merged small-teams row.
+CREATE OR REPLACE FUNCTION fn_other_group_label_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'אחר'::text $$;
+
 -- O-25 (Karin 24.10): rpc_get_board_macro_metrics — Tier 5 governance roles
 -- (board_chair, board_member, owner_shareholder) read all company-wide organizational averages
 -- at the WHOLE-COMPANY level only (never any team, department, division, or individual breakdown):
@@ -3047,7 +3153,11 @@ $$;
 --       (deprivation_tax_amount), shadow_balance_sum, and CHR Real EBITDA (chr_real_ebitda).
 --   * Overall company contributor_count must reach at least N_regular (5), else 403
 --     aggregation_privacy_threshold.
+--   * v1.6.21 (J-121 = A): differencing — the part of the total no displayed team row covers must be 0 or ≥ 10:
+--     small teams are first merged into ONE 'אחר' row (other_*), shown only at ≥ 10; when the rule still cannot be
+--     met, the sensitive figures are NULL and company_total_display_he = 'אין מספיק נתונים להצגה בתקופה זו'.
 -- ---------------------------------------------------------------------------
+DROP FUNCTION IF EXISTS rpc_get_board_macro_metrics(numeric);   -- v1.6.21 (J-121): return columns added
 CREATE OR REPLACE FUNCTION rpc_get_board_macro_metrics(
   p_gaap_reported_ebitda numeric DEFAULT NULL
 )
@@ -3070,7 +3180,11 @@ RETURNS TABLE (
   deprivation_tax_amount     numeric,
   shadow_balance_sum         numeric,
   gaap_reported_ebitda       numeric,
-  chr_real_ebitda            numeric
+  chr_real_ebitda            numeric,
+  other_group_label_he       text,
+  other_happiness_debt_balance numeric,
+  other_deprivation_tax_amount numeric,
+  company_total_display_he   text
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -3099,7 +3213,13 @@ DECLARE
   v_shadow     numeric;
   v_gaap       numeric;
   v_real_ebit  numeric;
+  v_small      int;
   v_nodept     int;
+  v_other      boolean;
+  v_supp       boolean;
+  v_o_debt     numeric;
+  v_o_tax      numeric;
+  v_display    text;
 BEGIN
   -- Governance roles (board_chair, board_member, owner_shareholder) of the company only
   IF auth.uid() IS NULL OR v_role IS NULL OR v_comp IS NULL
@@ -3196,19 +3316,26 @@ BEGIN
 
   PERFORM fn_assert_privacy_threshold(v_total_n, 'regular');
 
-  -- v1.6.21 (J-115 = A): employees without a department are in these company figures; when they are 1..9 the
-  -- figures (with CHR Real EBITDA) are not given, so total − the team rows cannot reveal them (J-118).
-  SELECT count(*)::int INTO v_nodept FROM users u
-   WHERE u.company_id = v_comp AND u.employment_ended_at IS NULL
-     AND fn_user_is_no_department(u.department, u.department_is_default)
-     AND fn_effective_turnover_tier(u.user_id) IS NOT NULL;
+  -- v1.6.21 (J-115 = A, J-121 = A): employees without a department and small teams are in these company figures;
+  -- the undisplayed remainder after the 'אחר' merge must be 0 or ≥ 10, else the sensitive figures (with CHR Real
+  -- EBITDA) are not given, so total − the displayed rows cannot reveal anyone (J-118).
+  SELECT s.small_team_n, s.no_dept_n INTO v_small, v_nodept FROM fn_company_undisplayed_split(v_comp) s;
+  v_other := fn_other_group_shown(v_small, v_nodept);
+  v_supp  := fn_undisplayed_remainder(v_small, v_nodept) BETWEEN 1 AND v_min_sb - 1;
+  IF v_sb_n >= v_min_sb AND v_supp THEN
+    v_display := fn_insufficient_data_period_he();
+  END IF;
 
-  IF v_sb_n >= v_min_sb AND NOT (v_nodept BETWEEN 1 AND v_min_sb - 1) THEN
+  IF v_sb_n >= v_min_sb AND NOT v_supp THEN
     WITH m AS (
       SELECT u.user_id,
              fn_effective_turnover_tier(u.user_id) AS t_grp,
              fn_is_employee_deprived(u.user_id) AS deprived,
-             fn_company_tier_avg_salary(v_comp, fn_effective_turnover_tier(u.user_id)) AS tier_salary
+             fn_company_tier_avg_salary(v_comp, fn_effective_turnover_tier(u.user_id)) AS tier_salary,
+             (NOT fn_user_is_no_department(u.department, u.department_is_default)
+              AND NOT EXISTS (SELECT 1 FROM shadow_balance_aggregate s
+                               WHERE s.org_id = v_comp
+                                 AND s.department = fn_user_group_key(u.department, u.department_is_default))) AS small
         FROM users u
        WHERE u.company_id = v_comp
          AND u.employment_ended_at IS NULL
@@ -3216,9 +3343,14 @@ BEGIN
     )
     SELECT count(*) FILTER (WHERE m.deprived)::int,
            round(COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.t_grp)) FILTER (WHERE m.deprived), 0), 2),
-           round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived), 0), 2)
-      INTO v_dep_n, v_debt, v_tax
+           round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived), 0), 2),
+           round(COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.t_grp)) FILTER (WHERE m.deprived AND m.small), 0), 2),
+           round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived AND m.small), 0), 2)
+      INTO v_dep_n, v_debt, v_tax, v_o_debt, v_o_tax
       FROM m;
+    IF NOT v_other THEN
+      v_o_debt := NULL; v_o_tax := NULL;
+    END IF;
     v_shadow := round(COALESCE(v_debt, 0) + COALESCE(v_tax, 0), 2);
     v_gaap := COALESCE(p_gaap_reported_ebitda,
                        (SELECT s.gaap_reported_ebitda FROM shadow_balance_aggregate s
@@ -3237,7 +3369,8 @@ BEGIN
     v_tps_n, v_tps_avg,
     v_ihs_n, v_ihs_avg,
     v_wl_n, v_epwi_t, v_epwi_c, v_pewi,
-    v_sb_n, v_dep_n, v_debt, v_tax, v_shadow, v_gaap, v_real_ebit;
+    v_sb_n, v_dep_n, v_debt, v_tax, v_shadow, v_gaap, v_real_ebit,
+    CASE WHEN v_o_debt IS NOT NULL THEN fn_other_group_label_he() END, v_o_debt, v_o_tax, v_display;
 END;
 $$;
 
@@ -6020,9 +6153,10 @@ DECLARE
   v_n int;
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
-  v_n := fn_mark_general_rows_default(p_company_id);
-  -- v1.6.21 (J-108 = A, J-125): marking = the 'ברירת מחדל' decision → recorded for the company, notice dismissed.
+  -- v1.6.21 (J-108 = A, J-125): marking = the 'ברירת מחדל' decision → recorded for the company (first, so the
+  -- marking is never taken for an automatic close, J-126), notice dismissed.
   PERFORM fn_record_default_department_decision(p_company_id, 'default_department');
+  v_n := fn_mark_general_rows_default(p_company_id);
   PERFORM fn_audit_view('default_department_marked', jsonb_build_object('company_id', p_company_id, 'marked', v_n));
   RETURN jsonb_build_object('status', 'marked', 'marked', v_n);
 END;
@@ -6128,6 +6262,109 @@ REVOKE ALL ON FUNCTION fn_refresh_no_department_reminders(uuid) FROM PUBLIC;
 -- in a company with a real 'General', or when a real 'General' appears (department 'General', marker false); the
 -- no-department reminder of the affected company (old and new) is refreshed on every change of department, marker,
 -- role, company or employment end; an open 'General' notice is withdrawn when the company has no real 'General' left.
+-- v1.6.21 (J-126 = A, Karin 01.11): the reason of an automatic close, letter for letter.
+CREATE OR REPLACE FUNCTION fn_default_department_auto_close_reason_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'המחלקה כבר לא קיימת'::text $$;
+
+-- v1.6.21 (J-126 = A): closes the company's open 'General' notices (every vp_hr) when no real 'General' is left,
+-- and writes ONE WORM audit row like the two decisions (action 'default_department_review_resolved', scope:
+-- company + decision 'auto_closed' + marked 0, reason 'המחלקה כבר לא קיימת'; no names). No decision is recorded,
+-- so a 'General' that appears again brings the notice back at once (J-108; J-131). Returns the notices closed.
+CREATE OR REPLACE FUNCTION fn_auto_close_default_department_review(p_company uuid)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_n int;
+BEGIN
+  IF EXISTS (SELECT 1 FROM default_department_decision d WHERE d.company_id = p_company) THEN
+    RETURN 0;   -- answered: the decision already closed the notice (J-108)
+  END IF;
+  DELETE FROM notification WHERE kind = 'default_department_review' AND ref_id = p_company;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  IF v_n > 0 THEN
+    INSERT INTO access_audit_log (viewer_id, company_id, action, scope, reason)
+    VALUES (auth.uid(), p_company, 'default_department_review_resolved',
+            jsonb_build_object('company_id', p_company, 'decision', 'auto_closed', 'marked', 0),
+            fn_default_department_auto_close_reason_he());
+  END IF;
+  RETURN v_n;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_auto_close_default_department_review(uuid) FROM PUBLIC;
+
+-- v1.6.21 (J-123 = B, Karin 01.11): the vp_hr group wording of a delivered company-level Cuckoo alert — Karin's exact
+-- sentence + a neutral recommendation (J-129, recorded for Karin). No count, no person, no team.
+CREATE OR REPLACE FUNCTION fn_no_department_cuckoo_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'בקרב העובדים בלי מחלקה יש סימני העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות.'::text $$;
+
+-- v1.6.21 (J-123 = B): true when the company has a DELIVERED company-level Cuckoo alert (60-second window passed,
+-- not vetoed by the employee) — the same delivery rule as the manager inbox of team alerts.
+CREATE OR REPLACE FUNCTION fn_company_has_delivered_no_department_cuckoo(p_company uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM cuckoo_alert c
+                  WHERE c.org_id = p_company AND c.company_level
+                    AND c.status <> 'VETOED_BY_EMPLOYEE'
+                    AND (c.status = 'EXPIRED_COMMITTED' OR c.sovereign_veto_window_expiry <= clock_timestamp()))
+$$;
+
+REVOKE ALL ON FUNCTION fn_company_has_delivered_no_department_cuckoo(uuid) FROM PUBLIC;
+
+-- v1.6.21 (J-123 = B): every active vp_hr of a company (or of every company when p_company is NULL) with a delivered
+-- company-level Cuckoo alert gets ONE group notice (kind 'no_department_cuckoo', ref_id = the company; unique per
+-- vp_hr and company, re-runs add none). Called by rpc_cuckoo_commit_expired_job. Returns the notices added.
+CREATE OR REPLACE FUNCTION fn_notify_no_department_cuckoo(p_company uuid DEFAULT NULL)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_n int;
+BEGIN
+  INSERT INTO notification (recipient_id, kind, ref_id)
+  SELECT v.user_id, 'no_department_cuckoo', v.company_id
+    FROM users v
+   WHERE v.app_role = 'vp_hr' AND v.employment_ended_at IS NULL
+     AND (p_company IS NULL OR v.company_id = p_company)
+     AND fn_company_has_delivered_no_department_cuckoo(v.company_id)
+  ON CONFLICT (recipient_id, kind, ref_id) WHERE kind = 'no_department_cuckoo' DO NOTHING;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  RETURN v_n;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_notify_no_department_cuckoo(uuid) FROM PUBLIC;
+
+-- v1.6.21 (J-123 = B): the company of the caller when she is an active vp_hr (else NULL) — used by the notification
+-- texts that are for vp_hr only.
+CREATE OR REPLACE FUNCTION fn_caller_vp_hr_company()
+RETURNS uuid
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT u.company_id FROM users u
+   WHERE u.user_id = auth.uid() AND u.app_role = 'vp_hr' AND u.employment_ended_at IS NULL
+$$;
+
+REVOKE ALL ON FUNCTION fn_caller_vp_hr_company() FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION fn_users_department_notices()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -6137,9 +6374,9 @@ AS $$
 BEGIN
   IF TG_OP IN ('UPDATE', 'DELETE') AND OLD.company_id IS NOT NULL THEN
     PERFORM fn_refresh_no_department_reminders(OLD.company_id);
-    -- J-126: the company has no real 'General' any more → its open 'General' notice is withdrawn (nothing to decide).
+    -- J-126 = A (Karin 01.11): the company has no real 'General' any more → its open notice closes, audited.
     IF fn_general_department_ambiguous_count(OLD.company_id) = 0 THEN
-      DELETE FROM notification WHERE kind = 'default_department_review' AND ref_id = OLD.company_id;
+      PERFORM fn_auto_close_default_department_review(OLD.company_id);
     END IF;
   END IF;
   IF TG_OP IN ('INSERT', 'UPDATE') AND NEW.company_id IS NOT NULL THEN
@@ -6226,10 +6463,11 @@ BEGIN
   IF EXISTS (SELECT 1 FROM default_department_decision d WHERE d.company_id = p_company_id) THEN
     PERFORM fn_raise_unprocessable('default_department_already_decided');
   END IF;
+  -- the decision is recorded FIRST, so the marking below is never taken for an automatic close (J-126)
+  PERFORM fn_record_default_department_decision(p_company_id, p_decision);
   IF p_decision = 'default_department' THEN
     v_n := fn_mark_general_rows_default(p_company_id);
   END IF;
-  PERFORM fn_record_default_department_decision(p_company_id, p_decision);
   PERFORM fn_audit_view('default_department_review_resolved',
                         jsonb_build_object('company_id', p_company_id, 'decision', p_decision, 'marked', v_n));
   RETURN jsonb_build_object('status', 'resolved', 'decision', p_decision,
@@ -6242,10 +6480,38 @@ $$;
 REVOKE ALL ON FUNCTION rpc_resolve_default_department_review(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_resolve_default_department_review(uuid, text) TO authenticated;
 
+-- v1.6.21 (J-128 = A, Karin 01.11): the reminder text of a company — ONLY the count X (exact even below 10), never
+-- with any metric of the no-department group (Cuckoo, absences, מס קיפוח, Happiness Debt). NULL when X = 0.
+CREATE OR REPLACE FUNCTION fn_no_department_reminder_for_vp_hr(p_company uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT CASE WHEN x.n > 0 THEN fn_no_department_reminder_he(x.n) END
+    FROM (SELECT fn_no_department_employee_count(p_company) AS n) x
+$$;
+
+REVOKE ALL ON FUNCTION fn_no_department_reminder_for_vp_hr(uuid) FROM PUBLIC;
+
+-- v1.6.21 (J-123 = B): the group Cuckoo wording of a company — no count, no person; NULL without a delivered alert.
+CREATE OR REPLACE FUNCTION fn_no_department_cuckoo_for_vp_hr(p_company uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$ SELECT CASE WHEN fn_company_has_delivered_no_department_cuckoo(p_company) THEN fn_no_department_cuckoo_he() END $$;
+
+REVOKE ALL ON FUNCTION fn_no_department_cuckoo_for_vp_hr(uuid) FROM PUBLIC;
+
 -- The fixed Hebrew text of a notification kind, for the caller (never stored in the notification row, B6):
 -- 'default_department_review' → the J-101 text; v1.6.21 'no_department_reminder' → the reminder with X = the
 -- CURRENT count of employees without a department in the caller's company, only for its active vp_hr and only
--- while X > 0 (else NULL); other kinds → NULL.
+-- while X > 0 (else NULL); v1.6.21 (J-123 = B) 'no_department_cuckoo' → the group wording, only for an active vp_hr
+-- of a company with a delivered company-level alert; other kinds → NULL. J-128 = A: ONE kind per call, so the
+-- reminder count is never returned together with any metric of the no-department group.
 CREATE OR REPLACE FUNCTION rpc_notification_message_he(p_kind text)
 RETURNS text
 LANGUAGE plpgsql
@@ -6254,19 +6520,14 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_comp uuid;
-  v_x    int;
+  v_comp uuid := fn_caller_vp_hr_company();
 BEGIN
   IF p_kind = 'default_department_review' THEN
     RETURN fn_default_department_notice_he();
-  ELSIF p_kind = 'no_department_reminder' THEN
-    SELECT u.company_id INTO v_comp FROM users u
-     WHERE u.user_id = auth.uid() AND u.app_role = 'vp_hr' AND u.employment_ended_at IS NULL;
-    IF v_comp IS NULL THEN
-      RETURN NULL;
-    END IF;
-    v_x := fn_no_department_employee_count(v_comp);
-    RETURN CASE WHEN v_x > 0 THEN fn_no_department_reminder_he(v_x) END;
+  ELSIF p_kind = 'no_department_reminder' AND v_comp IS NOT NULL THEN
+    RETURN fn_no_department_reminder_for_vp_hr(v_comp);
+  ELSIF p_kind = 'no_department_cuckoo' AND v_comp IS NOT NULL THEN
+    RETURN fn_no_department_cuckoo_for_vp_hr(v_comp);
   END IF;
   RETURN NULL;
 END;

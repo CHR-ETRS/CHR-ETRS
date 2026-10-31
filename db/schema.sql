@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.21 · schema.sql
--- Version: 1.6.21-mvp (2026-10-31 IL; J-115 A no-department share of the company Shadow Balance, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- Version: 1.6.21-mvp r1 (2026-11-01 IL; r1 = J-123 B cuckoo_alert.company_level without manager / pseudonym / team + kind 'no_department_cuckoo'; 2026-10-31: J-115 A no-department share of the company Shadow Balance, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
 -- New in 1.6.20 (Karin 31.10): no schema change except comments — the 'ללא מחלקה' absence row (J-92) is a
@@ -1210,6 +1210,22 @@ CREATE TABLE IF NOT EXISTS cuckoo_alert (
 
 CREATE INDEX IF NOT EXISTS idx_cuckoo_manager ON cuckoo_alert (manager_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cuckoo_target ON cuckoo_alert (target_user_id, status);
+
+-- v1.6.21 (J-123 = B, Karin 01.11): the company-level Cuckoo alert of the employees WITHOUT a department (J-112)
+-- carries no manager, no pseudonym and no team — nobody but the employee herself (own row, RLS target only) sees
+-- it as personal; vp_hr gets group wording only (notification kind 'no_department_cuckoo'). Same statements on a
+-- fresh install and on an upgrade (column added last in both).
+ALTER TABLE cuckoo_alert ADD COLUMN IF NOT EXISTS company_level boolean NOT NULL DEFAULT false;
+ALTER TABLE cuckoo_alert ALTER COLUMN manager_id DROP NOT NULL;
+ALTER TABLE cuckoo_alert ALTER COLUMN target_pseudonym DROP NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cuckoo_alert_scope_check' AND conrelid = 'cuckoo_alert'::regclass) THEN
+    ALTER TABLE cuckoo_alert ADD CONSTRAINT cuckoo_alert_scope_check CHECK (
+      (company_level AND manager_id IS NULL AND target_pseudonym IS NULL AND department IS NULL)
+      OR (NOT company_level AND manager_id IS NOT NULL AND target_pseudonym IS NOT NULL));
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 9. avatar_state — golden_spoons (fractional) + chr_coins
@@ -2548,6 +2564,7 @@ AS $$
     FROM cuckoo_alert c
    WHERE c.manager_id = auth.uid()
      AND fn_viewer_may_see_pseudonyms()
+     AND NOT c.company_level            -- v1.6.21 (J-123 = B): the company-level alert never reaches a manager
      AND c.status <> 'VETOED_BY_EMPLOYEE'
      AND (c.status = 'EXPIRED_COMMITTED' OR c.sovereign_veto_window_expiry <= clock_timestamp())
 $$;
@@ -2813,7 +2830,8 @@ CREATE TABLE IF NOT EXISTS notification (
                       'emergency_misuse_notice',   -- v1.6.3 (Q5): the declarer is told of a MISUSE finding
                       'emergency_cosign_request',  -- v1.6.3 (Q5): a restricted declarer needs a co-signer
                       'default_department_review',   -- v1.6.20-r2 (J-101 = A): vp_hr — a department named 'General' exists
-                      'no_department_reminder')),    -- v1.6.21 (Karin 31.10): vp_hr — X employees have no department
+                      'no_department_reminder',      -- v1.6.21 (Karin 31.10): vp_hr — X employees have no department
+                      'no_department_cuckoo')),      -- v1.6.21 (J-123 = B): vp_hr — group wording, no person
     ref_id          uuid NOT NULL,
     silent          boolean NOT NULL DEFAULT false,
     created_at      timestamptz NOT NULL DEFAULT clock_timestamp()
@@ -2836,20 +2854,24 @@ END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_default_department_review
     ON notification (recipient_id, kind, ref_id) WHERE kind = 'default_department_review';
 
--- v1.6.21 upgrade (Karin 31.10, J-122): the kind list gains 'no_department_reminder' (same expression as the fresh
--- table). One reminder per vp_hr and company (unique); X (the count) is computed when it is read, never stored.
+-- v1.6.21 upgrade (Karin 31.10, J-122 / J-123 = B): the kind list gains 'no_department_reminder' and
+-- 'no_department_cuckoo' (same expression as the fresh table). One reminder per vp_hr and company (unique); X (the
+-- count) is computed when it is read, never stored. One group Cuckoo notice per vp_hr and company (unique).
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'notification_kind_check' AND conrelid = 'notification'::regclass
-                AND pg_get_constraintdef(oid) NOT LIKE '%no_department_reminder%') THEN
+                AND pg_get_constraintdef(oid) NOT LIKE '%no_department_cuckoo%') THEN
     ALTER TABLE notification DROP CONSTRAINT notification_kind_check;
     ALTER TABLE notification ADD CONSTRAINT notification_kind_check CHECK (kind IN (
       'distress_alert', 'distress_awareness', 'distress_closed', 'emergency_declared', 'emergency_hr_review',
-      'emergency_misuse_notice', 'emergency_cosign_request', 'default_department_review', 'no_department_reminder'));
+      'emergency_misuse_notice', 'emergency_cosign_request', 'default_department_review', 'no_department_reminder',
+      'no_department_cuckoo'));
   END IF;
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_no_department_reminder
     ON notification (recipient_id, kind, ref_id) WHERE kind = 'no_department_reminder';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_no_department_cuckoo
+    ON notification (recipient_id, kind, ref_id) WHERE kind = 'no_department_cuckoo';
 
 -- v1.6.21 (J-108 = A, Karin 31.10): the company's ONE decision on the 'General' notice — 'default_department'
 -- ('ברירת מחדל': 'General' rows marked as the default department) or 'real_department' ('זו מחלקה אמיתית').

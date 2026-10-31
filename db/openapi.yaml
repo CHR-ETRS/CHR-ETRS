@@ -13,6 +13,9 @@ info:
     \ reporters), never a team row, no ids.\n\
     - J-108 = A: the \"General\" notice is created at once (new vp_hr / new real General) and has two decisions\
     \ (/rpc/rpc_resolve_default_department_review). New notification kind no_department_reminder (count only).\n\
+    - v1.6.21-r1 (Karin 01.11): J-123 = B company-level cuckoo has no pseudonym / id, vp_hr gets group wording\
+    \ (no_department_cuckoo); J-128 = A reminder count never with a group metric; J-121 = A 'אחר' merge in the\
+    \ board-member figures; J-126 = A the 'General' notice closes itself (audited) when no real General is left.\n\
     \n**v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77):**\n\
     - J-43 (decided): the memo line \"יצא עם העוזבים\" updates only after 10 NEW leavers (distinct employees) since\
     \ the last value; until then the previous value is shown with a waiting note (טיוטה). Remediations and reversals\
@@ -1166,7 +1169,8 @@ paths:
       description: 'Rows appear only after the 60-second veto window passed without a veto. Columns: alert_id, target_pseudonym,
         delivered_at.
 
-        No user id, no trigger reason, no NLP codes, no medical details.'
+        No user id, no trigger reason, no NLP codes, no medical details. v1.6.21 (J-123 = B): the company-level
+        alert of an employee without a department never appears here.'
       parameters:
       - $ref: '#/components/parameters/select'
       responses:
@@ -2944,7 +2948,10 @@ paths:
         Returns whole-company organizational averages only (TPS-12, spoons, workload / EPWI / PEWI, IHS at N≥5 respondents;
         Happiness Debt, 12% deprivation tax, Shadow Balance, CHR Real EBITDA at N≥10 contributors), with no team
         or individual breakdown. v1.6.21 (J-115 = A): employees without a department are inside the totals;
-        when they are 1-9 the sensitive block (debt, tax, Shadow Balance, CHR Real EBITDA) is null (J-118).'
+        when they are 1-9 the sensitive block (debt, tax, Shadow Balance, CHR Real EBITDA) is null (J-118).
+        v1.6.21 (J-121 = A): small teams without a team row are merged into one "אחר" row (other_*) when it has ≥ 10
+        and the rest is 0 or ≥ 10; else the remainder (small teams + no-department group) must be 0 or ≥ 10, or the
+        sensitive block is null with company_total_display_he.'
       requestBody:
         required: false
         content:
@@ -4615,7 +4622,10 @@ paths:
         אפשר לסמן אותה כך." (decisions: /rpc/rpc_notification_options_he, /rpc/rpc_resolve_default_department_review).
         v1.6.21 no_department_reminder → "יש X עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות
         לפעול עבורם." with X = the current count of the caller''s company, only for an active vp_hr and only while
-        X > 0 (count only, no names). Other kinds → null. The text is
+        X > 0 (count only, no names). v1.6.21 (J-123 = B) no_department_cuckoo → "בקרב העובדים בלי מחלקה יש סימני
+        העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות." (active vp_hr of a company with a delivered
+        company-level alert; no number, no name). J-128 = A: one kind per call — the reminder count never comes in
+        the same response as any metric of the no-department group. Other kinds → null. The text is
         fixed per kind (no names, no ids) and is never stored in the notification row. The notice itself is
         created once per vp_hr and company by the pack after an upgrade (re-runs add none); it is visible only
         to its recipient (/notification, RLS).'
@@ -5596,6 +5606,8 @@ components:
         manager_id:
           type: string
           format: uuid
+          nullable: true
+          description: null on the company-level alert (J-123 = B)
         target_user_id:
           type: string
           format: uuid
@@ -5622,7 +5634,14 @@ components:
           format: date-time
         target_pseudonym:
           type: string
-      description: Visible to the target employee only.
+          nullable: true
+          description: null on the company-level alert (J-123 = B)
+        company_level:
+          type: boolean
+          description: v1.6.21 (J-112 = A / J-123 = B) — company-level alert of an employee without a department; it has
+            no manager, no pseudonym and no team, reaches no manager, and vp_hr gets group wording only
+            (notification kind no_department_cuckoo).
+      description: Visible to the target employee only (her own alert).
     ManagerLedger:
       type: object
       properties:
@@ -6221,12 +6240,14 @@ components:
           - emergency_cosign_request
           - default_department_review
           - no_department_reminder
+          - no_department_cuckoo
           description: v1.6.20-r2 (J-101 = A) default_department_review = one-time notice to vp_hr (ref_id = the
             company) that a department named "General" exists; its fixed text = /rpc/rpc_notification_message_he.
             v1.6.21 (J-108 = A) it is created at once by a users trigger (new vp_hr / first real General) and is
             gone for good after the company's decision. v1.6.21 no_department_reminder = vp_hr reminder (ref_id =
             the company) while the company has employees without a department; the count X is computed at read
-            time (no text column, B6) and the row is removed when X = 0.
+            time (no text column, B6) and the row is removed when X = 0. v1.6.21 (J-123 = B) no_department_cuckoo =
+            vp_hr group notice (ref_id = the company) after a delivered company-level Cuckoo alert; no person.
         ref_id: *id005
         silent:
           type: boolean
@@ -6540,6 +6561,24 @@ components:
         chr_real_ebitda:
           type: number
           nullable: true
+        other_group_label_he:
+          type: string
+          nullable: true
+          enum:
+          - אחר
+          description: v1.6.21 (J-121 = A) — label of the merged small-teams row; set only when that row has ≥ 10
+            employees and what stays undisplayed is 0 or ≥ 10.
+        other_happiness_debt_balance:
+          type: number
+          nullable: true
+        other_deprivation_tax_amount:
+          type: number
+          nullable: true
+        company_total_display_he:
+          type: string
+          nullable: true
+          description: v1.6.21 (J-115 / J-121 = A) — "אין מספיק נתונים להצגה בתקופה זו" when the undisplayed remainder
+            (after the 'אחר' merge) is 1-9 employees; then the sensitive figures are null.
     ShopPurchase:
       type: object
       description: 'Employee-private EverStore purchase record (RLS: own rows only; strictly hidden from managers,

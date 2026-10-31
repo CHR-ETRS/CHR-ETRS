@@ -1,6 +1,8 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.17 · tests/test_v1_5.sql (filename kept per Drive rule) — scratch PostgreSQL 17 validation
 -- Version: 1.6.17-mvp (2026-10-31) — supersedes the 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25), 1.6.12-mvp, 1.6.11-mvp, 1.6.10-mvp, 1.6.9-mvp, 1.6.8-mvp and 1.6.7-mvp versions of this file
+-- v1.6.21-r1 (2026-11-01, Karin J-123 = B / J-121 = A): the company-level Cuckoo alert has no pseudonym / id and
+-- reaches vp_hr as group wording only; the board-member figures merge small teams into 'אחר' (O-25 tests updated).
 -- v1.6.21 (2026-10-31, Karin J-115 = A / J-112 = A): the no-department share of the company Shadow Balance total
 --   (differencing guard N ≥ 10, same total in CHR Real EBITDA) and company-level Cuckoo for employees without a department.
 -- v1.6.20-r2 (2026-10-31, Karin J-102 = A): + a real 'General' team never grows by default-department employees
@@ -2620,12 +2622,63 @@ SELECT t_assert('J-112 = A: group of 10 reporters → the company-level Cuckoo s
 SELECT t_expect_err('J-112 = A: differencing safe — a real team of 3 reporters is still refused (the company group never lifts a team)',
   format($$SELECT fn_cuckoo_raise(%L, 'nlp_distress')$$, md5('j112-11')::uuid), 'aggregation_privacy_threshold');
 UPDATE cuckoo_alert SET sovereign_veto_window_expiry = clock_timestamp() - interval '1 second' WHERE alert_id = (SELECT alert_id FROM t_j112);
+-- ============ v1.6.21 J-123 = B (Karin 01.11): the company-level alert carries NO pseudonym / id; vp_hr gets group wording ============
+SELECT t_assert('J-123 = B: the stored company-level alert has no manager, no pseudonym and no team (the employee row only)',
+  (SELECT company_level AND manager_id IS NULL AND target_pseudonym IS NULL AND department IS NULL
+     FROM cuckoo_alert WHERE alert_id = (SELECT alert_id FROM t_j112)));
+-- every identifier of the 10 employees without a department (ids + pseudonyms) — no output may contain one
+CREATE TEMP TABLE t_j123_ids AS
+  SELECT u.user_id::text AS v FROM users u WHERE u.company_id = md5('j112')::uuid AND u.department IS DISTINCT FROM 'Ops'
+                                              AND u.app_role = 'employee'
+  UNION SELECT u.display_pseudonym FROM users u WHERE u.company_id = md5('j112')::uuid AND u.app_role = 'employee'
+                                                  AND u.display_pseudonym IS NOT NULL;
+CREATE TEMP TABLE t_j123_out (label text, j text);
+GRANT SELECT, INSERT ON t_j123_out, t_j123_ids TO authenticated;
 SELECT t_as(md5('j112-mgr')::uuid);
 SET ROLE authenticated;
-SELECT t_assert('J-112 = A: the manager sees the pseudonym only — no team, no count, no "ללא מחלקה", no user id',
-  (SELECT count(*) = 1 AND bool_and(row_to_json(v)::text NOT LIKE '%ללא מחלקה%' AND row_to_json(v)::text NOT LIKE '%' || md5('j112-1')::uuid::text || '%')
-     FROM cuckoo_alert_manager_v v));
+INSERT INTO t_j123_out SELECT 'manager_inbox', COALESCE(json_agg(v)::text, '') FROM cuckoo_alert_manager_v v;
+SELECT t_assert('J-123 = B: the manager receives NOTHING of the company-level alert (no row, no pseudonym, no group text)',
+  NOT EXISTS (SELECT 1 FROM cuckoo_alert_manager_v)
+  AND rpc_notification_message_he('no_department_cuckoo') IS NULL);
 RESET ROLE;
+DO $$ BEGIN
+  INSERT INTO auth.users (id) VALUES (md5('j112-hr')::uuid);
+  INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+  VALUES (md5('j112-hr')::uuid, md5('j112')::uuid, 'hr@j112', 'J112 HR', 'HR', 'vp_hr', 'vp', 'Asia/Jerusalem', CURRENT_DATE - 200);
+END $$;
+INSERT INTO t_j123_out SELECT 'commit_job', rpc_cuckoo_commit_expired_job()::text;
+SELECT t_assert('J-123 = B: after the 60-second window the commit job gives the company''s vp_hr ONE group notice (re-run adds none)',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'no_department_cuckoo' AND ref_id = md5('j112')::uuid AND recipient_id = md5('j112-hr')::uuid)
+  AND fn_notify_no_department_cuckoo(NULL) = 0
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'no_department_cuckoo'));
+SELECT t_as(md5('j112-hr')::uuid);
+SET ROLE authenticated;
+INSERT INTO t_j123_out SELECT 'vp_hr_notification', json_agg(n)::text FROM notification n WHERE n.kind = 'no_department_cuckoo';
+INSERT INTO t_j123_out SELECT 'vp_hr_text', rpc_notification_message_he('no_department_cuckoo');
+SELECT t_assert('J-123 = B: vp_hr reads only the group wording — Karin''s exact sentence + the recommendation, no number, no name',
+  rpc_notification_message_he('no_department_cuckoo')
+    = 'בקרב העובדים בלי מחלקה יש סימני העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות.'
+  AND rpc_notification_message_he('no_department_cuckoo') LIKE 'בקרב העובדים בלי מחלקה יש סימני העמסה של עבודה של אחרים%'
+  AND rpc_notification_message_he('no_department_cuckoo') !~ '[0-9]');
+RESET ROLE;
+SELECT t_as(md5('j112-11')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-123 = B: an employee of the company gets no group text and sees no one else''s alert',
+  rpc_notification_message_he('no_department_cuckoo') IS NULL AND NOT EXISTS (SELECT 1 FROM cuckoo_alert));
+RESET ROLE;
+SELECT t_as(md5('j112-1')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-123 = B: the employee herself sees her own alert in the app (own data, base table RLS) — without pseudonym or manager',
+  (SELECT count(*) = 1 AND bool_and(company_level AND target_pseudonym IS NULL AND manager_id IS NULL) FROM cuckoo_alert));
+RESET ROLE;
+SELECT t_assert('J-123 = B: no output of the company-level alert (manager inbox, commit job, vp_hr notification row, vp_hr text) contains a pseudonym or id of the employees',
+  (SELECT count(*) = 4 FROM t_j123_out)
+  AND NOT EXISTS (SELECT 1 FROM t_j123_out o JOIN t_j123_ids i ON o.j LIKE '%' || i.v || '%')
+  AND (SELECT count(*) >= 10 FROM t_j123_ids));
+SELECT t_assert('J-123 = B: the manager inbox and the notification table have no pseudonym / person column besides the recipient',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'notification' AND column_name ~* '(pseudonym|target|subject|employee)')
+  AND (SELECT array_agg(column_name::text ORDER BY column_name::text) FROM information_schema.columns WHERE table_name = 'cuckoo_alert_manager_v')
+      = ARRAY['alert_id', 'delivered_at', 'target_pseudonym']);
 
 -- 7. (O-5) Morning & midday check-in RPCs
 SELECT t_assert('v1.6.11 O-5: morning half-point scores floored in employee favor (4.5→0 deducted, 5.0→2, 5.5→2, 6.0→3, 7.5→3, 8.0→4)',
@@ -2789,6 +2842,42 @@ SELECT t_assert('v1.6.12 O-20: CHRO-provisioned tier 5 users default to has_empl
 --   workload_respondent_count this week = 2 (cb16, cb18) -> <5 so epwi/pewi is NULL!
 SELECT t_as('00000000-0000-0000-0000-00000000cb80');   -- board_chair of ShadowCo
 SET ROLE authenticated;
+-- v1.6.21 (J-121 = A): ShadowCo = team SB10 (has a Shadow Balance row) + 2 executives (mgr, chro) with salary tiers
+-- in no displayed team → undisplayed remainder 2 (no 'אחר' row possible below 10) → the sensitive figures are hidden.
+SELECT t_assert('J-121 = A / O-25: remainder of 2 executives outside every displayed team → Happiness Debt, tax, Shadow Balance and CHR Real EBITDA hidden with "אין מספיק נתונים להצגה בתקופה זו"; regular averages still shown',
+  (SELECT contributor_count >= 10 AND spoon_reporter_count = 5 AND spoons_company_avg IS NOT NULL
+          AND shadow_contributor_count >= 10
+          AND happiness_debt_balance IS NULL AND deprivation_tax_amount IS NULL AND shadow_balance_sum IS NULL
+          AND chr_real_ebitda IS NULL AND other_group_label_he IS NULL AND other_happiness_debt_balance IS NULL
+          AND company_total_display_he = 'אין מספיק נתונים להצגה בתקופה זו'
+     FROM rpc_get_board_macro_metrics(10000000)));
+RESET ROLE;
+-- 8 more executives (tier from the role; no salary row, no reports, not deprived) → small teams = 10 → merged into
+-- the 'אחר' row (≥ 10), nothing else undisplayed → the company total is visible again (J-121 = A).
+DO $$
+DECLARE v uuid; i int;
+BEGIN
+  FOR i IN 1..8 LOOP
+    v := md5('j121-exec-' || i)::uuid;
+    INSERT INTO auth.users (id) VALUES (v);
+    INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+    VALUES (v, '00000000-0000-0000-0000-0000000000cb', 'x' || i || '@sb', 'SB Exec ' || i, 'Exec', 'employee', 'employee',
+            'Asia/Jerusalem', CURRENT_DATE - 300);
+  END LOOP;
+END $$;
+SELECT t_assert('J-121 = A: the 10 small-team employees form the merged row and the no-department group is 0 → remainder 0',
+  (SELECT small_team_n = 10 AND no_dept_n = 0 FROM fn_company_undisplayed_split('00000000-0000-0000-0000-0000000000cb'))
+  AND fn_other_group_shown(10, 0) AND fn_undisplayed_remainder(10, 0) = 0
+  AND NOT fn_other_group_shown(9, 0) AND fn_undisplayed_remainder(9, 0) = 9
+  AND NOT fn_other_group_shown(12, 3) AND fn_undisplayed_remainder(12, 3) = 15
+  AND fn_other_group_shown(12, 10) AND fn_undisplayed_remainder(12, 10) = 10
+  AND fn_undisplayed_remainder(4, 3) = 7 AND fn_undisplayed_remainder(0, 0) = 0);
+SELECT t_as('00000000-0000-0000-0000-00000000cb80');   -- board_chair of ShadowCo
+SET ROLE authenticated;
+SELECT t_assert('J-121 = A (normal company): the company total stays visible with the merged "אחר" row (Exec, not deprived → 0)',
+  (SELECT happiness_debt_balance = 290000.00 AND chr_real_ebitda = 9674000.00 AND company_total_display_he IS NULL
+          AND other_group_label_he = 'אחר' AND other_happiness_debt_balance = 0 AND other_deprivation_tax_amount = 0
+     FROM rpc_get_board_macro_metrics(10000000)));
 SELECT t_assert('v1.6.12 O-25 (v1.6.16 two-week deprivation): board_chair sees N>=5 spoons avg and N>=10 Shadow Balance metrics while TPS/IHS/EPWI/PEWI (<5 respondents) stay NULL',
   (SELECT contributor_count >= 10
           AND spoon_reporter_count = 5 AND spoons_company_avg = 8.00

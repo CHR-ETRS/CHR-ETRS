@@ -1,7 +1,7 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.19 · tests/test_board_v1_6_19.sql — v1.6.19 board report, leaver batching, ILS estimate,
 -- verification levels, 'תיק אימות', pay linkage, social events, layers + governance, sources (PostgreSQL 17)
--- Version: 1.6.21-mvp (2026-10-31; J-108 A immediate 'General' notice + the two decisions, no-department reminder; 1.6.20-mvp r2: r1 = J-96 A; r2 = J-101 A notice + J-102 A catalog scan; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
+-- Version: 1.6.21-mvp r1 (2026-11-01; r1 = J-126 A automatic close + J-128 A count never with a group metric; 2026-10-31: J-108 A immediate 'General' notice + the two decisions, no-department reminder; 1.6.20-mvp r2: r1 = J-96 A; r2 = J-101 A notice + J-102 A catalog scan; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_board_v1_6_19.sql
 -- Every check prints "PASS <name>"; any failure aborts. Dates are relative to the run (current company month)
 -- because leaver batches are stamped with the real clock.
@@ -1269,6 +1269,63 @@ UPDATE users SET department = 'OPS' WHERE user_id IN (SELECT t_u('ndM' || i) FRO
 SELECT t_assert('reminder: once everyone is assigned (X = 0) the reminder is gone',
   NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'no_department_reminder' AND ref_id = t_u('cM'))
   AND fn_no_department_employee_count(t_u('cM')) = 0);
+-- ============ v1.6.21 J-126 = A (Karin 01.11): the open 'General' notice closes itself when no real 'General' is left ============
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone) VALUES
+  (t_u('cZ'), 'Board Z', 'IL', 0, 4, 'Asia/Jerusalem');
+SELECT t_mk(t_u('cZ'), 'hrZ', 'HR', 'vp_hr', 'vp') IS NOT NULL AS hr_z;
+SELECT t_mk(t_u('cZ'), 'genZ1', 'General') IS NOT NULL AS general_z;
+SELECT t_assert('J-126 = A: company Z has a real "General" → the notice is open for its vp_hr',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ')));
+UPDATE users SET department = 'OPS' WHERE user_id = t_u('genZ1');
+SELECT t_assert('J-126 = A: the last real "General" is gone → the notice closes by itself, audited like a decision with reason "המחלקה כבר לא קיימת" (no names), no decision recorded',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ'))
+  AND (SELECT count(*) = 1 AND bool_and(a.reason = 'המחלקה כבר לא קיימת' AND a.scope->>'decision' = 'auto_closed'
+                                         AND (a.scope->>'marked')::int = 0 AND a.subject_user_id IS NULL
+                                         AND a.company_id = t_u('cZ') AND t_ids_free(a.scope - 'company_id'))
+         FROM access_audit_log a WHERE a.action = 'default_department_review_resolved' AND a.scope->>'company_id' = t_u('cZ')::text)
+  AND NOT EXISTS (SELECT 1 FROM default_department_decision WHERE company_id = t_u('cZ')));
+SELECT t_mk(t_u('cZ'), 'genZ2', 'General') IS NOT NULL AS general_z_again;
+SELECT t_assert('J-126 = A / J-131: after an automatic close, a "General" that appears again brings the notice back at once — once (double pack apply adds none)',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ') AND recipient_id = t_u('hrZ'))
+  AND fn_notify_general_department_review() = 0 AND fn_notify_general_department_review() = 0
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ')));
+-- company X answered 'ברירת מחדל' (J-108): its real 'General' (genX3) leaves and a new one appears → nothing returns
+UPDATE users SET department = 'OPS' WHERE user_id = t_u('genX3');
+SELECT t_mk(t_u('cX'), 'genX4', 'General') IS NOT NULL AS general_x_after_answer;
+SELECT t_assert('J-126 = A / J-131: an ANSWERED notice never returns — no automatic-close audit and no new notice for company X',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX'))
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log a WHERE a.action = 'default_department_review_resolved'
+                     AND a.scope->>'company_id' = t_u('cX')::text AND a.scope->>'decision' = 'auto_closed')
+  AND fn_notify_general_department_review() = 0);
+
+-- ============ v1.6.21 J-128 = A (Karin 01.11): the reminder count is never output together with a no-department group metric ============
+-- Catalog check: only two functions read the count — the reminder row lifecycle (no text) and the reminder text
+-- (count only); neither touches any metric of the no-department group; the only caller of the text is
+-- rpc_notification_message_he, which returns ONE scalar text for ONE kind per call; no view reads the count.
+CREATE TEMP TABLE t_j128 AS
+SELECT p.proname::text AS fn, pg_get_function_result(p.oid) AS res,
+       p.prosrc ~ '(fn_no_department_employee_count|fn_no_department_reminder_he)' AS reads_count,
+       p.prosrc ~ 'fn_no_department_reminder_for_vp_hr' AS calls_text,
+       p.prosrc ~* '(fn_cuckoo_no_department_reporters|fn_no_department_activity_contributors|cuckoo_alert|no_department_cuckoo|shadow_balance_no_department|fn_company_month_shadow|happiness_debt|deprivation_tax|fn_no_department_key|absence|fn_team_month)' AS reads_metric
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.proname !~ '^t_';
+SELECT t_assert('J-128 = A: exactly two functions read the reminder count and neither reads any no-department group metric',
+  (SELECT array_agg(fn ORDER BY fn) FROM t_j128 WHERE reads_count)
+    = ARRAY['fn_no_department_reminder_for_vp_hr', 'fn_refresh_no_department_reminders']::text[]
+  AND NOT EXISTS (SELECT 1 FROM t_j128 WHERE reads_count AND reads_metric));
+SELECT t_assert('J-128 = A: the reminder text is reached only through rpc_notification_message_he, which returns one scalar text per kind',
+  (SELECT array_agg(fn ORDER BY fn) FROM t_j128 WHERE calls_text) = ARRAY['rpc_notification_message_he']::text[]
+  AND (SELECT res = 'text' FROM t_j128 WHERE fn = 'rpc_notification_message_he')
+  AND NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'public'
+                   AND definition ~ '(fn_no_department_employee_count|fn_no_department_reminder)'));
+SELECT t_mk(t_u('cM'), 'ndM9' || i, NULL) IS NOT NULL AS no_dept_m_again FROM generate_series(1, 3) i;
+SELECT t_as(t_u('hrM'));
+SET ROLE authenticated;
+SELECT t_assert('J-128 = A: with a group of 3 (< 10) the reminder still shows the exact count, alone — its response holds no Cuckoo / absence / tax / debt figure; the Cuckoo group text holds no count',
+  rpc_notification_message_he('no_department_reminder')
+      = 'יש 3 עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות לפעול עבורם.'
+  AND COALESCE(rpc_notification_message_he('no_department_cuckoo'), '') !~ '[0-9]');
+RESET ROLE;
 SELECT t_assert('B3: governance = role name only (no person), exec pay tied, complaint time 4.5 days',
   (SELECT j->>'accountable_exec_role_name' = 'סמנכ"ל משאבי אנוש' AND (j->>'exec_pay_tied_to_metrics')::boolean
           AND (j->>'mean_complaint_handling_days')::numeric = 4.5 AND t_ids_free(j) FROM t_outputs WHERE label = 'governance_put'));
