@@ -3,8 +3,20 @@
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
-  version: 1.6.20-mvp
-  description: "**v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77):**\n\
+  version: 1.6.21-mvp
+  description: "**v1.6.21 (Karin 31.10):**\n\
+    - J-115 = A: employees without a real department are part of the company totals of מס קיפוח and Happiness\
+    \ Debt and of CHR Real EBITDA (same total); never a separate row. When that remainder is 1-9 employees the\
+    \ total is hidden and shows \"אין מספיק נתונים להצגה בתקופה זו\" (J-118, board report + reconciliation +\
+    \ macro metrics; GAAP stays).\n\
+    - J-112 = A: cuckoo for employees without a department counts at company level (threshold 10 actual\
+    \ reporters), never a team row, no ids.\n\
+    - J-108 = A: the \"General\" notice is created at once (new vp_hr / new real General) and has two decisions\
+    \ (/rpc/rpc_resolve_default_department_review). New notification kind no_department_reminder (count only).\n\
+    - v1.6.21-r1 (Karin 01.11): J-123 = B company-level cuckoo has no pseudonym / id, vp_hr gets group wording\
+    \ (no_department_cuckoo); J-128 = A reminder count never with a group metric; J-121 = A 'אחר' merge in the\
+    \ board-member figures; J-126 = A the 'General' notice closes itself (audited) when no real General is left.\n\
+    \n**v1.6.19 (Karin 31.10 via Chief of Drive — Tsaban's papers; Tsaban & Shavit 2026, World 7(5):77):**\n\
     - J-43 (decided): the memo line \"יצא עם העוזבים\" updates only after 10 NEW leavers (distinct employees) since\
     \ the last value; until then the previous value is shown with a waiting note (טיוטה). Remediations and reversals\
     \ move it only as a batch touching ≥ 10 transfers. No 2-transfer rule.\n- `/rpc/rpc_list_leaver_transfers` is\
@@ -1157,7 +1169,8 @@ paths:
       description: 'Rows appear only after the 60-second veto window passed without a veto. Columns: alert_id, target_pseudonym,
         delivered_at.
 
-        No user id, no trigger reason, no NLP codes, no medical details.'
+        No user id, no trigger reason, no NLP codes, no medical details. v1.6.21 (J-123 = B): the company-level
+        alert of an employee without a department never appears here.'
       parameters:
       - $ref: '#/components/parameters/select'
       responses:
@@ -1362,6 +1375,23 @@ paths:
       tags:
       - rpc
       summary: Cron — mark expired, unvetoed alerts EXPIRED_COMMITTED (service_role)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_team_not_calculated_reminder_job:
+    post:
+      tags:
+      - rpc
+      summary: v1.6.21-r4 (J-137 = A) Cron — vp_hr reminders for teams of ≥ 10 without a Shadow Balance row in the month
+        that just closed (service_role)
+      description: One 'team_not_calculated' notification per vp_hr, team and month (idempotent; the pack runs it too).
+        The text comes from /rpc/rpc_notification_message_he (team name only). Returns the number of notices added.
       responses:
         '200':
           description: OK
@@ -2934,7 +2964,12 @@ paths:
       description: 'O-25 (Karin 24.10): callable by Tier 5 governance roles (board_chair, board_member, owner_shareholder).
         Returns whole-company organizational averages only (TPS-12, spoons, workload / EPWI / PEWI, IHS at N≥5 respondents;
         Happiness Debt, 12% deprivation tax, Shadow Balance, CHR Real EBITDA at N≥10 contributors), with no team
-        or individual breakdown.'
+        or individual breakdown. v1.6.21 (J-115 = A): employees without a department are inside the totals;
+        when they are 1-9 the sensitive block (debt, tax, Shadow Balance, CHR Real EBITDA) is null (J-118).
+        v1.6.21 (J-121 = A): small teams without a team row are merged into one "אחר" row (other_*) when it has ≥ 10
+        and the rest is 0 or ≥ 10; else the remainder (small teams + no-department group) must be 0 or ≥ 10, or the
+        sensitive block is null with company_total_display_he. v1.6.21-r3 (J-132): the board report applies the
+        same rule to its month total (other_group).'
       requestBody:
         required: false
         content:
@@ -3981,7 +4016,17 @@ paths:
       tags:
       - agents
       summary: Agent 3 — build_board_report(company, month) (cfo / vp_hr)
-      description: 'Publishes only with a balanced reconciliation and the prior-period figures (unless first period),
+      description: 'v1.6.21 (J-115 = A, J-118): the company total includes employees without a department (never
+        a separate row); when they are 1-9 the total, Happiness Debt, deprivation tax and CHR Real EBITDA are
+        hidden (company_total_display_he = "אין מספיק נתונים להצגה בתקופה זו"; GAAP stays). v1.6.21-r3 (J-132 = yes):
+        the company total also includes the small teams (teams with no Shadow Balance row in the month; snapshot like
+        J-120), shown only as ONE merged row other_group {label_he "אחר", happiness_debt_balance, deprivation_tax}
+        (no team name, no count) when it has ≥ 10 employees and the no-department group left undisplayed is 0 or ≥ 10;
+        else other_group is null, and the remainder (small teams + no-department group) must be 0 or ≥ 10 or the
+        total is hidden as above (same rule as /rpc/rpc_get_board_macro_metrics). The no-department group is never a
+        row and never part of "אחר". v1.6.21-r4 (J-137 = A, J-138 approved): a team without a row in the month but
+        with an earlier one is in "אחר" with its latest earlier-month row, and a SHOWN other_group then carries
+        stale_teams_note_he "כולל נתונים מחודשים קודמים של X צוותים" (X > 0 only; never a team name). Publishes only with a balanced reconciliation and the prior-period figures (unless first period),
         and (v1.6.19, Part A3) only when every metric used for pay / manager bonuses is at level ≥ 2. Fields: chr_real_ebitda
         {value, gaap_ebitda, definition_he, note_he "מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת" (B4), text_status}, reconciliation[],
         shadow_balance[4], exported_on_exit (published batch value, J-43: amount, batch_no, label_he, display_he,
@@ -4598,9 +4643,17 @@ paths:
     post:
       tags:
       - agents
-      summary: v1.6.20-r2 (J-101 = A) — the fixed Hebrew text of a notification kind
+      summary: v1.6.20-r2 (J-101 = A) / v1.6.21 — the fixed Hebrew text of a notification kind
       description: 'default_department_review → "יש אצלכם מחלקה בשם General. אם זו ברירת המחדל ולא מחלקה אמיתית,
-        אפשר לסמן אותה כך." (then /rpc/rpc_mark_general_as_default_department). Other kinds → null. The text is
+        אפשר לסמן אותה כך." (decisions: /rpc/rpc_notification_options_he, /rpc/rpc_resolve_default_department_review).
+        v1.6.21 no_department_reminder → "יש X עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות
+        לפעול עבורם." with X = the current count of the caller''s company, only for an active vp_hr and only while
+        X > 0 (count only, no names). v1.6.21-r4 (J-137 = A) team_not_calculated (with p_ref_id) → "לצוות {team}
+        לא בוצע חישוב מאזן הצל בחודש שהסתיים." (J-140, wording awaiting Karin''s approval; the team name only, only
+        for the vp_hr who received it). v1.6.21 (J-123 = B) no_department_cuckoo → "בקרב העובדים בלי מחלקה יש סימני
+        העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות, כדי שההתראות יגיעו למנהלת הנכונה." (J-129 approved; active vp_hr of a company with a delivered
+        company-level alert; no number, no name). J-128 = A: one kind per call — the reminder count never comes in
+        the same response as any metric of the no-department group. Other kinds → null. The text is
         fixed per kind (no names, no ids) and is never stored in the notification row. The notice itself is
         created once per vp_hr and company by the pack after an upgrade (re-runs add none); it is visible only
         to its recipient (/notification, RLS).'
@@ -4615,6 +4668,12 @@ paths:
               properties:
                 p_kind:
                   type: string
+                p_ref_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: v1.6.21-r4 (J-137 = A) — for kind team_not_calculated, the ref_id of the caller's own
+                    notification; other kinds ignore it.
       responses:
         '200':
           description: Text or null
@@ -4623,6 +4682,99 @@ paths:
               schema:
                 type: string
                 nullable: true
+  /rpc/rpc_notification_options_he:
+    post:
+      tags:
+      - agents
+      summary: v1.6.21 (J-108 = A) — the decision options of a notification kind
+      description: 'default_department_review → [{decision: default_department, label_he: "ברירת מחדל"},
+        {decision: real_department, label_he: "זו מחלקה אמיתית"}]. Other kinds → null.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_kind
+              properties:
+                p_kind:
+                  type: string
+      responses:
+        '200':
+          description: Options or null
+          content:
+            application/json:
+              schema:
+                type: array
+                nullable: true
+                items:
+                  type: object
+                  properties:
+                    decision:
+                      type: string
+                      enum:
+                      - default_department
+                      - real_department
+                    label_he:
+                      type: string
+                      enum:
+                      - ברירת מחדל
+                      - זו מחלקה אמיתית
+  /rpc/rpc_resolve_default_department_review:
+    post:
+      tags:
+      - agents
+      summary: v1.6.21 (J-108 = A) — vp_hr answers the "General" notice for the whole company
+      description: 'vp_hr of the company only (others 403). default_department ("ברירת מחדל") marks the company''s
+        "General" rows as the default department (same logic as /rpc/rpc_mark_general_as_default_department);
+        real_department ("זו מחלקה אמיתית") keeps them as a real team. The decision is recorded once per company,
+        written to the WORM audit log (default_department_review_resolved: company, decision, rows marked — no
+        names) and removes the notice for every vp_hr; it is never created again for that company (other or new
+        vp_hr, new "General" rows, pack re-apply). 400 invalid_decision; 422 default_department_already_decided.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_decision
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_decision:
+                  type: string
+                  enum:
+                  - default_department
+                  - real_department
+                  description: default_department = "ברירת מחדל"; real_department = "זו מחלקה אמיתית"
+      responses:
+        '200':
+          description: Resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                    - resolved
+                  decision:
+                    type: string
+                  label_he:
+                    type: string
+                  marked:
+                    type: integer
+        '400':
+          description: invalid_decision
+        '403':
+          description: Not vp_hr of the company
+        '422':
+          description: default_department_already_decided
   /rpc/rpc_put_company_governance:
     post:
       tags:
@@ -4993,6 +5145,8 @@ components:
           - invalid_requested_date
           - invalid_key_roles
           - invalid_team
+          - invalid_decision
+          - default_department_already_decided
         message:
           type: string
           description: 'Must equal code (or human text WITHOUT spoon/HRV numbers). Glass Box.
@@ -5486,6 +5640,8 @@ components:
         manager_id:
           type: string
           format: uuid
+          nullable: true
+          description: null on the company-level alert (J-123 = B)
         target_user_id:
           type: string
           format: uuid
@@ -5512,7 +5668,14 @@ components:
           format: date-time
         target_pseudonym:
           type: string
-      description: Visible to the target employee only.
+          nullable: true
+          description: null on the company-level alert (J-123 = B)
+        company_level:
+          type: boolean
+          description: v1.6.21 (J-112 = A / J-123 = B) — company-level alert of an employee without a department; it has
+            no manager, no pseudonym and no team, reaches no manager, and vp_hr gets group wording only
+            (notification kind no_department_cuckoo).
+      description: Visible to the target employee only (her own alert).
     ManagerLedger:
       type: object
       properties:
@@ -6110,8 +6273,15 @@ components:
           - emergency_misuse_notice
           - emergency_cosign_request
           - default_department_review
+          - no_department_reminder
+          - no_department_cuckoo
           description: v1.6.20-r2 (J-101 = A) default_department_review = one-time notice to vp_hr (ref_id = the
             company) that a department named "General" exists; its fixed text = /rpc/rpc_notification_message_he.
+            v1.6.21 (J-108 = A) it is created at once by a users trigger (new vp_hr / first real General) and is
+            gone for good after the company's decision. v1.6.21 no_department_reminder = vp_hr reminder (ref_id =
+            the company) while the company has employees without a department; the count X is computed at read
+            time (no text column, B6) and the row is removed when X = 0. v1.6.21 (J-123 = B) no_department_cuckoo =
+            vp_hr group notice (ref_id = the company) after a delivered company-level Cuckoo alert; no person.
         ref_id: *id005
         silent:
           type: boolean
@@ -6425,6 +6595,24 @@ components:
         chr_real_ebitda:
           type: number
           nullable: true
+        other_group_label_he:
+          type: string
+          nullable: true
+          enum:
+          - אחר
+          description: v1.6.21 (J-121 = A) — label of the merged small-teams row; set only when that row has ≥ 10
+            employees and what stays undisplayed is 0 or ≥ 10.
+        other_happiness_debt_balance:
+          type: number
+          nullable: true
+        other_deprivation_tax_amount:
+          type: number
+          nullable: true
+        company_total_display_he:
+          type: string
+          nullable: true
+          description: v1.6.21 (J-115 / J-121 = A) — "אין מספיק נתונים להצגה בתקופה זו" when the undisplayed remainder
+            (after the 'אחר' merge) is 1-9 employees; then the sensitive figures are null.
     ShopPurchase:
       type: object
       description: 'Employee-private EverStore purchase record (RLS: own rows only; strictly hidden from managers,

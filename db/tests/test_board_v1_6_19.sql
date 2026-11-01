@@ -1,7 +1,7 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.19 · tests/test_board_v1_6_19.sql — v1.6.19 board report, leaver batching, ILS estimate,
 -- verification levels, 'תיק אימות', pay linkage, social events, layers + governance, sources (PostgreSQL 17)
--- Version: 1.6.20-mvp r2 (2026-10-31; r1 = J-96 A; r2 = J-101 A notice + J-102 A catalog scan; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
+-- Version: 1.6.21-mvp r1 (2026-11-01; r1 = J-126 A automatic close + J-128 A count never with a group metric; 2026-10-31: J-108 A immediate 'General' notice + the two decisions, no-department reminder; 1.6.20-mvp r2: r1 = J-96 A; r2 = J-101 A notice + J-102 A catalog scan; filename kept; Karin 31.10 via Chief of Drive). Run on a FRESH database after the pack:
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_board_v1_6_19.sql
 -- Every check prints "PASS <name>"; any failure aborts. Dates are relative to the run (current company month)
 -- because leaver batches are stamped with the real clock.
@@ -611,9 +611,14 @@ SELECT t_assert('A-10: every "r = 0.37" in every published report is inside the 
   (SELECT bool_and(t_count(j::text, 'r = 0.37') = t_count(j::text, (SELECT to_jsonb(txt)::text FROM t_binding) )
                    AND t_count(j::text, 'r = 0.37') = 1)
      FROM t_outputs WHERE label LIKE 'board_r%'));
+-- J-135: an output text without its timestamps (e.g. a dossier's last_kept_at "…:10.371234+02" holds "0.37" by the
+-- clock alone), so the A-10 check below looks at figures and wording only (test helper; no product change).
+CREATE OR REPLACE FUNCTION t_no_ts(p_text text) RETURNS text LANGUAGE sql IMMUTABLE AS
+  $$ SELECT regexp_replace(p_text, '\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}(:\d{2})?|Z)?', '<ts>', 'g') $$;
 SELECT t_assert('A-10: 0.37 is never shown alone: without sources_note no report holds 0.37 (no "link to profit" wording)',
-  (SELECT bool_and(strpos((j - 'sources_note')::text, '0.37') = 0) FROM t_outputs WHERE label LIKE 'board_%')
-  AND (SELECT bool_and(strpos(j::text, '0.37') = 0) FROM t_outputs WHERE label NOT LIKE 'board_r%'));
+  (SELECT bool_and(strpos(t_no_ts((j - 'sources_note')::text), '0.37') = 0) FROM t_outputs WHERE label LIKE 'board_%')
+  AND (SELECT bool_and(strpos(t_no_ts(j::text), '0.37') = 0) FROM t_outputs WHERE label NOT LIKE 'board_r%')
+  AND t_no_ts('{"last_kept_at": "2027-04-01T00:30:10.371234+03:00", "x": 0.37}') = '{"last_kept_at": "<ts>", "x": 0.37}');
 SELECT t_assert('A-10: 0.37 always next to 0.14–0.16 (same sentence block of the binding text)',
   position('0.14–0.16' IN fn_board_binding_text_he()) > position('r = 0.37' IN fn_board_binding_text_he())
   AND position('r = 0.37' IN fn_board_binding_text_he()) > 0);
@@ -1028,14 +1033,16 @@ BEGIN
   FOR i IN 1..5 LOOP PERFORM t_mk(t_u('cQ'), 'genQ' || i, 'General'); END LOOP;
 END $$;
 -- ============ v1.6.20-r2 J-101 = A (Karin 31.10): one-time notice to vp_hr when a department named 'General' exists ============
--- The pack runs fn_notify_general_department_review() at its end (after every upgrade / re-apply); here it is run
--- again on the data above: companies R and Q have a real 'General' (marker false), D has only defaulted employees.
+-- The pack runs fn_notify_general_department_review() at its end (after every upgrade / re-apply); since v1.6.21
+-- (J-108 = A) the users trigger already created the notices when the data above was written, so the pack run adds
+-- none: companies R and Q have a real 'General' (marker false), D has only defaulted employees.
 SELECT t_mk(t_u('cQ'), 'hrQ2', 'HR', 'vp_hr', 'vp') IS NOT NULL AS second_vp_hr_q;
 CREATE TEMP TABLE t_notice AS SELECT fn_notify_general_department_review() AS first_run,
+  (SELECT count(*) FROM notification WHERE kind = 'default_department_review') AS total,
   (SELECT count(*) FROM users v WHERE v.app_role = 'vp_hr' AND v.employment_ended_at IS NULL
       AND fn_general_department_ambiguous_count(v.company_id) > 0) AS expected;
-SELECT t_assert('J-101 = A: the notice is created for every vp_hr of a company with a department named "General" (R: hrR; Q: hrQ, hrQ2)',
-  (SELECT first_run = expected AND first_run >= 3 FROM t_notice)
+SELECT t_assert('J-101 = A: the notice is created for every vp_hr of a company with a department named "General" (R: hrR; Q: hrQ, hrQ2) — already by the trigger (J-108), the pack run adds 0',
+  (SELECT first_run = 0 AND total = expected AND total >= 3 FROM t_notice)
   AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrR') AND ref_id = t_u('cR'))
   AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrQ') AND ref_id = t_u('cQ'))
   AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrQ2') AND ref_id = t_u('cQ')));
@@ -1044,7 +1051,7 @@ SELECT t_assert('J-101 = A: NOT created when the company has no department named
   AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND recipient_id = t_u('hrD')));
 SELECT t_assert('J-101 = A: one-time — a second run (pack / migration re-run) creates nothing and leaves exactly one per vp_hr',
   fn_notify_general_department_review() = 0
-  AND (SELECT count(*) FROM notification WHERE kind = 'default_department_review') = (SELECT first_run FROM t_notice)
+  AND (SELECT count(*) FROM notification WHERE kind = 'default_department_review') = (SELECT total FROM t_notice)
   AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review'
                    GROUP BY recipient_id, ref_id HAVING count(*) > 1));
 DO $$
@@ -1110,8 +1117,9 @@ SELECT t_assert('J-96 = A: no session is left with the backfill switch on',
 -- Catalog check over pg_proc: every public function whose source mentions the word "department" must reference
 -- the marker (department_is_default) or a marker-aware helper (fn_user_in_team / fn_user_is_no_department /
 -- fn_user_group_key). Documented allowlist (each one does NOT group users by department):
---   fn_company_month_shadow, fn_team_month_tax_debt, rpc_ledger_append — read stored team rows (team_aggregate /
---     shadow_balance_aggregate) that were computed marker-aware; no users read.
+--   fn_company_month_shadow, fn_team_month_tax_debt, rpc_ledger_append, fn_team_latest_earlier_row (v1.6.21-r4,
+--     J-137) — read stored team rows (team_aggregate / shadow_balance_aggregate) that were computed marker-aware;
+--     no users read.
 --   fn_ledger_chain, fn_seed_company_ledger_genesis — copy the ledger row's own group into the hash chain.
 --   fn_users_team_joined, fn_users_manager_vault_guard — row triggers on the user's OWN row (department changed).
 --   rpc_provision_governance_user — writes the governance user's own row ('Board').
@@ -1125,7 +1133,7 @@ SELECT p.proname::text AS fn,
  WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND p.prosrc ~* '\mdepartment\M';
 SELECT t_assert('J-102 = A (1): catalog scan — every function that mentions department is marker-aware or on the documented allowlist (exact)',
   (SELECT array_agg(fn ORDER BY fn) FROM t_dept_scan WHERE NOT marker_aware)
-  = ARRAY['fn_company_month_shadow', 'fn_ledger_chain', 'fn_seed_company_ledger_genesis', 'fn_team_month_tax_debt',
+  = ARRAY['fn_company_month_shadow', 'fn_ledger_chain', 'fn_seed_company_ledger_genesis', 'fn_team_latest_earlier_row', 'fn_team_month_tax_debt',
           'fn_users_manager_vault_guard', 'fn_users_team_joined', 'rpc_get_burnout_trend', 'rpc_ledger_append',
           'rpc_provision_governance_user', 'rpc_put_team_absences', 'rpc_team_spoon_alert']::text[]);
 SELECT t_assert('J-102 = A (1): no allowlisted function reads the users table by department',
@@ -1147,6 +1155,183 @@ SELECT t_assert('J-102 = A (2): adoption — the real "General" unit has 4 מד�
      FROM t_adopt_r));
 SELECT t_assert('J-102 = A (2): adoption — the defaulted reporters count only in the company total (4 + 5 = 9)',
   (SELECT (j->'coverage_company'->>'reporters_count')::int = 9 AND t_ids_free(j) FROM t_adopt_r));
+-- ============ v1.6.21 J-108 = A (Karin 31.10): the 'General' notice is immediate and has two decisions ============
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone) VALUES
+  (t_u('cX'), 'Board X', 'IL', 0, 4, 'Asia/Jerusalem'),   -- decision 'ברירת מחדל'
+  (t_u('cY'), 'Board Y', 'IL', 0, 4, 'Asia/Jerusalem'),   -- decision 'זו מחלקה אמיתית'
+  (t_u('cM'), 'Board M', 'IL', 0, 4, 'Asia/Jerusalem');   -- the no-department reminder
+CREATE TEMP TABLE t_dd (label text, j jsonb);
+GRANT SELECT, INSERT ON t_dd TO authenticated;
+SELECT t_mk(t_u('cX'), 'hrX', 'HR', 'vp_hr', 'vp') IS NOT NULL AS hr_x;
+SELECT t_mk(t_u('cX'), 'opsX1', 'OPS') IS NOT NULL AS ops_x;
+SELECT t_assert('J-108 = A: no notice while company X has no "General"',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX')));
+SELECT t_mk(t_u('cX'), 'genX1', 'General') IS NOT NULL AS first_real_general_x;
+SELECT t_assert('J-108 = A: a new real "General" (first row, marker false) → the notice exists at once for the company''s vp_hr (no pack run)',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX') AND recipient_id = t_u('hrX')));
+SELECT t_mk(t_u('cX'), 'hrX2', 'HR', 'vp_hr', 'vp') IS NOT NULL AS new_vp_hr_x;
+SELECT t_mk(t_u('cX'), 'genX2', 'General') IS NOT NULL AS second_general_x;
+SELECT t_assert('J-108 = A: a new vp_hr in a company with a real "General" gets it at once; a second "General" row adds no duplicate',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX') AND recipient_id = t_u('hrX2'))
+  AND (SELECT count(*) = 2 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX')));
+SELECT t_assert('J-108 = A: the notice offers the two decisions with Karin''s labels',
+  rpc_notification_options_he('default_department_review')
+  = '[{"decision": "default_department", "label_he": "ברירת מחדל"}, {"decision": "real_department", "label_he": "זו מחלקה אמיתית"}]'::jsonb
+  AND rpc_notification_options_he('distress_alert') IS NULL);
+SELECT t_as(t_u('genX1'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-108 = A: an employee cannot decide → 403', $$SELECT rpc_resolve_default_department_review(t_u('cX'), 'real_department')$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('hrD'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-108 = A: another company''s vp_hr cannot decide → 403', $$SELECT rpc_resolve_default_department_review(t_u('cX'), 'default_department')$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('hrX'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-108 = A: an unknown decision → 400', $$SELECT rpc_resolve_default_department_review(t_u('cX'), 'maybe')$$, 'invalid_decision', 400);
+INSERT INTO t_dd SELECT 'x', rpc_resolve_default_department_review(t_u('cX'), 'default_department');
+SELECT t_expect_http('J-108 = A: the company decided already → a second answer is refused (422)', $$SELECT rpc_resolve_default_department_review(t_u('cX'), 'real_department')$$, 'default_department_already_decided', 422);
+RESET ROLE;
+SELECT t_assert('J-108 = A: "ברירת מחדל" — the 2 "General" rows are marked default, the decision is recorded, audited (company + decision + count, no names) and the notice is gone for both vp_hr',
+  (SELECT j->>'status' = 'resolved' AND j->>'decision' = 'default_department' AND j->>'label_he' = 'ברירת מחדל'
+          AND (j->>'marked')::int = 2 AND t_ids_free(j) FROM t_dd WHERE label = 'x')
+  AND (SELECT bool_and(department_is_default) FROM users WHERE user_id IN (t_u('genX1'), t_u('genX2')))
+  AND (SELECT decision = 'default_department' FROM default_department_decision WHERE company_id = t_u('cX'))
+  AND (SELECT count(*) = 1 AND bool_and(a.scope->>'decision' = 'default_department' AND (a.scope->>'marked')::int = 2
+                                         AND a.subject_user_id IS NULL AND t_ids_free(a.scope - 'company_id'))
+         FROM access_audit_log a WHERE a.action = 'default_department_review_resolved' AND a.scope->>'company_id' = t_u('cX')::text)
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX')));
+SELECT t_mk(t_u('cX'), 'hrX3', 'HR', 'vp_hr', 'vp') IS NOT NULL AS later_vp_hr_x;
+SELECT t_mk(t_u('cX'), 'genX3', 'General') IS NOT NULL AS later_real_general_x;
+SELECT t_assert('J-108 = A: after the decision the notice never comes back — not for a new vp_hr, not for a new real "General", not on pack re-apply',
+  fn_notify_general_department_review() = 0 AND fn_notify_general_department_review(t_u('cX')) = 0
+  AND fn_general_department_ambiguous_count(t_u('cX')) = 1
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX')));
+-- Company Y: 'זו מחלקה אמיתית'
+SELECT t_mk(t_u('cY'), 'hrY', 'HR', 'vp_hr', 'vp') IS NOT NULL AS hr_y;
+SELECT t_mk(t_u('cY'), 'genY1', 'General') IS NOT NULL AS general_y;
+SELECT t_as(t_u('hrY'));
+SET ROLE authenticated;
+INSERT INTO t_dd SELECT 'y', rpc_resolve_default_department_review(t_u('cY'), 'real_department');
+RESET ROLE;
+SELECT t_mk(t_u('cY'), 'hrY2', 'HR', 'vp_hr', 'vp') IS NOT NULL AS later_vp_hr_y;
+SELECT t_assert('J-108 = A: "זו מחלקה אמיתית" — nothing marked (still a real team), recorded, audited, notice gone and never recreated (new vp_hr, pack re-apply)',
+  (SELECT j->>'decision' = 'real_department' AND j->>'label_he' = 'זו מחלקה אמיתית' AND (j->>'marked')::int = 0 FROM t_dd WHERE label = 'y')
+  AND (SELECT NOT department_is_default FROM users WHERE user_id = t_u('genY1'))
+  AND fn_team_month_members(t_u('cY'), 'General', (SELECT m FROM t_m)) = 1
+  AND (SELECT decision = 'real_department' FROM default_department_decision WHERE company_id = t_u('cY'))
+  AND (SELECT count(*) = 1 FROM access_audit_log a WHERE a.action = 'default_department_review_resolved'
+          AND a.scope->>'company_id' = t_u('cY')::text AND a.scope->>'decision' = 'real_department')
+  AND fn_notify_general_department_review() = 0
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cY')));
+SELECT t_assert('J-108 = A: the decision record has no person column and is closed (RLS forced, no client grant)',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'default_department_decision' AND column_name ~* '(person|user|employee|pseudonym)')
+  AND NOT has_table_privilege('authenticated', 'default_department_decision', 'SELECT')
+  AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'default_department_decision'::regclass));
+
+-- ============ v1.6.21 (Karin 31.10): vp_hr reminder — X employees without a department (count only) ============
+SELECT t_mk(t_u('cM'), 'hrM', 'HR', 'vp_hr', 'vp') IS NOT NULL AS hr_m;
+SELECT t_mk(t_u('cM'), 'opsM' || i, 'OPS') IS NOT NULL AS ops_m FROM generate_series(1, 2) i;
+SELECT t_as(t_u('hrM'));
+SET ROLE authenticated;
+SELECT t_assert('reminder: not shown while the company has 0 employees without a department (no row, no text)',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'no_department_reminder')
+  AND rpc_notification_message_he('no_department_reminder') IS NULL);
+RESET ROLE;
+SELECT t_mk(t_u('cM'), 'ndM' || i, NULL) IS NOT NULL AS no_dept_m FROM generate_series(1, 3) i;
+SELECT t_as(t_u('hrM'));
+SET ROLE authenticated;
+SELECT t_assert('reminder: 3 employees without a department → one reminder for vp_hr, the text letter for letter with X = 3',
+  (SELECT count(*) = 1 AND bool_and(ref_id = t_u('cM')) FROM notification WHERE kind = 'no_department_reminder')
+  AND rpc_notification_message_he('no_department_reminder')
+      = 'יש 3 עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות לפעול עבורם.');
+RESET ROLE;
+SELECT t_mk(t_u('cM'), 'ndM4', NULL) IS NOT NULL AS fourth_no_dept_m;
+SELECT t_as(t_u('hrM'));
+SET ROLE authenticated;
+SELECT t_assert('reminder: a 4th one → still ONE reminder (no duplicate), X follows at read time (4)',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'no_department_reminder')
+  AND rpc_notification_message_he('no_department_reminder')
+      = 'יש 4 עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות לפעול עבורם.');
+RESET ROLE;
+SELECT t_assert('reminder: a re-run (pack re-apply) creates no second reminder',
+  fn_refresh_no_department_reminders(t_u('cM')) = 0 AND fn_refresh_no_department_reminders() = 0
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'no_department_reminder' AND ref_id = t_u('cM')));
+SELECT t_assert('reminder: the text names nobody and holds no id',
+  t_ids_free(jsonb_build_object('text', fn_no_department_reminder_he(fn_no_department_employee_count(t_u('cM'))))));
+SELECT t_as(t_u('opsM1'));
+SET ROLE authenticated;
+SELECT t_assert('reminder: an employee of the same company sees no reminder and gets no text',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'no_department_reminder')
+  AND rpc_notification_message_he('no_department_reminder') IS NULL);
+RESET ROLE;
+SELECT t_as(t_u('hrY'));
+SET ROLE authenticated;
+SELECT t_assert('reminder: vp_hr of another company (Y, all assigned) sees no reminder of company M and gets no text',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'no_department_reminder')
+  AND rpc_notification_message_he('no_department_reminder') IS NULL);
+RESET ROLE;
+UPDATE users SET department = 'OPS' WHERE user_id IN (SELECT t_u('ndM' || i) FROM generate_series(1, 4) i);
+SELECT t_assert('reminder: once everyone is assigned (X = 0) the reminder is gone',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'no_department_reminder' AND ref_id = t_u('cM'))
+  AND fn_no_department_employee_count(t_u('cM')) = 0);
+-- ============ v1.6.21 J-126 = A (Karin 01.11): the open 'General' notice closes itself when no real 'General' is left ============
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone) VALUES
+  (t_u('cZ'), 'Board Z', 'IL', 0, 4, 'Asia/Jerusalem');
+SELECT t_mk(t_u('cZ'), 'hrZ', 'HR', 'vp_hr', 'vp') IS NOT NULL AS hr_z;
+SELECT t_mk(t_u('cZ'), 'genZ1', 'General') IS NOT NULL AS general_z;
+SELECT t_assert('J-126 = A: company Z has a real "General" → the notice is open for its vp_hr',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ')));
+UPDATE users SET department = 'OPS' WHERE user_id = t_u('genZ1');
+SELECT t_assert('J-126 = A: the last real "General" is gone → the notice closes by itself, audited like a decision with reason "המחלקה כבר לא קיימת" (no names), no decision recorded',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ'))
+  AND (SELECT count(*) = 1 AND bool_and(a.reason = 'המחלקה כבר לא קיימת' AND a.scope->>'decision' = 'auto_closed'
+                                         AND (a.scope->>'marked')::int = 0 AND a.subject_user_id IS NULL
+                                         AND a.company_id = t_u('cZ') AND t_ids_free(a.scope - 'company_id'))
+         FROM access_audit_log a WHERE a.action = 'default_department_review_resolved' AND a.scope->>'company_id' = t_u('cZ')::text)
+  AND NOT EXISTS (SELECT 1 FROM default_department_decision WHERE company_id = t_u('cZ')));
+SELECT t_mk(t_u('cZ'), 'genZ2', 'General') IS NOT NULL AS general_z_again;
+SELECT t_assert('J-126 = A / J-131: after an automatic close, a "General" that appears again brings the notice back at once — once (double pack apply adds none)',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ') AND recipient_id = t_u('hrZ'))
+  AND fn_notify_general_department_review() = 0 AND fn_notify_general_department_review() = 0
+  AND (SELECT count(*) = 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cZ')));
+-- company X answered 'ברירת מחדל' (J-108): its real 'General' (genX3) leaves and a new one appears → nothing returns
+UPDATE users SET department = 'OPS' WHERE user_id = t_u('genX3');
+SELECT t_mk(t_u('cX'), 'genX4', 'General') IS NOT NULL AS general_x_after_answer;
+SELECT t_assert('J-126 = A / J-131: an ANSWERED notice never returns — no automatic-close audit and no new notice for company X',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'default_department_review' AND ref_id = t_u('cX'))
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log a WHERE a.action = 'default_department_review_resolved'
+                     AND a.scope->>'company_id' = t_u('cX')::text AND a.scope->>'decision' = 'auto_closed')
+  AND fn_notify_general_department_review() = 0);
+
+-- ============ v1.6.21 J-128 = A (Karin 01.11): the reminder count is never output together with a no-department group metric ============
+-- Catalog check: only two functions read the count — the reminder row lifecycle (no text) and the reminder text
+-- (count only); neither touches any metric of the no-department group; the only caller of the text is
+-- rpc_notification_message_he, which returns ONE scalar text for ONE kind per call; no view reads the count.
+CREATE TEMP TABLE t_j128 AS
+SELECT p.proname::text AS fn, pg_get_function_result(p.oid) AS res,
+       p.prosrc ~ '(fn_no_department_employee_count|fn_no_department_reminder_he)' AS reads_count,
+       p.prosrc ~ 'fn_no_department_reminder_for_vp_hr' AS calls_text,
+       p.prosrc ~* '(fn_cuckoo_no_department_reporters|fn_no_department_activity_contributors|cuckoo_alert|no_department_cuckoo|shadow_balance_no_department|fn_company_month_shadow|happiness_debt|deprivation_tax|fn_no_department_key|absence|fn_team_month)' AS reads_metric
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.proname !~ '^t_';
+SELECT t_assert('J-128 = A: exactly two functions read the reminder count and neither reads any no-department group metric',
+  (SELECT array_agg(fn ORDER BY fn) FROM t_j128 WHERE reads_count)
+    = ARRAY['fn_no_department_reminder_for_vp_hr', 'fn_refresh_no_department_reminders']::text[]
+  AND NOT EXISTS (SELECT 1 FROM t_j128 WHERE reads_count AND reads_metric));
+SELECT t_assert('J-128 = A: the reminder text is reached only through rpc_notification_message_he, which returns one scalar text per kind',
+  (SELECT array_agg(fn ORDER BY fn) FROM t_j128 WHERE calls_text) = ARRAY['rpc_notification_message_he']::text[]
+  AND (SELECT res = 'text' FROM t_j128 WHERE fn = 'rpc_notification_message_he')
+  AND NOT EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'public'
+                   AND definition ~ '(fn_no_department_employee_count|fn_no_department_reminder)'));
+SELECT t_mk(t_u('cM'), 'ndM9' || i, NULL) IS NOT NULL AS no_dept_m_again FROM generate_series(1, 3) i;
+SELECT t_as(t_u('hrM'));
+SET ROLE authenticated;
+SELECT t_assert('J-128 = A: with a group of 3 (< 10) the reminder still shows the exact count, alone — its response holds no Cuckoo / absence / tax / debt figure; the Cuckoo group text holds no count',
+  rpc_notification_message_he('no_department_reminder')
+      = 'יש 3 עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות לפעול עבורם.'
+  AND COALESCE(rpc_notification_message_he('no_department_cuckoo'), '') !~ '[0-9]');
+RESET ROLE;
 SELECT t_assert('B3: governance = role name only (no person), exec pay tied, complaint time 4.5 days',
   (SELECT j->>'accountable_exec_role_name' = 'סמנכ"ל משאבי אנוש' AND (j->>'exec_pay_tied_to_metrics')::boolean
           AND (j->>'mean_complaint_handling_days')::numeric = 4.5 AND t_ids_free(j) FROM t_outputs WHERE label = 'governance_put'));
