@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.21 · rpc.sql
--- Version: 1.6.21-mvp r3 (2026-11-01 IL; r3 = J-129 approved text, J-132 small teams in the board report total as one 'אחר' row (shadow_balance_small_teams); r2 = tests only (J-135); r1 = J-123 B company-level Cuckoo without identifiers + vp_hr group notice, J-128 A reminder count never with a group metric, J-121 A 'אחר' merge in the board-member figures, J-126 A audited automatic close of the 'General' notice; 2026-10-31: J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- Version: 1.6.21-mvp r4 (2026-11-01 IL; r4 = J-137 A stale teams in 'אחר' + note, vp_hr 'team_not_calculated' reminder; J-138 approved; r3 = J-129 approved text, J-132 small teams in the board report total as one 'אחר' row (shadow_balance_small_teams); r2 = tests only (J-135); r1 = J-123 B company-level Cuckoo without identifiers + vp_hr group notice, J-128 A reminder count never with a group metric, J-121 A 'אחר' merge in the board-member figures, J-126 A audited automatic close of the 'General' notice; 2026-10-31: J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -8,6 +8,10 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- New in 1.6.21-r4 (Karin 01.11): J-137 = A — stale teams in 'אחר' with their latest earlier-month row
+--   (fn_team_latest_earlier_row, J-139) and the note fn_stale_teams_note_he on a shown row only; vp_hr reminder
+--   'team_not_calculated' (fn_refresh_team_not_calculated_reminders, rpc_team_not_calculated_reminder_job, text via
+--   rpc_notification_message_he(kind, ref_id)). J-138 approved as implemented.
 -- New in 1.6.21-r3 (Karin 01.11): J-129 approved — fn_no_department_cuckoo_he carries Karin's text with her addition;
 --   J-132 = yes — fn_shadow_small_teams_snapshot (at every team refresh, like J-120), fn_company_month_small_teams in
 --   fn_company_month_shadow (the board report total), fn_board_other_group (ONE 'אחר' row, J-121 rule),
@@ -2504,9 +2508,32 @@ $$;
 
 REVOKE ALL ON FUNCTION fn_user_in_small_team(uuid, text, boolean) FROM PUBLIC;
 
+-- v1.6.21-r4 (J-137 = A, J-139): the latest Shadow Balance row of a team calculated BEFORE the current company
+-- month (NULL when the team never had one) — what a team that was not refreshed this month contributes to 'אחר'.
+CREATE OR REPLACE FUNCTION fn_team_latest_earlier_row(p_org_id uuid, p_team text)
+RETURNS uuid
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  -- plpgsql: the company-month helpers (fn_agent_*) are defined further down in this file
+  RETURN (SELECT s.aggregate_id FROM shadow_balance_aggregate s
+           WHERE s.org_id = p_org_id AND s.department = p_team
+             AND s.calculated_at < fn_agent_day_start(p_org_id, fn_agent_month_start(p_org_id, clock_timestamp()))
+           ORDER BY s.calculated_at DESC LIMIT 1);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_team_latest_earlier_row(uuid, text) FROM PUBLIC;
+
 -- v1.6.21-r3 (J-132 = yes, Karin 01.11): the small-teams share of the company Shadow Balance (all small teams
--- together, same formulas as the team refresh), stored in shadow_balance_small_teams (no client access). Taken at
--- every team Shadow Balance refresh, right after the no-department share (J-120 pattern; rows with 0 included).
+-- together), stored in shadow_balance_small_teams (no client access). Taken at every team Shadow Balance refresh,
+-- right after the no-department share (J-120 pattern; rows with 0 included). v1.6.21-r4 (J-137 = A, J-139): a team
+-- with no row this month but an earlier one ("stale") contributes its latest earlier-month row (debt, tax, deprived)
+-- and is counted in stale_team_count; a team that never had a row is computed from its employees now (same formulas
+-- as the team refresh). employee_count = the current employees of all those teams (the J-121 rule uses it).
 CREATE OR REPLACE FUNCTION fn_shadow_small_teams_snapshot(p_org_id uuid)
 RETURNS void
 LANGUAGE plpgsql
@@ -2514,18 +2541,32 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
-  INSERT INTO shadow_balance_small_teams (company_id, employee_count, deprived_count, deprivation_tax_amount, happiness_debt_balance)
-  SELECT p_org_id, count(*)::int, count(*) FILTER (WHERE m.deprived)::int,
-         round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived), 0), 2),
-         round(COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.tier)) FILTER (WHERE m.deprived), 0), 2)
-    FROM (SELECT fn_effective_turnover_tier(u.user_id) AS tier,
-                 fn_is_employee_deprived(u.user_id) AS deprived,
-                 fn_company_tier_avg_salary(p_org_id, fn_effective_turnover_tier(u.user_id)) AS tier_salary
-            FROM users u
-           WHERE u.company_id = p_org_id
-             AND fn_user_in_small_team(p_org_id, u.department, u.department_is_default)
-             AND u.employment_ended_at IS NULL
-             AND fn_effective_turnover_tier(u.user_id) IS NOT NULL) m;
+  WITH m AS (
+    SELECT fn_effective_turnover_tier(u.user_id) AS tier,
+           fn_is_employee_deprived(u.user_id) AS deprived,
+           fn_company_tier_avg_salary(p_org_id, fn_effective_turnover_tier(u.user_id)) AS tier_salary,
+           fn_team_latest_earlier_row(p_org_id, u.department) AS prev_row
+      FROM users u
+     WHERE u.company_id = p_org_id
+       AND fn_user_in_small_team(p_org_id, u.department, u.department_is_default)
+       AND u.employment_ended_at IS NULL
+       AND fn_effective_turnover_tier(u.user_id) IS NOT NULL
+  ), fresh AS (
+    SELECT count(*) FILTER (WHERE m.deprived AND m.prev_row IS NULL)::int AS dep,
+           COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived AND m.prev_row IS NULL), 0) AS tax,
+           COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.tier)) FILTER (WHERE m.deprived AND m.prev_row IS NULL), 0) AS debt,
+           count(*)::int AS emp
+      FROM m
+  ), stale AS (
+    SELECT count(*)::int AS teams, COALESCE(sum(s.deprived_count), 0)::int AS dep,
+           COALESCE(sum(s.deprivation_tax_amount), 0) AS tax, COALESCE(sum(s.happiness_debt_balance), 0) AS debt
+      FROM shadow_balance_aggregate s
+     WHERE s.aggregate_id IN (SELECT DISTINCT m.prev_row FROM m WHERE m.prev_row IS NOT NULL)
+  )
+  INSERT INTO shadow_balance_small_teams (company_id, employee_count, deprived_count, deprivation_tax_amount,
+                                          happiness_debt_balance, stale_team_count)
+  SELECT p_org_id, f.emp, f.dep + st.dep, round(f.tax + st.tax, 2), round(f.debt + st.debt, 2), st.teams
+    FROM fresh f, stale st;
 END;
 $$;
 
@@ -6563,7 +6604,8 @@ REVOKE ALL ON FUNCTION fn_no_department_cuckoo_for_vp_hr(uuid) FROM PUBLIC;
 -- while X > 0 (else NULL); v1.6.21 (J-123 = B) 'no_department_cuckoo' → the group wording, only for an active vp_hr
 -- of a company with a delivered company-level alert; other kinds → NULL. J-128 = A: ONE kind per call, so the
 -- reminder count is never returned together with any metric of the no-department group.
-CREATE OR REPLACE FUNCTION rpc_notification_message_he(p_kind text)
+DROP FUNCTION IF EXISTS rpc_notification_message_he(text);   -- v1.6.21-r4 (J-137 = A): p_ref_id added
+CREATE OR REPLACE FUNCTION rpc_notification_message_he(p_kind text, p_ref_id uuid DEFAULT NULL)
 RETURNS text
 LANGUAGE plpgsql
 STABLE
@@ -6579,13 +6621,111 @@ BEGIN
     RETURN fn_no_department_reminder_for_vp_hr(v_comp);
   ELSIF p_kind = 'no_department_cuckoo' AND v_comp IS NOT NULL THEN
     RETURN fn_no_department_cuckoo_for_vp_hr(v_comp);
+  ELSIF p_kind = 'team_not_calculated' AND v_comp IS NOT NULL THEN
+    RETURN fn_team_not_calculated_for_vp_hr(v_comp, p_ref_id);   -- J-137 = A: the team name only
   END IF;
   RETURN NULL;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION rpc_notification_message_he(text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rpc_notification_message_he(text) TO authenticated;
+REVOKE ALL ON FUNCTION rpc_notification_message_he(text, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_notification_message_he(text, uuid) TO authenticated;
+
+-- v1.6.21-r4 (J-137 = A, J-140 — wording for Karin's approval): the vp_hr reminder text; the team name only.
+CREATE OR REPLACE FUNCTION fn_team_not_calculated_he(p_team text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'לצוות ' || p_team || ' לא בוצע חישוב מאזן הצל בחודש שהסתיים.' $$;
+
+-- v1.6.21-r4 (J-137 = A): the reminder text of one 'team_not_calculated' notice of the CALLER — only for an active
+-- vp_hr of the reference's company who is the notice's recipient; else NULL.
+CREATE OR REPLACE FUNCTION fn_team_not_calculated_for_vp_hr(p_company uuid, p_ref_id uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT fn_team_not_calculated_he(r.team_name)
+    FROM team_not_calculated_ref r
+   WHERE r.ref_id = p_ref_id AND r.company_id = p_company
+     AND EXISTS (SELECT 1 FROM notification n WHERE n.kind = 'team_not_calculated' AND n.ref_id = r.ref_id
+                    AND n.recipient_id = auth.uid())
+$$;
+
+REVOKE ALL ON FUNCTION fn_team_not_calculated_for_vp_hr(uuid, uuid) FROM PUBLIC;
+
+-- v1.6.21-r4 (J-137 = A): the real teams of a company with ≥ 10 active employees (employee profile) that have no
+-- Shadow Balance row calculated in the company month p_month.
+CREATE OR REPLACE FUNCTION fn_teams_not_calculated(p_company uuid, p_month date)
+RETURNS TABLE (team_name text)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT u.department::text FROM users u
+   WHERE u.company_id = p_company AND u.has_employee_profile AND u.employment_ended_at IS NULL
+     AND NOT fn_user_is_no_department(u.department, u.department_is_default)
+   GROUP BY u.department
+  HAVING count(*) >= fn_privacy_min_n('shadow_balance')
+     AND NOT EXISTS (SELECT 1 FROM shadow_balance_aggregate s
+                      WHERE s.org_id = p_company AND s.department = u.department
+                        AND s.calculated_at >= fn_agent_day_start(p_company, p_month)
+                        AND s.calculated_at <  fn_agent_day_start(p_company, fn_month_shift(p_month, 1)))
+$$;
+
+REVOKE ALL ON FUNCTION fn_teams_not_calculated(uuid, date) FROM PUBLIC;
+
+-- v1.6.21-r4 (J-137 = A, J-141): for a CLOSED company month (default: the month before the current one) every active
+-- vp_hr gets ONE 'team_not_calculated' notice per team of ≥ 10 without a row that month (reference: company, team,
+-- month). Idempotent (unique reference + unique notice): re-runs and a second pack apply add nothing. A month that
+-- is not closed yet gives nothing. Returns the notices added. One company, or all when p_company is NULL.
+CREATE OR REPLACE FUNCTION fn_refresh_team_not_calculated_reminders(p_company uuid DEFAULT NULL, p_month date DEFAULT NULL)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  c    uuid;
+  v_m  date;
+  v_n  int := 0;
+  v_k  int;
+BEGIN
+  FOR c IN SELECT co.company_id FROM companies co WHERE p_company IS NULL OR co.company_id = p_company LOOP
+    v_m := COALESCE(fn_month_of(p_month), fn_month_shift(fn_agent_month_start(c, clock_timestamp()), -1));
+    CONTINUE WHEN v_m >= fn_agent_month_start(c, clock_timestamp());   -- J-141: closed months only
+    INSERT INTO team_not_calculated_ref (company_id, team_name, period_month)
+    SELECT c, x.team_name, v_m FROM fn_teams_not_calculated(c, v_m) x
+    ON CONFLICT (company_id, team_name, period_month) DO NOTHING;
+    INSERT INTO notification (recipient_id, kind, ref_id)
+    SELECT v.user_id, 'team_not_calculated', r.ref_id
+      FROM team_not_calculated_ref r JOIN users v ON v.company_id = r.company_id
+     WHERE r.company_id = c AND r.period_month = v_m
+       AND v.app_role = 'vp_hr' AND v.employment_ended_at IS NULL
+    ON CONFLICT (recipient_id, kind, ref_id) WHERE kind = 'team_not_calculated' DO NOTHING;
+    GET DIAGNOSTICS v_k = ROW_COUNT;
+    v_n := v_n + v_k;
+  END LOOP;
+  RETURN v_n;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_refresh_team_not_calculated_reminders(uuid, date) FROM PUBLIC;
+
+-- v1.6.21-r4 (J-137 = A): cron (service_role) — the 'team_not_calculated' reminders of the month that just closed,
+-- for every company (idempotent). Returns the notices added (a count only, no team, no person).
+CREATE OR REPLACE FUNCTION rpc_team_not_calculated_reminder_job()
+RETURNS int
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$ SELECT fn_refresh_team_not_calculated_reminders(NULL, NULL) $$;
+
+REVOKE ALL ON FUNCTION rpc_team_not_calculated_reminder_job() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION rpc_team_not_calculated_reminder_job() TO service_role;
 
 -- v1.6.21 (J-108 = A): the decision options of a notification kind ('default_department_review' → the two
 -- options with their labels; other kinds → NULL).
@@ -7110,8 +7250,32 @@ AS $$
                                   COALESCE((SELECT n.employee_count FROM fn_company_month_no_department(p_company, p_month) n), 0))
 $$;
 
--- v1.6.21-r3 (J-132 = yes): the merged 'אחר' row of a month's board report — the small teams together (label,
--- Happiness Debt, מס קיפוח; no team name, no count), or NULL when the J-121 rule does not allow it (small teams
+-- v1.6.21-r4 (J-137 = A): X = the teams of the month's latest small-teams snapshot that were not refreshed that
+-- month and contribute an earlier-month row (0 when no snapshot).
+CREATE OR REPLACE FUNCTION fn_company_month_stale_team_count(p_company uuid, p_month date)
+RETURNS int
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE((SELECT s.stale_team_count FROM shadow_balance_small_teams s
+                    WHERE s.company_id = p_company
+                      AND s.calculated_at >= fn_agent_day_start(p_company, p_month)
+                      AND s.calculated_at <  fn_agent_day_start(p_company, fn_month_shift(p_month, 1))
+                    ORDER BY s.calculated_at DESC LIMIT 1), 0)
+$$;
+
+-- v1.6.21-r4 (J-137 = A, Karin 01.11): the note next to the 'אחר' row, letter for letter (X = number of teams; never a
+-- team name). NULL when X is 0.
+CREATE OR REPLACE FUNCTION fn_stale_teams_note_he(p_x int)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT CASE WHEN p_x > 0 THEN 'כולל נתונים מחודשים קודמים של ' || p_x || ' צוותים' END $$;
+
+-- v1.6.21-r3 (J-132 = yes, J-138 approved): the merged 'אחר' row of a month's board report — the small teams
+-- together (label, Happiness Debt, מס קיפוח; no team name, no headcount; J-137 note when X > 0), or NULL when the J-121 rule does not allow it (small teams
 -- below 10, or a no-department group of 1–9 left undisplayed) or the month has no small-teams snapshot.
 CREATE OR REPLACE FUNCTION fn_board_other_group(p_company uuid, p_month date)
 RETURNS jsonb
@@ -7124,7 +7288,10 @@ AS $$
                                         COALESCE((SELECT n.employee_count FROM fn_company_month_no_department(p_company, p_month) n), 0))
               THEN jsonb_build_object('label_he', fn_other_group_label_he(),
                                       'happiness_debt_balance', s.happiness_debt_balance,
-                                      'deprivation_tax', s.deprivation_tax_amount) END
+                                      'deprivation_tax', s.deprivation_tax_amount)
+                   -- J-137 = A: the note only on a SHOWN 'אחר' row and only when X > 0 (jsonb_strip_nulls drops it)
+                   || jsonb_strip_nulls(jsonb_build_object('stale_teams_note_he',
+                                                           fn_stale_teams_note_he(fn_company_month_stale_team_count(p_company, p_month)))) END
     FROM fn_company_month_small_teams(p_company, p_month) s
 $$;
 
@@ -7439,7 +7606,7 @@ $$;
 
 REVOKE ALL ON FUNCTION fn_company_month_shadow_remainder(uuid, date), fn_company_shadow_suppressed(uuid, date) FROM PUBLIC;
 REVOKE ALL ON FUNCTION fn_company_month_no_department(uuid, date), fn_company_month_small_teams(uuid, date),
-                       fn_board_other_group(uuid, date) FROM PUBLIC;
+                       fn_board_other_group(uuid, date), fn_company_month_stale_team_count(uuid, date) FROM PUBLIC;
 REVOKE ALL ON FUNCTION fn_leaver_memo(uuid, date), fn_company_month_shadow(uuid, date), fn_company_month_reporters(uuid, date),
                        fn_debt_split(uuid, date), fn_debt_split_total(uuid, date), fn_reconciliation_month(uuid, date),
                        fn_company_month_pcq(uuid, date), fn_turnover_above_baseline(uuid, date),
@@ -9291,6 +9458,8 @@ BEGIN
       'deprivation_tax', (v_report->'deprivation_tax') || jsonb_build_object('display_he', fn_insufficient_data_period_he()));
   END IF;
   INSERT INTO board_report (company_id, period_month, report) VALUES (p_company_id, v_month, v_report);
+  -- v1.6.21-r4 (J-137 = A): vp_hr is reminded of the teams of ≥ 10 not calculated in that month (closed months only)
+  PERFORM fn_refresh_team_not_calculated_reminders(p_company_id, v_month);
   PERFORM fn_audit_view('board_report_published', jsonb_build_object('company_id', p_company_id, 'month', v_month));
   RETURN v_report;
 END;
@@ -9312,3 +9481,5 @@ END $$;
 DO $$ BEGIN PERFORM fn_notify_general_department_review(); END $$;
 -- v1.6.21 (J-122): the no-department reminder for every company (idempotent; X is computed when read).
 DO $$ BEGIN PERFORM fn_refresh_no_department_reminders(); END $$;
+-- v1.6.21-r4 (J-137 = A): the 'team_not_calculated' reminders of the month that just closed (idempotent).
+DO $$ BEGIN PERFORM fn_refresh_team_not_calculated_reminders(NULL, NULL); END $$;

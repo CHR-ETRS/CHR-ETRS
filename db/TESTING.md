@@ -1,7 +1,7 @@
-<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.6.21-mvp r3 (2026-11-01; r3 = J-129 approved text, J-132 small teams in the board report total ('אחר'): counts; r2 = J-135 closed: the suite is date-independent, real clock, no libfaketime; r1 = J-123 B, J-128 A, J-121 A, J-126 A; 2026-10-31: J-115 A, J-112 A, J-108 A, no-department reminder, upgrade from c3a57b6) — supersedes the v1.6.21 TESTING.md. How the v1.6.21-r3 results were produced. -->
+<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.6.21-mvp r4 (2026-11-01; r4 = J-137 A stale note + team_not_calculated reminder, J-138 approved: counts; r3 = J-129 approved text, J-132 small teams in the board report total ('אחר'): counts; r2 = J-135 closed: the suite is date-independent, real clock, no libfaketime; r1 = J-123 B, J-128 A, J-121 A, J-126 A; 2026-10-31: J-115 A, J-112 A, J-108 A, no-department reminder, upgrade from c3a57b6) — supersedes the v1.6.21 TESTING.md. How the v1.6.21-r4 results were produced. -->
 # How to run the CHR-ETRS code-pack tests (v1.6.21-mvp)
 
-These are the exact steps used for the v1.6.21-r3 run on 2026-11-01 (real clock, no libfaketime).
+These are the exact steps used for the v1.6.21-r4 run on 2026-11-01 (real clock, no libfaketime).
 
 > **v1.6.21-r2 (J-135 closed):** the suite no longer depends on the date or the hour. It runs on the **real clock**; no
 > faked-clock cluster or libfaketime is needed (the r1 note that required one is withdrawn). The four clock-sensitive
@@ -63,7 +63,7 @@ python3 -m venv /tmp/venv-oas
 ```bash
 cd db                                   # the folder holding schema.sql, rpc.sql, openapi.yaml, tests/
 ./tests/run_tests.sh 2>&1 | tee /tmp/run_tests.log; echo "exit ${PIPESTATUS[0]}"
-grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (v1.6.21-r3: 1346; v1.6.21-r2: 1336; v1.6.21-r1: 1335; v1.6.21: 1318; v1.6.20-r2: 1285)
+grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (v1.6.21-r4: 1357; v1.6.21-r3: 1346; v1.6.21-r2: 1336; v1.6.21-r1: 1335; v1.6.21: 1318; v1.6.20-r2: 1285)
 grep -c "WARNING:  FAIL" /tmp/run_tests.log            # must be 0 (a FAIL also stops the run with exit ≠ 0)
 grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 114 passed, 0 failed · nosuper: 108 passed, 0 failed
 /tmp/venv-oas/bin/openapi-spec-validator openapi.yaml   # → openapi.yaml: OK
@@ -72,9 +72,9 @@ grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 114 passed, 0 fa
 What `run_tests.sh` does, in order (each on a fresh database):
 
 1. `ref_country_calendar.sql` → `schema.sql` → `rpc.sql`, then the same three again (idempotency) →
-   `tests/test_v1_5.sql` (801 checks in v1.6.21-r3: +10 J-132 small teams in the board report total / 'אחר' / remainder rule / report = board-member figures, J-129 exact text and J-115 remainder 4 updated in place; 791 in v1.6.21-r2: +1 J-135 cb11's day after the midday checks; 790 in v1.6.21-r1: +8 J-123 company-level alert, +3 J-121 'אחר' / placeholder, −1 replaced J-112 manager check; 780 in v1.6.21; +13 J-115 company totals / placeholder / EBITDA and J-112 company-level Cuckoo; 767 in v1.6.20-r2).
+   `tests/test_v1_5.sql` (812 checks in v1.6.21-r4: +11 J-137 stale teams / note (X = 1, X = 0, row null) / vp_hr team_not_calculated reminder (created, not for calculated or smaller teams, idempotent, name only, vp_hr only); J-138 closed (approved, no new check); 801 in v1.6.21-r3: +10 J-132 small teams in the board report total / 'אחר' / remainder rule / report = board-member figures, J-129 exact text and J-115 remainder 4 updated in place; 791 in v1.6.21-r2: +1 J-135 cb11's day after the midday checks; 790 in v1.6.21-r1: +8 J-123 company-level alert, +3 J-121 'אחר' / placeholder, −1 replaced J-112 manager check; 780 in v1.6.21; +13 J-115 company totals / placeholder / EBITDA and J-112 company-level Cuckoo; 767 in v1.6.20-r2).
 2. Fresh DB → pack → `tests/test_agents_v1_6_16.sql` (agents; 299 checks).
-3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 246 checks in v1.6.21-r1: +4 J-126 automatic close, +3 J-128 count never with a group metric; 239 in v1.6.21; +20 J-108 immediate notice and the two decisions, the no-department reminder; 219 in v1.6.20-r2).
+3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 246 checks in v1.6.21-r4 too (J-102 catalog allowlist + fn_team_latest_earlier_row, which reads stored team rows only); 246 in v1.6.21-r1: +4 J-126 automatic close, +3 J-128 count never with a group metric; 239 in v1.6.21; +20 J-108 immediate notice and the two decisions, the no-department reminder; 219 in v1.6.20-r2).
 4. `MIG_MODE=super ./tests/test_migration.sh` — v1.4 → v1.6.21 migration as superuser (event-trigger DDL guard +
    timezone preflight): dry run, apply, counts, catalog = fresh, idempotence, rollback.
 5. `MIG_MODE=nosuper ./tests/test_migration.sh` — the same as a **non-superuser** owner: the script itself creates
@@ -176,7 +176,7 @@ grep -rnP '(?<![\p{Hebrew}])כפות(?![\p{Hebrew}])' $INC --exclude=TESTING.md 
 grep -rn 'צבן' $INC --exclude=TESTING.md . | wc -l                                                                        # the name is spelled צבאן
 ```
 
-To keep a full log (as for v1.6.21-r3): `mkdir -p /workspace/test-logs && ./tests/run_tests.sh 2>&1 | tee /workspace/test-logs/v1.6.21-r3_run_tests_$(git rev-parse --short HEAD).log`.
+To keep a full log (as for v1.6.21-r4): `mkdir -p /workspace/test-logs && ./tests/run_tests.sh 2>&1 | tee /workspace/test-logs/v1.6.21-r4_run_tests_$(git rev-parse --short HEAD).log`.
 
 The "no person_id / user_id / pseudonym in agent and board outputs" rule, the A-10 binding text, G-3
 identical responses, the B_t 0.37 weight and the J-88 exact absence definition are checked **inside** the SQL

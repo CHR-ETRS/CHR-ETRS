@@ -1117,8 +1117,9 @@ SELECT t_assert('J-96 = A: no session is left with the backfill switch on',
 -- Catalog check over pg_proc: every public function whose source mentions the word "department" must reference
 -- the marker (department_is_default) or a marker-aware helper (fn_user_in_team / fn_user_is_no_department /
 -- fn_user_group_key). Documented allowlist (each one does NOT group users by department):
---   fn_company_month_shadow, fn_team_month_tax_debt, rpc_ledger_append — read stored team rows (team_aggregate /
---     shadow_balance_aggregate) that were computed marker-aware; no users read.
+--   fn_company_month_shadow, fn_team_month_tax_debt, rpc_ledger_append, fn_team_latest_earlier_row (v1.6.21-r4,
+--     J-137) — read stored team rows (team_aggregate / shadow_balance_aggregate) that were computed marker-aware;
+--     no users read.
 --   fn_ledger_chain, fn_seed_company_ledger_genesis — copy the ledger row's own group into the hash chain.
 --   fn_users_team_joined, fn_users_manager_vault_guard — row triggers on the user's OWN row (department changed).
 --   rpc_provision_governance_user — writes the governance user's own row ('Board').
@@ -1132,7 +1133,7 @@ SELECT p.proname::text AS fn,
  WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND p.prosrc ~* '\mdepartment\M';
 SELECT t_assert('J-102 = A (1): catalog scan — every function that mentions department is marker-aware or on the documented allowlist (exact)',
   (SELECT array_agg(fn ORDER BY fn) FROM t_dept_scan WHERE NOT marker_aware)
-  = ARRAY['fn_company_month_shadow', 'fn_ledger_chain', 'fn_seed_company_ledger_genesis', 'fn_team_month_tax_debt',
+  = ARRAY['fn_company_month_shadow', 'fn_ledger_chain', 'fn_seed_company_ledger_genesis', 'fn_team_latest_earlier_row', 'fn_team_month_tax_debt',
           'fn_users_manager_vault_guard', 'fn_users_team_joined', 'rpc_get_burnout_trend', 'rpc_ledger_append',
           'rpc_provision_governance_user', 'rpc_put_team_absences', 'rpc_team_spoon_alert']::text[]);
 SELECT t_assert('J-102 = A (1): no allowlisted function reads the users table by department',

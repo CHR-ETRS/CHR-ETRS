@@ -2652,7 +2652,7 @@ SELECT t_assert('J-132 = yes: the team refresh also takes the small-teams share 
   AND NOT has_table_privilege('authenticated', 'shadow_balance_small_teams', 'SELECT')
   AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'shadow_balance_small_teams'::regclass)
   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'shadow_balance_small_teams'
-                     AND column_name ~* '(person|user|employee_id|pseudonym|department|team|name)'));
+                     AND column_name ~* '(person|user|employee_id|pseudonym|department|team_name|team_id|name)'));
 SELECT t_assert('J-132 = yes: company total = Σ all teams (team rows + the small teams) + the no-department group — A: Ops 1 + small 2 + no-department 2 = 5 deprived',
   (SELECT d.happiness_debt_balance = round(5 * x.sal * x.f_debt, 2) AND d.deprivation_tax = round(5 * x.sal * x.f_tax, 2)
           AND d.happiness_debt_balance = (SELECT happiness_debt_balance FROM shadow_balance_aggregate WHERE org_id = x.c AND department = 'Ops')
@@ -2735,6 +2735,138 @@ SELECT t_assert('J-132 = yes: the board report and the board-member figures agre
               AND m.chr_real_ebitda = (r.j->'chr_real_ebitda'->>'value')::numeric
               AND m.other_group_label_he IS NULL AND m.other_happiness_debt_balance IS NULL
          FROM t_j132_macro_c m, t_j132_rep r WHERE r.k = 'c'));
+
+-- ============ v1.6.21-r4 J-137 = A (Karin 01.11): stale teams in 'אחר' + the note; vp_hr reminder for an uncalculated team ≥ 10 ============
+-- J137D: Ops (10, refreshed this month) + Fin (10, NOT refreshed this month; one row last month: 2 deprived) + Legal
+--        (3, never a row, 1 deprived) + the Exec manager + vp_hr ('HR'); nobody without a department → 'אחר' = Fin +
+--        Legal + Exec + HR = 15 ≥ 10, shown, X = 1 → note. Last month: Ops (10) had no row → reminder; Fin had one; Legal < 10.
+-- J137F: Ops (10, refreshed) + Fin (10, stale as in D) + 3 without a department → 'אחר' NOT allowed (it would leave
+--        3), so no row and no note although X = 1; remainder 12 (Fin + Exec + HR) + 3 = 15 → total shown.
+DO $$
+DECLARE
+  v_c uuid; v_uid uuid; i int; j int; n int; k text; v_teams text[]; v_size int[];
+BEGIN
+  FOREACH k IN ARRAY ARRAY['d', 'f'] LOOP
+    v_c := md5('j137-' || k)::uuid;
+    INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
+    VALUES (v_c, 'J137 ' || k, 'IL', 0, 4, 'Asia/Jerusalem');
+    INSERT INTO auth.users (id) VALUES (md5('j137-mgr-' || k)::uuid), (md5('j137-hr-' || k)::uuid);
+    INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date, has_employee_profile) VALUES
+      (md5('j137-mgr-' || k)::uuid, v_c, 'mgr@j137' || k, 'J137 Mgr ' || k, 'Exec', 'manager', 'direct_manager', 'Asia/Jerusalem', CURRENT_DATE - 200, true),
+      (md5('j137-hr-' || k)::uuid, v_c, 'hr@j137' || k, 'J137 HR ' || k, 'HR', 'vp_hr', 'vp', 'Asia/Jerusalem', CURRENT_DATE - 200, false);
+    v_teams := CASE k WHEN 'd' THEN ARRAY['Ops', 'Fin', 'Legal'] ELSE ARRAY['Ops', 'Fin', ''] END;
+    v_size  := CASE k WHEN 'd' THEN ARRAY[10, 10, 3] ELSE ARRAY[10, 10, 3] END;
+    n := 0;
+    FOR j IN 1..array_length(v_teams, 1) LOOP
+      FOR i IN 1..v_size[j] LOOP
+        n := n + 1;
+        v_uid := md5('j137-' || k || '-' || n)::uuid;
+        INSERT INTO auth.users (id) VALUES (v_uid);
+        INSERT INTO users (user_id, company_id, reports_to, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+        VALUES (v_uid, v_c, md5('j137-mgr-' || k)::uuid, k || n || '@j137', 'J137 ' || k || ' ' || n,
+                NULLIF(v_teams[j], ''), 'employee', 'employee', 'Asia/Jerusalem', CURRENT_DATE - 100);
+        -- Ops: 1 deprived; Fin: none now (its stale row carries 2); Legal / no department: 1
+        INSERT INTO employee_value_asset (user_id, company_id, annual_salary, is_deprived)
+        VALUES (v_uid, v_c, 100000, i = 1 AND v_teams[j] <> 'Fin');
+      END LOOP;
+    END LOOP;
+    -- Fin's only Shadow Balance row, calculated LAST company month (2 deprived, same formulas as the team refresh)
+    INSERT INTO shadow_balance_aggregate (org_id, department, contributor_count, deprived_count, deprivation_tax_amount,
+                                          happiness_debt_sum, shadow_balance_sum, calculated_at)
+    SELECT v_c, 'Fin', 10, 2, round(2 * s * fn_chr_productivity_factor(), 2), round(2 * s * fn_turnover_tier_midpoint_factor('junior'), 2),
+           round(2 * s * fn_chr_productivity_factor(), 2) + round(2 * s * fn_turnover_tier_midpoint_factor('junior'), 2),
+           fn_agent_day_start(v_c, fn_agent_month_start(v_c, clock_timestamp())) - interval '10 days'
+      FROM (SELECT fn_company_tier_avg_salary(v_c, 'junior') AS s) x;
+  END LOOP;
+END $$;
+SELECT t_as(md5('j137-mgr-d')::uuid);
+SET ROLE authenticated;
+SELECT (rpc_shadow_balance_refresh(md5('j137-d')::uuid, 'Ops', NULL)).contributor_count AS j137d_ops_n;
+RESET ROLE;
+SELECT t_as(md5('j137-mgr-f')::uuid);
+SET ROLE authenticated;
+SELECT (rpc_shadow_balance_refresh(md5('j137-f')::uuid, 'Ops', NULL)).contributor_count AS j137f_ops_n;
+RESET ROLE;
+CREATE TEMP TABLE t_j137 AS
+SELECT k, md5('j137-' || k)::uuid AS c, date_trunc('month', (clock_timestamp() AT TIME ZONE 'Asia/Jerusalem'))::date AS m,
+       fn_company_tier_avg_salary(md5('j137-' || k)::uuid, 'junior') AS sal,
+       fn_turnover_tier_midpoint_factor('junior') AS f_debt, fn_chr_productivity_factor() AS f_tax
+  FROM unnest(ARRAY['d', 'f']) k;
+SELECT t_assert('J-137 = A / J-139: a team not refreshed this month is in ''אחר'' with its latest earlier-month row (Fin: 2 deprived), a team that never had a row with its employees now (Legal: 1) — D: 15 employees (Fin 10, Legal 3, Exec 1, HR 1), 3 deprived, X = 1',
+  (SELECT s.employee_count = 15 AND s.deprived_count = 3 AND s.stale_team_count = 1
+          AND s.happiness_debt_balance = round(2 * x.sal * x.f_debt, 2) + round(1 * x.sal * x.f_debt, 2)
+          AND s.deprivation_tax_amount = round(2 * x.sal * x.f_tax, 2) + round(1 * x.sal * x.f_tax, 2)
+     FROM t_j137 x JOIN shadow_balance_small_teams s ON s.company_id = x.c WHERE x.k = 'd')
+  AND fn_company_month_stale_team_count(md5('j137-f')::uuid, (SELECT m FROM t_j137 WHERE k = 'f')) = 1);
+SELECT period_month FROM t_j137 x, rpc_put_board_reconciliation(x.c, x.m, 1000000, 400000, true);
+SELECT jsonb_array_length(rpc_put_happiness_debt_split(x.c, x.m, d.happiness_debt_balance - 3 * round(d.happiness_debt_balance / 4, 2),
+         round(d.happiness_debt_balance / 4, 2), round(d.happiness_debt_balance / 4, 2), round(d.happiness_debt_balance / 4, 2))) AS split_lines
+  FROM t_j137 x, fn_company_month_shadow(x.c, x.m) d;
+CREATE TEMP TABLE t_j137_rep AS SELECT x.k, rpc_build_board_report(x.c, x.m) AS j FROM t_j137 x;
+SELECT t_assert('J-137 = A: D — the shown ''אחר'' row carries exactly "כולל נתונים מחודשים קודמים של 1 צוותים" (X = 1), no team name, no headcount',
+  (SELECT j->'other_group'->>'stale_teams_note_he' = 'כולל נתונים מחודשים קודמים של 1 צוותים'
+          AND (j->'other_group') - 'stale_teams_note_he' = jsonb_build_object('label_he', 'אחר',
+                'happiness_debt_balance', (SELECT happiness_debt_balance FROM fn_company_month_small_teams(x.c, x.m)),
+                'deprivation_tax', (SELECT deprivation_tax_amount FROM fn_company_month_small_teams(x.c, x.m)))
+          AND j::text !~ '(Fin|Legal|Exec|ללא מחלקה)'
+     FROM t_j137_rep r, t_j137 x WHERE r.k = 'd' AND x.k = 'd'));
+SELECT t_assert('J-137 = A: X = 0 → no note — J132A shows ''אחר'' without stale teams and without the note',
+  (SELECT j->'other_group' ? 'label_he' AND NOT (j->'other_group') ? 'stale_teams_note_he'
+          AND j::text NOT LIKE '%כולל נתונים מחודשים קודמים%' FROM t_j132_rep WHERE k = 'a')
+  AND fn_stale_teams_note_he(0) IS NULL);
+SELECT t_assert('J-137 = A (clarified): F — stale teams exist (X = 1) but ''אחר'' cannot be shown → the row is null and there is no note anywhere; the total is shown',
+  (SELECT j->'other_group' = 'null'::jsonb AND j::text NOT LIKE '%כולל נתונים מחודשים קודמים%'
+          AND NOT j ? 'company_total_display_he' AND (j->>'happiness_debt_balance')::numeric = d.happiness_debt_balance
+     FROM t_j137_rep r, t_j137 x, fn_company_month_shadow(x.c, x.m) d WHERE r.k = 'f' AND x.k = 'f'));
+-- vp_hr reminder for last month (closed): D's Ops (10) had no row then → one notice; Fin (row) and Legal (3) none.
+-- (each refresh in its own statement, so that the checks below see its rows)
+CREATE TEMP TABLE t_j137_runs AS SELECT 'open_month' AS run, fn_refresh_team_not_calculated_reminders(md5('j137-d')::uuid, (SELECT m FROM t_j137 WHERE k = 'd')) AS n;
+INSERT INTO t_j137_runs SELECT 'closed_d', fn_refresh_team_not_calculated_reminders(md5('j137-d')::uuid, fn_month_shift((SELECT m FROM t_j137 WHERE k = 'd'), -1));
+INSERT INTO t_j137_runs SELECT 'all', fn_refresh_team_not_calculated_reminders(NULL, NULL);
+INSERT INTO t_j137_runs SELECT 'again_d', fn_refresh_team_not_calculated_reminders(md5('j137-d')::uuid, fn_month_shift((SELECT m FROM t_j137 WHERE k = 'd'), -1));
+INSERT INTO t_j137_runs SELECT 'again_all', fn_refresh_team_not_calculated_reminders(NULL, NULL);
+SELECT t_assert('J-137 = A: a month that is not closed gives no reminder; the closed month gives D''s vp_hr ONE notice — Ops (10, no row); not Fin (calculated), not Legal (3); F''s Ops too',
+  (SELECT n = 0 FROM t_j137_runs WHERE run = 'open_month') AND (SELECT n = 1 FROM t_j137_runs WHERE run = 'closed_d')
+  AND (SELECT n >= 1 FROM t_j137_runs WHERE run = 'all')
+  AND (SELECT array_agg(r.team_name::text ORDER BY r.team_name) FROM team_not_calculated_ref r WHERE r.company_id = md5('j137-d')::uuid) = ARRAY['Ops']
+  AND (SELECT array_agg(r.team_name::text) FROM team_not_calculated_ref r WHERE r.company_id = md5('j137-f')::uuid) = ARRAY['Ops']);
+SELECT t_assert('J-137 = A: idempotent — re-runs (one company, all companies) add nothing: one notice per team per month per vp_hr',
+  (SELECT n = 0 FROM t_j137_runs WHERE run = 'again_d') AND (SELECT n = 0 FROM t_j137_runs WHERE run = 'again_all')
+  AND (SELECT count(*) = 1 FROM notification n JOIN team_not_calculated_ref r ON r.ref_id = n.ref_id
+        WHERE n.kind = 'team_not_calculated' AND r.company_id = md5('j137-d')::uuid)
+  AND NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'team_not_calculated' GROUP BY recipient_id, ref_id HAVING count(*) > 1));
+SELECT t_assert('J-137 = A: the reference holds the team name and month only — no count, metric or person column; closed to clients',
+  (SELECT array_agg(column_name::text ORDER BY column_name) FROM information_schema.columns WHERE table_name = 'team_not_calculated_ref')
+    = ARRAY['company_id', 'created_at', 'period_month', 'ref_id', 'team_name']::text[]
+  AND NOT has_table_privilege('authenticated', 'team_not_calculated_ref', 'SELECT')
+  AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'team_not_calculated_ref'::regclass));
+CREATE TEMP TABLE t_j137_ref AS SELECT r.ref_id FROM team_not_calculated_ref r WHERE r.company_id = md5('j137-d')::uuid;
+GRANT SELECT ON t_j137_ref TO authenticated;
+SELECT t_as(md5('j137-hr-d')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-137 = A: vp_hr reads her notice and its text — the team name only (no digit, no id, no pseudonym) — J-140 wording',
+  (SELECT count(*) = 1 FROM notification WHERE kind = 'team_not_calculated')
+  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) = 'לצוות Ops לא בוצע חישוב מאזן הצל בחודש שהסתיים.'
+  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) !~ '[0-9]'
+  AND rpc_notification_message_he('team_not_calculated') IS NULL);
+RESET ROLE;
+SELECT t_as(md5('j137-mgr-d')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-137 = A: only vp_hr — the team''s manager sees no notice and gets no text',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'team_not_calculated')
+  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) IS NULL);
+RESET ROLE;
+SELECT t_as(md5('j137-d-1')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-137 = A: only vp_hr — an employee of the team sees no notice and gets no text',
+  NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'team_not_calculated')
+  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) IS NULL);
+RESET ROLE;
+SELECT t_as(md5('j137-hr-f')::uuid);
+SET ROLE authenticated;
+SELECT t_assert('J-137 = A: only her own company — F''s vp_hr gets no text for D''s reference',
+  rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) IS NULL);
+RESET ROLE;
 
 -- ============ v1.6.21 J-112 = A (Karin 31.10): Cuckoo for employees without a department — company level, N ≥ 10 ============
 DO $$
