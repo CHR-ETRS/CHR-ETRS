@@ -2951,7 +2951,8 @@ paths:
         when they are 1-9 the sensitive block (debt, tax, Shadow Balance, CHR Real EBITDA) is null (J-118).
         v1.6.21 (J-121 = A): small teams without a team row are merged into one "אחר" row (other_*) when it has ≥ 10
         and the rest is 0 or ≥ 10; else the remainder (small teams + no-department group) must be 0 or ≥ 10, or the
-        sensitive block is null with company_total_display_he.'
+        sensitive block is null with company_total_display_he. v1.6.21-r3 (J-132): the board report applies the
+        same rule to its month total (other_group).'
       requestBody:
         required: false
         content:
@@ -4000,7 +4001,13 @@ paths:
       summary: Agent 3 — build_board_report(company, month) (cfo / vp_hr)
       description: 'v1.6.21 (J-115 = A, J-118): the company total includes employees without a department (never
         a separate row); when they are 1-9 the total, Happiness Debt, deprivation tax and CHR Real EBITDA are
-        hidden (company_total_display_he = "אין מספיק נתונים להצגה בתקופה זו"; GAAP stays). Publishes only with a balanced reconciliation and the prior-period figures (unless first period),
+        hidden (company_total_display_he = "אין מספיק נתונים להצגה בתקופה זו"; GAAP stays). v1.6.21-r3 (J-132 = yes):
+        the company total also includes the small teams (teams with no Shadow Balance row in the month; snapshot like
+        J-120), shown only as ONE merged row other_group {label_he "אחר", happiness_debt_balance, deprivation_tax}
+        (no team name, no count) when it has ≥ 10 employees and the no-department group left undisplayed is 0 or ≥ 10;
+        else other_group is null, and the remainder (small teams + no-department group) must be 0 or ≥ 10 or the
+        total is hidden as above (same rule as /rpc/rpc_get_board_macro_metrics). The no-department group is never a
+        row and never part of "אחר". Publishes only with a balanced reconciliation and the prior-period figures (unless first period),
         and (v1.6.19, Part A3) only when every metric used for pay / manager bonuses is at level ≥ 2. Fields: chr_real_ebitda
         {value, gaap_ebitda, definition_he, note_he "מדד ניהולי חלופי שמציג קשר, לא השפעה סיבתית מבודדת" (B4), text_status}, reconciliation[],
         shadow_balance[4], exported_on_exit (published batch value, J-43: amount, batch_no, label_he, display_he,
@@ -4623,7 +4630,7 @@ paths:
         v1.6.21 no_department_reminder → "יש X עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות
         לפעול עבורם." with X = the current count of the caller''s company, only for an active vp_hr and only while
         X > 0 (count only, no names). v1.6.21 (J-123 = B) no_department_cuckoo → "בקרב העובדים בלי מחלקה יש סימני
-        העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות." (active vp_hr of a company with a delivered
+        העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות, כדי שההתראות יגיעו למנהלת הנכונה." (J-129 approved; active vp_hr of a company with a delivered
         company-level alert; no number, no name). J-128 = A: one kind per call — the reminder count never comes in
         the same response as any metric of the no-department group. Other kinds → null. The text is
         fixed per kind (no names, no ids) and is never stored in the notification row. The notice itself is

@@ -1,4 +1,4 @@
-<!-- CHR-ETRS MVP v1 · README.md · Version: 1.6.21-mvp r1 (2026-11-01; r1 = J-123 B, J-128 A, J-121 A, J-126 A; 2026-10-31: J-115 A, J-112 A, J-108 A, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31; merged as PR #9, c3a57b6), 1.6.19-mvp (2026-10-31), 1.6.18-mvp (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20) and 1.4.0-mvp (2026-10-06) -->
+<!-- CHR-ETRS MVP v1 · README.md · Version: 1.6.21-mvp r3 (2026-11-01; r3 = J-129 approved, J-132 yes; r2 = J-135 tests date-independent; r1 = J-123 B, J-128 A, J-121 A, J-126 A; 2026-10-31: J-115 A, J-112 A, J-108 A, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31; merged as PR #9, c3a57b6), 1.6.19-mvp (2026-10-31), 1.6.18-mvp (2026-10-31), 1.6.17-mvp (2026-10-31), 1.6.16-mvp (2026-10-30), 1.6.13-mvp (2026-10-25; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24), 1.6.11-mvp (2026-10-24), 1.6.10-mvp (2026-10-21), 1.6.9-mvp (2026-10-21), 1.6.8-mvp (2026-10-21), 1.6.7-mvp (2026-10-20), 1.6.6-mvp (2026-10-20), 1.6.5-mvp (2026-10-20), 1.6.4-mvp (2026-10-20), 1.6.3-mvp (2026-10-20), 1.6.2-mvp (2026-10-20), 1.6.1-mvp (2026-10-20), 1.6.0-mvp (2026-10-20), 1.5.0-mvp (2026-10-20) and 1.4.0-mvp (2026-10-06) -->
 # CHR-ETRS MVP v1.6.21 — Code Pack
 
 **SoT / מקור האמת:** [ADR index](https://docs.google.com/document/d/1U-u5844C4J1Y6WWv59wrX3xJwY8seDbHDDbULAdnGRg/edit) + Karin's approved locks of 2026-10-20  
@@ -7,6 +7,13 @@
 **Pack version:** `1.6.21-mvp`  
 **Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
 
+> **v1.6.21-r3 (2026-11-01, local commit on top of 89439cb):** Karin approved **J-129** (with her addition) and closed **J-132 = yes**:
+> - **J-129:** vp_hr's company-level Cuckoo text is now exactly "בקרב העובדים בלי מחלקה יש סימני העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות, כדי שההתראות יגיעו למנהלת הנכונה." (via `rpc_notification_message_he`, no free-text column).
+> - **J-132:** the board report company total now includes the small teams (snapshot `shadow_balance_small_teams`, like J-120), shown only as ONE **'אחר'** row (`other_group`) under the J-121 rule; 'ללא מחלקה' stays only in the total (J-115). CHR Real EBITDA and the reconciliation use that total; the board report and the board-member figures use the same rule and agree.
+> - New judgment calls **J-137** (which teams are small — same test in the report and the board-member figures) and **J-138** (shape of the 'אחר' row) in `ADR_GAPS.md`.
+>
+> **v1.6.21-r2 (2026-11-01):** J-135 closed — the test suite is date-independent (tests only).
+>
 > **v1.6.21-r1 (2026-11-01, local commit on top of 6d68944):** Karin closed **J-123 = B**, **J-128 = A**, **J-121 = A** and **J-126 = A**:
 > - **J-123:** the company-level Cuckoo alert (employees without a department) has no pseudonym / id anywhere and never reaches a manager; vp_hr gets group wording only — "בקרב העובדים בלי מחלקה יש סימני העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות." (notification kind `no_department_cuckoo`; the recommendation sentence = J-129, for Karin's confirmation). The employee still sees her own alert.
 > - **J-128:** the reminder count X stays exact below 10 but is never returned together with any no-department group metric (catalog + runtime tests).

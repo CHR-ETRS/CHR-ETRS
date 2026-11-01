@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.21 · schema.sql
--- Version: 1.6.21-mvp r1 (2026-11-01 IL; r1 = J-123 B cuckoo_alert.company_level without manager / pseudonym / team + kind 'no_department_cuckoo'; 2026-10-31: J-115 A no-department share of the company Shadow Balance, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- Version: 1.6.21-mvp r3 (2026-11-01 IL; r3 = J-132 shadow_balance_small_teams (small-teams share of the board report total, RLS forced, no client grant); r1 = J-123 B cuckoo_alert.company_level without manager / pseudonym / team + kind 'no_department_cuckoo'; 2026-10-31: J-115 A no-department share of the company Shadow Balance, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
 -- New in 1.6.20 (Karin 31.10): no schema change except comments — the 'ללא מחלקה' absence row (J-92) is a
@@ -2904,6 +2904,26 @@ CREATE INDEX IF NOT EXISTS idx_shadow_no_department_company
 ALTER TABLE shadow_balance_no_department ENABLE ROW LEVEL SECURITY;
 ALTER TABLE shadow_balance_no_department FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE shadow_balance_no_department FROM PUBLIC, anon, authenticated;
+
+-- v1.6.21-r3 (J-132 = yes, Karin 01.11): the Happiness Debt / מס קיפוח of the SMALL TEAMS — real teams with no
+-- Shadow Balance row (shadow_balance_aggregate) in the company month of the snapshot (teams below 10…), taken at
+-- every team Shadow Balance refresh like the no-department share (J-120). It is part of the company total of the
+-- board report and is shown only as ONE merged 'אחר' row (J-121 rule), never one row per team. employee_count = the
+-- employees in it (the J-121 remainder rule uses it). No team name, no person: RLS forced, no client grant.
+CREATE TABLE IF NOT EXISTS shadow_balance_small_teams (
+    snapshot_id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id              uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    employee_count          int NOT NULL CHECK (employee_count >= 0),
+    deprived_count          int NOT NULL CHECK (deprived_count >= 0),
+    deprivation_tax_amount  numeric(14, 2) NOT NULL,
+    happiness_debt_balance  numeric(14, 2) NOT NULL,
+    calculated_at           timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_small_teams_company
+    ON shadow_balance_small_teams (company_id, calculated_at DESC);
+ALTER TABLE shadow_balance_small_teams ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shadow_balance_small_teams FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE shadow_balance_small_teams FROM PUBLIC, anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- B3: projects (v1.6.3: the project manager sees project-level workload aggregates only).

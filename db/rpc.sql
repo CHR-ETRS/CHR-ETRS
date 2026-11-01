@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.21 · rpc.sql
--- Version: 1.6.21-mvp r1 (2026-11-01 IL; r1 = J-123 B company-level Cuckoo without identifiers + vp_hr group notice, J-128 A reminder count never with a group metric, J-121 A 'אחר' merge in the board-member figures, J-126 A audited automatic close of the 'General' notice; 2026-10-31: J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- Version: 1.6.21-mvp r3 (2026-11-01 IL; r3 = J-129 approved text, J-132 small teams in the board report total as one 'אחר' row (shadow_balance_small_teams); r2 = tests only (J-135); r1 = J-123 B company-level Cuckoo without identifiers + vp_hr group notice, J-128 A reminder count never with a group metric, J-121 A 'אחר' merge in the board-member figures, J-126 A audited automatic close of the 'General' notice; 2026-10-31: J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -8,6 +8,11 @@
 -- New in 1.6.1: thresholds count actual contributors (lock #3); ≤3 spoons blocks all tasks
 -- (lock #1); role-tree access, CHRO named view + reason, project load index, board macro
 -- trends, emergency mode, distress button. Every management view writes access_audit_log.
+-- New in 1.6.21-r3 (Karin 01.11): J-129 approved — fn_no_department_cuckoo_he carries Karin's text with her addition;
+--   J-132 = yes — fn_shadow_small_teams_snapshot (at every team refresh, like J-120), fn_company_month_small_teams in
+--   fn_company_month_shadow (the board report total), fn_board_other_group (ONE 'אחר' row, J-121 rule),
+--   fn_company_month_shadow_remainder = fn_undisplayed_remainder (same rule as the board-member figures);
+--   J-137: fn_user_in_small_team is the one team test of the report and the board-member figures.
 -- New in 1.6.21-r1 (Karin 01.11): J-123 = B (company-level Cuckoo without pseudonym / id; vp_hr group wording,
 --   kind 'no_department_cuckoo'), J-128 = A (reminder count only on its own), J-121 = A ('אחר' merge, then the
 --   placeholder, in rpc_get_board_macro_metrics), J-126 = A (fn_auto_close_default_department_review, audited).
@@ -2479,6 +2484,53 @@ $$;
 
 REVOKE ALL ON FUNCTION fn_shadow_no_department_snapshot(uuid) FROM PUBLIC;
 
+-- v1.6.21-r3 (J-132 = yes): true when an active employee belongs to a SMALL team of the company at that moment — a
+-- real team (not the no-department group) with no Shadow Balance row calculated in the current company month.
+CREATE OR REPLACE FUNCTION fn_user_in_small_team(p_org_id uuid, p_department text, p_is_default boolean)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  -- plpgsql: the company-month helpers (fn_agent_*) are defined further down in this file
+  RETURN NOT fn_user_is_no_department(p_department, p_is_default)
+     AND NOT EXISTS (SELECT 1 FROM shadow_balance_aggregate s
+                      WHERE s.org_id = p_org_id AND s.department = p_department
+                        AND s.calculated_at >= fn_agent_day_start(p_org_id, fn_agent_month_start(p_org_id, clock_timestamp())));
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_user_in_small_team(uuid, text, boolean) FROM PUBLIC;
+
+-- v1.6.21-r3 (J-132 = yes, Karin 01.11): the small-teams share of the company Shadow Balance (all small teams
+-- together, same formulas as the team refresh), stored in shadow_balance_small_teams (no client access). Taken at
+-- every team Shadow Balance refresh, right after the no-department share (J-120 pattern; rows with 0 included).
+CREATE OR REPLACE FUNCTION fn_shadow_small_teams_snapshot(p_org_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  INSERT INTO shadow_balance_small_teams (company_id, employee_count, deprived_count, deprivation_tax_amount, happiness_debt_balance)
+  SELECT p_org_id, count(*)::int, count(*) FILTER (WHERE m.deprived)::int,
+         round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived), 0), 2),
+         round(COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.tier)) FILTER (WHERE m.deprived), 0), 2)
+    FROM (SELECT fn_effective_turnover_tier(u.user_id) AS tier,
+                 fn_is_employee_deprived(u.user_id) AS deprived,
+                 fn_company_tier_avg_salary(p_org_id, fn_effective_turnover_tier(u.user_id)) AS tier_salary
+            FROM users u
+           WHERE u.company_id = p_org_id
+             AND fn_user_in_small_team(p_org_id, u.department, u.department_is_default)
+             AND u.employment_ended_at IS NULL
+             AND fn_effective_turnover_tier(u.user_id) IS NOT NULL) m;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_shadow_small_teams_snapshot(uuid) FROM PUBLIC;
+
 -- ---------------------------------------------------------------------------
 -- rpc_team_aggregate_refresh — REGULAR team data, N ≥ 5 (403 below)
 --   Uses company-wide turnover tier avg_annual_salary (O-4), midpoint (O-1), O-3 deprivation,
@@ -2673,6 +2725,8 @@ BEGIN
   RETURNING * INTO v_row;
   -- J-115 = A: the no-department share of the company total is taken at the same moment (never returned here).
   PERFORM fn_shadow_no_department_snapshot(p_org_id);
+  -- J-132 = yes: and the small-teams share (shown only as the merged 'אחר' row of the board report).
+  PERFORM fn_shadow_small_teams_snapshot(p_org_id);
   RETURN v_row;
 END;
 $$;
@@ -3095,7 +3149,8 @@ $$;
 -- ---------------------------------------------------------------------------
 -- v1.6.21 (J-121 = A, Karin 01.11): the parts of the live company Shadow Balance total (active employees with a
 -- turnover tier) that NO displayed team row covers: small_team_n = employees of real teams that have no
--- shadow_balance_aggregate row (teams below 10; executives…), no_dept_n = employees without a department (J-115).
+-- shadow_balance_aggregate row in the current company month (teams below 10; executives…; v1.6.21-r3 J-137: the same
+-- test as the board report, fn_user_in_small_team), no_dept_n = employees without a department (J-115).
 CREATE OR REPLACE FUNCTION fn_company_undisplayed_split(p_company uuid)
 RETURNS TABLE (small_team_n int, no_dept_n int)
 LANGUAGE sql
@@ -3105,9 +3160,8 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT count(*) FILTER (WHERE NOT x.no_dept AND NOT x.has_row)::int, count(*) FILTER (WHERE x.no_dept)::int
     FROM (SELECT fn_user_is_no_department(u.department, u.department_is_default) AS no_dept,
-                 EXISTS (SELECT 1 FROM shadow_balance_aggregate s
-                          WHERE s.org_id = p_company
-                            AND s.department = fn_user_group_key(u.department, u.department_is_default)) AS has_row
+                 -- v1.6.21-r3 (J-137): the same team test as the board report's small-teams snapshot
+                 NOT fn_user_in_small_team(p_company, u.department, u.department_is_default) AS has_row
             FROM users u
            WHERE u.company_id = p_company AND u.employment_ended_at IS NULL
              AND fn_effective_turnover_tier(u.user_id) IS NOT NULL) x
@@ -3332,10 +3386,7 @@ BEGIN
              fn_effective_turnover_tier(u.user_id) AS t_grp,
              fn_is_employee_deprived(u.user_id) AS deprived,
              fn_company_tier_avg_salary(v_comp, fn_effective_turnover_tier(u.user_id)) AS tier_salary,
-             (NOT fn_user_is_no_department(u.department, u.department_is_default)
-              AND NOT EXISTS (SELECT 1 FROM shadow_balance_aggregate s
-                               WHERE s.org_id = v_comp
-                                 AND s.department = fn_user_group_key(u.department, u.department_is_default))) AS small
+             fn_user_in_small_team(v_comp, u.department, u.department_is_default) AS small   -- J-137 (same test as the report)
         FROM users u
        WHERE u.company_id = v_comp
          AND u.employment_ended_at IS NULL
@@ -6300,12 +6351,12 @@ $$;
 REVOKE ALL ON FUNCTION fn_auto_close_default_department_review(uuid) FROM PUBLIC;
 
 -- v1.6.21 (J-123 = B, Karin 01.11): the vp_hr group wording of a delivered company-level Cuckoo alert — Karin's exact
--- sentence + a neutral recommendation (J-129, recorded for Karin). No count, no person, no team.
+-- text (J-129 approved 01.11 with her addition, letter for letter). No count, no person, no team.
 CREATE OR REPLACE FUNCTION fn_no_department_cuckoo_he()
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
-AS $$ SELECT 'בקרב העובדים בלי מחלקה יש סימני העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות.'::text $$;
+AS $$ SELECT 'בקרב העובדים בלי מחלקה יש סימני העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות, כדי שההתראות יגיעו למנהלת הנכונה.'::text $$;
 
 -- v1.6.21 (J-123 = B): true when the company has a DELIVERED company-level Cuckoo alert (60-second window passed,
 -- not vetoed by the employee) — the same delivery rule as the manager inbox of team alerts.
@@ -6988,9 +7039,40 @@ $$;
 
 -- ---------- Agent 3 · monthly board report ----------
 
+-- v1.6.21-r3 (J-132): the latest no-department snapshot of a company month (no row when none). Internal only.
+CREATE OR REPLACE FUNCTION fn_company_month_no_department(p_company uuid, p_month date)
+RETURNS TABLE (employee_count int, happiness_debt_balance numeric, deprivation_tax_amount numeric)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT n.employee_count, n.happiness_debt_balance, n.deprivation_tax_amount FROM shadow_balance_no_department n
+   WHERE n.company_id = p_company
+     AND n.calculated_at >= fn_agent_day_start(p_company, p_month)
+     AND n.calculated_at <  fn_agent_day_start(p_company, fn_month_shift(p_month, 1))
+   ORDER BY n.calculated_at DESC LIMIT 1
+$$;
+
+-- v1.6.21-r3 (J-132 = yes): the latest small-teams snapshot of a company month (no row when none). Internal only.
+CREATE OR REPLACE FUNCTION fn_company_month_small_teams(p_company uuid, p_month date)
+RETURNS TABLE (employee_count int, happiness_debt_balance numeric, deprivation_tax_amount numeric)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT s.employee_count, s.happiness_debt_balance, s.deprivation_tax_amount FROM shadow_balance_small_teams s
+   WHERE s.company_id = p_company
+     AND s.calculated_at >= fn_agent_day_start(p_company, p_month)
+     AND s.calculated_at <  fn_agent_day_start(p_company, fn_month_shift(p_month, 1))
+   ORDER BY s.calculated_at DESC LIMIT 1
+$$;
+
 -- Company Happiness Debt balance and מס קיפוח of a month = Σ over departments of the latest
 -- shadow_balance_aggregate row calculated in that company month (NULL when none) + v1.6.21 (J-115 = A) the latest
--- no-department snapshot of that month (employees without a department are part of the company total, never a row).
+-- no-department snapshot of that month (employees without a department are part of the company total, never a row)
+-- + v1.6.21-r3 (J-132 = yes) the latest small-teams snapshot of that month (shown only as the merged 'אחר' row).
 CREATE OR REPLACE FUNCTION fn_company_month_shadow(p_company uuid, p_month date)
 RETURNS TABLE (happiness_debt_balance numeric, deprivation_tax numeric)
 LANGUAGE sql
@@ -6998,7 +7080,8 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT t.debt + COALESCE(d.happiness_debt_balance, 0), t.tax + COALESCE(d.deprivation_tax_amount, 0)
+  SELECT t.debt + COALESCE(d.happiness_debt_balance, 0) + COALESCE(o.happiness_debt_balance, 0),
+         t.tax + COALESCE(d.deprivation_tax_amount, 0) + COALESCE(o.deprivation_tax_amount, 0)
     FROM (SELECT sum(x.happiness_debt_balance) AS debt, sum(x.deprivation_tax_amount) AS tax
             FROM (SELECT DISTINCT ON (s.department) s.happiness_debt_balance, s.deprivation_tax_amount
                     FROM shadow_balance_aggregate s
@@ -7006,16 +7089,16 @@ AS $$
                      AND s.calculated_at >= fn_agent_day_start(p_company, p_month)
                      AND s.calculated_at <  fn_agent_day_start(p_company, fn_month_shift(p_month, 1))
                    ORDER BY s.department, s.calculated_at DESC) x) t
-    LEFT JOIN LATERAL (SELECT n.happiness_debt_balance, n.deprivation_tax_amount FROM shadow_balance_no_department n
-                        WHERE n.company_id = p_company
-                          AND n.calculated_at >= fn_agent_day_start(p_company, p_month)
-                          AND n.calculated_at <  fn_agent_day_start(p_company, fn_month_shift(p_month, 1))
-                        ORDER BY n.calculated_at DESC LIMIT 1) d ON true
+    LEFT JOIN LATERAL (SELECT n.happiness_debt_balance, n.deprivation_tax_amount, n.employee_count
+                         FROM fn_company_month_no_department(p_company, p_month) n) d ON true
+    LEFT JOIN LATERAL (SELECT s.happiness_debt_balance, s.deprivation_tax_amount, s.employee_count
+                         FROM fn_company_month_small_teams(p_company, p_month) s) o ON true
 $$;
 
--- v1.6.21 (J-115 = A): employees in the company Shadow Balance total of a month that NO displayed team row covers
--- = the latest no-department snapshot's employee_count (every team row in the total has N ≥ 10 and is readable by
--- managers; teams below 10 have no row and are not in the total). 0 when no snapshot.
+-- v1.6.21 (J-115 = A) + v1.6.21-r3 (J-132 = yes, J-121 rule): employees in the company Shadow Balance total of a
+-- month that NO displayed row covers = the no-department group when the merged 'אחר' row is shown, else the small
+-- teams + the no-department group (fn_undisplayed_remainder — the same rule as the board-member figures). 0 when no
+-- snapshot.
 CREATE OR REPLACE FUNCTION fn_company_month_shadow_remainder(p_company uuid, p_month date)
 RETURNS int
 LANGUAGE sql
@@ -7023,11 +7106,26 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT COALESCE((SELECT n.employee_count FROM shadow_balance_no_department n
-                    WHERE n.company_id = p_company
-                      AND n.calculated_at >= fn_agent_day_start(p_company, p_month)
-                      AND n.calculated_at <  fn_agent_day_start(p_company, fn_month_shift(p_month, 1))
-                    ORDER BY n.calculated_at DESC LIMIT 1), 0)
+  SELECT fn_undisplayed_remainder(COALESCE((SELECT s.employee_count FROM fn_company_month_small_teams(p_company, p_month) s), 0),
+                                  COALESCE((SELECT n.employee_count FROM fn_company_month_no_department(p_company, p_month) n), 0))
+$$;
+
+-- v1.6.21-r3 (J-132 = yes): the merged 'אחר' row of a month's board report — the small teams together (label,
+-- Happiness Debt, מס קיפוח; no team name, no count), or NULL when the J-121 rule does not allow it (small teams
+-- below 10, or a no-department group of 1–9 left undisplayed) or the month has no small-teams snapshot.
+CREATE OR REPLACE FUNCTION fn_board_other_group(p_company uuid, p_month date)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT CASE WHEN fn_other_group_shown(s.employee_count,
+                                        COALESCE((SELECT n.employee_count FROM fn_company_month_no_department(p_company, p_month) n), 0))
+              THEN jsonb_build_object('label_he', fn_other_group_label_he(),
+                                      'happiness_debt_balance', s.happiness_debt_balance,
+                                      'deprivation_tax', s.deprivation_tax_amount) END
+    FROM fn_company_month_small_teams(p_company, p_month) s
 $$;
 
 -- v1.6.21 (J-115 = A, J-118): differencing guard (sensitive threshold 10) — true when the undisplayed remainder of
@@ -7340,6 +7438,8 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION fn_company_month_shadow_remainder(uuid, date), fn_company_shadow_suppressed(uuid, date) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_company_month_no_department(uuid, date), fn_company_month_small_teams(uuid, date),
+                       fn_board_other_group(uuid, date) FROM PUBLIC;
 REVOKE ALL ON FUNCTION fn_leaver_memo(uuid, date), fn_company_month_shadow(uuid, date), fn_company_month_reporters(uuid, date),
                        fn_debt_split(uuid, date), fn_debt_split_total(uuid, date), fn_reconciliation_month(uuid, date),
                        fn_company_month_pcq(uuid, date), fn_turnover_above_baseline(uuid, date),
@@ -9157,6 +9257,8 @@ BEGIN
     'shadow_balance', v_cur->'debt_lines',
     'shadow_balance_note_he', 'גילוי ניהולי, לא הפרשה בספרים',
     'happiness_debt_balance', v_cur->'happiness_debt_balance',
+    -- v1.6.21-r3 (J-132 = yes): the small teams inside the company total, as ONE merged 'אחר' row (J-121 rule)
+    'other_group', fn_board_other_group(p_company_id, v_month),
     'exported_on_exit', fn_board_memo_line(p_company_id, v_month),
     'deprivation_tax', jsonb_build_object('stored_rate', v_rate, 'stored_amount', v_tax, 'display_rate', v_disp,
                                           'display_amount', round(v_tax * v_disp / v_rate, 2),
@@ -9185,6 +9287,7 @@ BEGIN
         jsonb_build_object('line', 'company_total', 'label_he', fn_insufficient_data_period_he(), 'current', NULL, 'prior', NULL)),
       'shadow_balance', NULL,
       'happiness_debt_balance', NULL,
+      'other_group', NULL,
       'deprivation_tax', (v_report->'deprivation_tax') || jsonb_build_object('display_he', fn_insufficient_data_period_he()));
   END IF;
   INSERT INTO board_report (company_id, period_month, report) VALUES (p_company_id, v_month, v_report);
