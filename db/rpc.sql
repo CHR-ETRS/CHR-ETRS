@@ -292,15 +292,29 @@ REVOKE ALL ON FUNCTION fn_ensure_local_spoon_budget(uuid) FROM PUBLIC;
 --   Farming at 4–5 stays allowed. The CB never touches questionnaires or the shop.
 -- Lock #1 (Karin, 2026-10-20): at ≤3 spoons ALL tasks are blocked, Farming included.
 -- ---------------------------------------------------------------------------
+-- TRUE when the Circuit Breaker blocks a task of p_task_kind at p_spoons remaining (same rule as below, no raise).
+-- J-146 A: evaluates BOTH conditions on every call (no short-circuit) so every refusal does the same work.
+CREATE OR REPLACE FUNCTION fn_cb_task_blocked(p_spoons int, p_task_kind task_kind_enum)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v_go_home  boolean := (p_spoons IS NULL OR p_spoons <= 3);
+  v_fighting boolean := (p_task_kind = 'fighting' AND COALESCE(p_spoons, 0) <= 5);
+BEGIN
+  RETURN v_go_home OR v_fighting;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_cb_task_blocked(int, task_kind_enum) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION fn_cb_check_task(p_spoons int, p_task_kind task_kind_enum)
 RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF p_spoons IS NULL OR p_spoons <= 3 THEN
-    PERFORM fn_raise_business('circuit_breaker_active');
-  END IF;
-  IF p_task_kind = 'fighting' AND p_spoons <= 5 THEN
+  IF fn_cb_task_blocked(p_spoons, p_task_kind) THEN
     PERFORM fn_raise_business('circuit_breaker_active');
   END IF;
 END;
@@ -470,12 +484,73 @@ $$;
 REVOKE ALL ON FUNCTION fn_assert_may_assign_task(uuid) FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
+-- J-146 A (Karin): when the caller assigns to SOMEONE ELSE (her authorized direct manager), every refusal
+-- after the authorization check returns ONE neutral answer: 403 assignment_unavailable (J-152), same
+-- SQLSTATE / message / DETAIL / HINT, raised from ONE place. Only the employee assigning to herself sees
+-- the exact reason (circuit_breaker_active / anti_get_blocked, unchanged). Strangers keep 403 access_denied
+-- (J-153 = A, Karin: always the identical 403 access_denied) and anonymous callers keep anti_get_blocked.
+-- Hebrew text of the neutral answer: rpc_notification_message_he('assignment_unavailable') (J-155).
+-- ---------------------------------------------------------------------------
+
+-- The fixed Hebrew text of the neutral assignment refusal (no digits, no names, no ids).
+CREATE OR REPLACE FUNCTION fn_assignment_unavailable_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT 'לא ניתן להקצות לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר.'::text
+$$;
+
+REVOKE ALL ON FUNCTION fn_assignment_unavailable_he() FROM PUBLIC;
+
+-- The business refusal code of an assignment, or NULL when it may go ahead. Computes every rule first
+-- (Circuit Breaker, then the cost against today's כפיות) and only then picks the code, so all refusals
+-- evaluate the same checks in the same order.
+CREATE OR REPLACE FUNCTION fn_assign_refusal_reason(p_spoons int, p_task_kind task_kind_enum, p_cost int)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v_cb    boolean := fn_cb_task_blocked(p_spoons, p_task_kind);
+  v_short boolean := (p_spoons IS NULL OR p_cost > p_spoons);
+BEGIN
+  IF v_cb THEN
+    RETURN 'circuit_breaker_active';
+  ELSIF v_short THEN
+    RETURN 'anti_get_blocked';     -- distinct from CB (Q-001 / N-1–N-3 API v2), self only
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assign_refusal_reason(int, task_kind_enum, int) FROM PUBLIC;
+
+-- Re-raise a refusal for the caller of rpc_assign_task: the exact error when she assigns to herself
+-- (called from an exception handler: p_self = true → the caller re-raises the original), else the single
+-- neutral 403 assignment_unavailable. Returns only when p_self is true.
+CREATE OR REPLACE FUNCTION fn_assign_neutral_refusal(p_self boolean)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF p_self IS NOT TRUE THEN
+    PERFORM fn_raise_business('assignment_unavailable');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assign_neutral_refusal(boolean) FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
 -- rpc_assign_task — compute s_final, Circuit Breaker v1.5, debit, insert.
 -- Client does NOT send s_base for pricing — RPC computes from task_kind/flags.
 -- Farming s_base=0 does NOT refill spoons (debit 0).
 -- When the debit brings the day to ≤3 the go-home entry is logged automatically.
 -- Security fix (J-143): only self or the assignee's direct manager (else 403 access_denied), checked
--- before ANY read / write — the circuit-breaker / anti-GET codes below are unchanged.
+-- before ANY read / write — the circuit-breaker / anti-GET codes are unchanged for self-assignment.
+-- J-146 A: for an assignment to someone else, every refusal after that check (Circuit Breaker, too few
+-- כפיות, any other error) → ONE neutral 403 assignment_unavailable, raised from one handler.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_assign_task(
   p_assignee_id     uuid,
@@ -500,12 +575,18 @@ DECLARE
   v_budget     spoon_budget;
   v_row        task;
   v_elem       jsonb;
+  v_self       boolean;
+  v_reason     text;
 BEGIN
   IF auth.uid() IS NULL THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
   -- J-143: authorization BEFORE any read or write (spoon_budget, early_leave_log, task).
   PERFORM fn_assert_may_assign_task(p_assignee_id);
+  v_self := (p_assignee_id = auth.uid());
+
+  -- J-146 A: everything below runs in ONE block on every path; a refusal for someone else is neutral.
+  BEGIN
 
   IF p_task_kind = 'farming' THEN
     v_s_base := 0;  -- Farming does NOT refill; cost 0
@@ -536,11 +617,10 @@ BEGIN
      AND budget_date = fn_user_local_date(p_assignee_id)
    FOR UPDATE;
 
-  PERFORM fn_cb_check_task(v_budget.current_spoon_count, p_task_kind);
-
-  IF v_cost > v_budget.current_spoon_count THEN
-    -- Distinct from CB: anti_get_blocked (Q-001 / N-1–N-3 API v2) → HTTP 403
-    PERFORM fn_raise_business('anti_get_blocked');
+  -- Circuit Breaker, then cost vs today's כפיות — both always evaluated (fn_assign_refusal_reason).
+  v_reason := fn_assign_refusal_reason(v_budget.current_spoon_count, p_task_kind, v_cost);
+  IF v_reason IS NOT NULL THEN
+    PERFORM fn_raise_business(v_reason);
   END IF;
 
   IF v_cost > 0 THEN
@@ -565,6 +645,11 @@ BEGIN
   IF v_budget.current_spoon_count <= 3 THEN
     PERFORM fn_log_early_leave(p_assignee_id);
   END IF;
+
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM fn_assign_neutral_refusal(v_self);   -- someone else → 403 assignment_unavailable
+    RAISE;                                       -- self → the exact original error
+  END;
 
   RETURN v_row;
 END;
@@ -6685,7 +6770,8 @@ REVOKE ALL ON FUNCTION fn_no_department_cuckoo_for_vp_hr(uuid) FROM PUBLIC;
 -- 'default_department_review' → the J-101 text; v1.6.21 'no_department_reminder' → the reminder with X = the
 -- CURRENT count of employees without a department in the caller's company, only for its active vp_hr and only
 -- while X > 0 (else NULL); v1.6.21 (J-123 = B) 'no_department_cuckoo' → the group wording, only for an active vp_hr
--- of a company with a delivered company-level alert; other kinds → NULL. J-128 = A: ONE kind per call, so the
+-- of a company with a delivered company-level alert; J-146 A 'assignment_unavailable' → the neutral assignment
+-- refusal text, for any caller; other kinds → NULL. J-128 = A: ONE kind per call, so the
 -- reminder count is never returned together with any metric of the no-department group.
 DROP FUNCTION IF EXISTS rpc_notification_message_he(text);   -- v1.6.21-r4 (J-137 = A): p_ref_id added
 CREATE OR REPLACE FUNCTION rpc_notification_message_he(p_kind text, p_ref_id uuid DEFAULT NULL)
@@ -6698,7 +6784,9 @@ AS $$
 DECLARE
   v_comp uuid := fn_caller_vp_hr_company();
 BEGIN
-  IF p_kind = 'default_department_review' THEN
+  IF p_kind = 'assignment_unavailable' THEN
+    RETURN fn_assignment_unavailable_he();                        -- J-146 A / J-155: neutral assignment refusal
+  ELSIF p_kind = 'default_department_review' THEN
     RETURN fn_default_department_notice_he();
   ELSIF p_kind = 'no_department_reminder' AND v_comp IS NOT NULL THEN
     RETURN fn_no_department_reminder_for_vp_hr(v_comp);

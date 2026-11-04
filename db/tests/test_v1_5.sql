@@ -20,6 +20,8 @@
 --   * deprived employee needs TWO consecutive weeks (previous-week fixtures added).
 -- v1.6.17 (Karin 31.10): tests changed BY DESIGN and marked "v1.6.17": Cantril is MONTHLY → 10 (was short 2);
 --   TPS-12 / IHS quarterly participation = 10 (was "לא הוגדר" → 0).
+-- J-146 A (Karin 04.11): the 4 manager-assign Circuit Breaker checks in section 5 changed BY DESIGN — the direct
+--   manager now gets the neutral 403 assignment_unavailable; self-assignment keeps circuit_breaker_active (tests/test_assign_authz.sql).
 -- The agents tests live in tests/test_agents_v1_6_16.sql (filename kept; content v1.6.17).
 -- =============================================================================
 \set QUIET on
@@ -318,18 +320,18 @@ UPDATE spoon_budget SET current_spoon_count = 6 WHERE user_id = t_emp('D9', 1);
 SELECT t_as('00000000-0000-0000-0000-00000000aaaa');
 SET ROLE authenticated;
 SELECT t_assert('fighting allowed at 6 (→5)', (SELECT s_final = 1 FROM rpc_assign_task(t_emp('D9', 1), 'f1', 'fighting')));
-SELECT t_expect_err('fighting blocked at 5', format($$SELECT rpc_assign_task(%L, 'f2', 'fighting')$$, t_emp('D9', 1)), 'circuit_breaker_active');
+SELECT t_expect_err('fighting blocked at 5 (J-146 A: the direct manager gets the neutral assignment_unavailable)', format($$SELECT rpc_assign_task(%L, 'f2', 'fighting')$$, t_emp('D9', 1)), 'assignment_unavailable');
 SELECT t_assert('farming allowed at 5', (SELECT task_kind = 'farming' FROM rpc_assign_task(t_emp('D9', 1), 'farm', 'farming')));
 RESET ROLE;
 UPDATE spoon_budget SET current_spoon_count = 4 WHERE user_id = t_emp('D9', 1);
 SELECT t_assert('day_status at 4 = FIGHTING_BLOCKED', (SELECT day_status = 'FIGHTING_BLOCKED' FROM spoon_budget WHERE user_id = t_emp('D9', 1)));
 SELECT t_as('00000000-0000-0000-0000-00000000aaaa');
 SET ROLE authenticated;
-SELECT t_expect_err('fighting blocked at 4', format($$SELECT rpc_assign_task(%L, 'f3', 'fighting')$$, t_emp('D9', 1)), 'circuit_breaker_active');
+SELECT t_expect_err('fighting blocked at 4 (J-146 A: neutral assignment_unavailable for the manager)', format($$SELECT rpc_assign_task(%L, 'f3', 'fighting')$$, t_emp('D9', 1)), 'assignment_unavailable');
 -- farming with +1 modifier: 4 → 3 → go home logged
 SELECT t_assert('farming +1 at 4 → 3', (SELECT s_final = 1 FROM rpc_assign_task(t_emp('D9', 1), 'farm2', 'farming', false, false, '[1]')));
-SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Farming', format($$SELECT rpc_assign_task(%L, 'farm3', 'farming')$$, t_emp('D9', 1)), 'circuit_breaker_active');
-SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Fighting', format($$SELECT rpc_assign_task(%L, 'fight3', 'fighting')$$, t_emp('D9', 1)), 'circuit_breaker_active');
+SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Farming (J-146 A: neutral for the manager)', format($$SELECT rpc_assign_task(%L, 'farm3', 'farming')$$, t_emp('D9', 1)), 'assignment_unavailable');
+SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Fighting (J-146 A: neutral for the manager)', format($$SELECT rpc_assign_task(%L, 'fight3', 'fighting')$$, t_emp('D9', 1)), 'assignment_unavailable');
 SELECT t_assert('manager feed: pseudonym + locked text only',
   (SELECT count(*) = 1 AND bool_and(display_pseudonym = t_pseudo('D9', 1) AND entry_text = 'יציאה מוקדמת מאושרת') FROM early_leave_manager_v));
 RESET ROLE;

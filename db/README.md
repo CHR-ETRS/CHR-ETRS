@@ -7,10 +7,15 @@
 **Pack version:** `1.6.21-mvp`  
 **Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
 
+> **J-146 A (Karin 04.11, branch `db/authz-sensitive-rpcs`, local commit on top of 1ea87b7) — one neutral refusal for the direct manager in `rpc_assign_task`:**
+> - The direct manager (assigning to someone else) gets ONE answer for every refusal after the authorization check (Circuit Breaker, too few כפיות, bad input): **403 `assignment_unavailable`** (J-152: name / status pending Karin), same body and fields every time; screen text via `rpc_notification_message_he('assignment_unavailable')`: "לא ניתן להקצות לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר."
+> - The employee assigning to herself still sees the exact reason (`circuit_breaker_active` / `anti_get_blocked`). Anyone else: always the identical 403 `access_denied` (J-153 = A). Anonymous: `anti_get_blocked` (unchanged). A refusal writes nothing.
+> - Also recorded: J-142 = A (current behaviour), J-143–J-145 approved. Details, J-152–J-158 and the client conflict found on a remote branch: `ADR_GAPS.md`.
+>
 > **Security fix (2026-11-04, branch `db/assign-task-authz`, local commit on top of 78e02d9) — `rpc_assign_task` authorization (J-143):**
 > - Before: `rpc_assign_task` (SECURITY DEFINER, so RLS does not protect `spoon_budget`) only checked that a user was signed in — any signed-in user could assign a task to anyone, debit her כפיות and, near the threshold, write an `early_leave_log` (WORM) entry.
 > - Now: only the employee herself or her active **direct manager** (`users.reports_to`, the solid line) may assign; anyone else → **403 `access_denied`** (SQLSTATE 42501, the pack's usual authorization error). The check (`fn_assert_may_assign_task` → `fn_is_direct_manager_of`) runs **first**, before any read or write of `spoon_budget`, `early_leave_log` or `task`, so the answer reveals nothing about energy.
-> - Unchanged: the circuit-breaker / anti-GET codes for an authorized caller (pending decision), and 403 `anti_get_blocked` for a call without a signed-in user.
+> - Unchanged at the time: the circuit-breaker / anti-GET codes for an authorized caller (since J-146 A: only for self-assignment; the direct manager gets `assignment_unavailable`), and 403 `anti_get_blocked` for a call without a signed-in user.
 > - Tests: `tests/test_assign_authz.sql` (own fresh DB in `tests/run_tests.sh`). Interpretations J-143–J-146 and the other `rpc_*` functions with a similar gap (not fixed here) are in `ADR_GAPS.md`.
 >
 > **v1.6.21-r4 (2026-11-01, local commit on top of 0305b5b):** Karin closed **J-137 = A** and approved **J-138** as implemented:
@@ -372,6 +377,8 @@ Do **not** run Supabase tests from this pack until Stage A 27/27 (Karin).
 | `tests/` | בדיקות על PostgreSQL 17 נקי (כולל `test_agents_v1_6_16.sql` — 18 בדיקות v3, ו־`test_board_v1_6_19.sql` — דוח הדירקטוריון v1.6.19) |
 
 תיקון אבטחה (04.11, J-143): `rpc_assign_task` מאפשר שיוך משימה רק לעובדת עצמה או למנהל/ת הישיר/ה שלה (`users.reports_to`); כל משתמש אחר מקבל 403 `access_denied` עוד לפני קריאת הכפיות — בלי חיוב כפיות, בלי משימה ובלי רישום יציאה מוקדמת. קודי מפסק הזרם / Anti-GET לא שונו.
+
+החלטה J-146 A (04.11): מנהל/ת ישיר/ה שמקצה משימה לעובדת ונדחה/ית מקבל/ת תמיד אותה תשובה ניטרלית — 403 `assignment_unavailable` עם הטקסט "לא ניתן להקצות לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר." — בלי לדעת אם הסיבה היא מפסק הזרם, מחסור בכפיות או סיבה אחרת. רק עובדת שמקצה לעצמה רואה את הסיבה המדויקת. כל אדם אחר מקבל תמיד 403 `access_denied` זהה (J-153 = A).
 
 עיקרי 1.6.19 (31.10): שורת "יצא עם העוזבים" ורשימת העוזבים מתעדכנות רק באצוות של 10 עוזבים חדשים (J-43, הוכרע); אומדן כפית שמומשה בש"ח (A-3); רמות אימות 0–4, תיק אימות, הצמדה לשכר, שכבות הדוח וממשל; 5 מקורות (A-10).
 
