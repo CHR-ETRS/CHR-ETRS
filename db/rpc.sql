@@ -6710,6 +6710,8 @@ REVOKE ALL ON FUNCTION fn_teams_not_calculated(uuid, date) FROM PUBLIC;
 -- vp_hr gets ONE 'team_not_calculated' notice per team of ≥ 10 without a row that month (reference: company, team,
 -- month). Idempotent (unique reference + unique notice): re-runs and a second pack apply add nothing. A month that
 -- is not closed yet gives nothing. Returns the notices added. One company, or all when p_company is NULL.
+-- v1.6.21-r5 (J-141 = A, J-142 open): at most one reminder per team per month — one reference per (company, team,
+-- month) and one notice of it per active vp_hr; re-runs (job, pack, rebuilt report) never add a second.
 CREATE OR REPLACE FUNCTION fn_refresh_team_not_calculated_reminders(p_company uuid DEFAULT NULL, p_month date DEFAULT NULL)
 RETURNS int
 LANGUAGE plpgsql

@@ -2894,6 +2894,36 @@ SELECT t_assert('J-137 = A: only vp_hr — an employee of the team sees no notic
   NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'team_not_calculated')
   AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) IS NULL);
 RESET ROLE;
+-- ============ v1.6.21-r5 J-141 = A (Karin 04.11) + J-142 (open): at most one reminder per team per month — per vp_hr ============
+-- A second active vp_hr joins D after the first run; the job and a rebuilt report of the SAME closed month give her
+-- her one notice and never a second one to anyone: per (team, month, vp_hr) = 1, total = the active vp_hr count.
+INSERT INTO auth.users (id) VALUES (md5('j141-hr2-d')::uuid);
+INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date, has_employee_profile)
+VALUES (md5('j141-hr2-d')::uuid, md5('j137-d')::uuid, 'hr2@j137d', 'J141 HR2 d', 'HR', 'vp_hr', 'vp', 'Asia/Jerusalem', CURRENT_DATE - 200, false);
+CREATE TEMP TABLE t_j141 AS SELECT md5('j137-d')::uuid AS c, fn_month_shift((SELECT m FROM t_j137 WHERE k = 'd'), -1) AS pm;
+SELECT period_month FROM t_j141 x, rpc_put_board_reconciliation(x.c, x.pm, 1000000, 400000, true);
+SELECT jsonb_array_length(rpc_put_happiness_debt_split(x.c, x.pm, d.happiness_debt_balance - 3 * round(d.happiness_debt_balance / 4, 2),
+         round(d.happiness_debt_balance / 4, 2), round(d.happiness_debt_balance / 4, 2), round(d.happiness_debt_balance / 4, 2))) AS j141_split_lines
+  FROM t_j141 x, fn_company_month_shadow(x.c, x.pm) d;
+SET ROLE service_role;
+CREATE TEMP TABLE t_j141_runs AS SELECT 'job_1' AS run, rpc_team_not_calculated_reminder_job() AS n;
+RESET ROLE;
+CREATE TEMP TABLE t_j141_rep1 AS SELECT rpc_build_board_report(x.c, x.pm) AS j FROM t_j141 x;
+CREATE TEMP TABLE t_j141_rep2 AS SELECT rpc_build_board_report(x.c, x.pm) AS j FROM t_j141 x;
+SET ROLE service_role;
+INSERT INTO t_j141_runs SELECT 'job_2', rpc_team_not_calculated_reminder_job();
+RESET ROLE;
+SELECT t_assert('J-141 = A: the job and the rebuilt report of the same closed month add no second reminder — the new vp_hr got hers once (job_1 = 1), job_2 = 0; per (team, month, vp_hr) = 1; total = 2 = the active vp_hr of D',
+  (SELECT n = 1 FROM t_j141_runs WHERE run = 'job_1') AND (SELECT n = 0 FROM t_j141_runs WHERE run = 'job_2')
+  AND (SELECT count(*) FROM t_j141_rep1) = 1 AND (SELECT count(*) FROM t_j141_rep2) = 1
+  AND (SELECT count(*) FROM team_not_calculated_ref r WHERE r.company_id = md5('j137-d')::uuid) = 1
+  AND NOT EXISTS (SELECT 1 FROM notification n JOIN team_not_calculated_ref r ON r.ref_id = n.ref_id
+                   WHERE n.kind = 'team_not_calculated' AND r.company_id = md5('j137-d')::uuid
+                   GROUP BY r.team_name, r.period_month, n.recipient_id HAVING count(*) <> 1)
+  AND (SELECT count(*) FROM notification n JOIN team_not_calculated_ref r ON r.ref_id = n.ref_id
+        WHERE n.kind = 'team_not_calculated' AND r.company_id = md5('j137-d')::uuid)
+    = (SELECT count(*) FROM users u WHERE u.company_id = md5('j137-d')::uuid AND u.app_role = 'vp_hr' AND u.employment_ended_at IS NULL)
+  AND (SELECT count(*) FROM users u WHERE u.company_id = md5('j137-d')::uuid AND u.app_role = 'vp_hr' AND u.employment_ended_at IS NULL) = 2);
 SELECT t_as(md5('j137-hr-f')::uuid);
 SET ROLE authenticated;
 SELECT t_assert('J-137 = A: only her own company — F''s vp_hr gets no text for D''s reference',
