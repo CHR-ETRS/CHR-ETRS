@@ -1,6 +1,6 @@
 -- =============================================================================
--- CHR-ETRS MVP v1.6.20 · schema.sql
--- Version: 1.6.20-mvp r2 (2026-10-31 IL; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
+-- CHR-ETRS MVP v1.6.21 · schema.sql
+-- Version: 1.6.21-mvp r4 (2026-11-01 IL; r4 = J-137 A shadow_balance_small_teams.stale_team_count, team_not_calculated_ref, notification kind 'team_not_calculated'; r3 = J-132 shadow_balance_small_teams (small-teams share of the board report total, RLS forced, no client grant); r1 = J-123 B cuckoo_alert.company_level without manager / pseudonym / team + kind 'no_department_cuckoo'; 2026-10-31: J-115 A no-department share of the company Shadow Balance, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 and v1.6.15 were planned and never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06) and the
 --          Drive hot-fix schema.20261013.sql (60-second Cuckoo window, kept here).
 -- SoT: ADR index + Karin's approved locks of 2026-10-20 (via Chief of Drive).
 -- New in 1.6.20 (Karin 31.10): no schema change except comments — the 'ללא מחלקה' absence row (J-92) is a
@@ -1210,6 +1210,22 @@ CREATE TABLE IF NOT EXISTS cuckoo_alert (
 
 CREATE INDEX IF NOT EXISTS idx_cuckoo_manager ON cuckoo_alert (manager_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cuckoo_target ON cuckoo_alert (target_user_id, status);
+
+-- v1.6.21 (J-123 = B, Karin 01.11): the company-level Cuckoo alert of the employees WITHOUT a department (J-112)
+-- carries no manager, no pseudonym and no team — nobody but the employee herself (own row, RLS target only) sees
+-- it as personal; vp_hr gets group wording only (notification kind 'no_department_cuckoo'). Same statements on a
+-- fresh install and on an upgrade (column added last in both).
+ALTER TABLE cuckoo_alert ADD COLUMN IF NOT EXISTS company_level boolean NOT NULL DEFAULT false;
+ALTER TABLE cuckoo_alert ALTER COLUMN manager_id DROP NOT NULL;
+ALTER TABLE cuckoo_alert ALTER COLUMN target_pseudonym DROP NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cuckoo_alert_scope_check' AND conrelid = 'cuckoo_alert'::regclass) THEN
+    ALTER TABLE cuckoo_alert ADD CONSTRAINT cuckoo_alert_scope_check CHECK (
+      (company_level AND manager_id IS NULL AND target_pseudonym IS NULL AND department IS NULL)
+      OR (NOT company_level AND manager_id IS NOT NULL AND target_pseudonym IS NOT NULL));
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 9. avatar_state — golden_spoons (fractional) + chr_coins
@@ -2548,6 +2564,7 @@ AS $$
     FROM cuckoo_alert c
    WHERE c.manager_id = auth.uid()
      AND fn_viewer_may_see_pseudonyms()
+     AND NOT c.company_level            -- v1.6.21 (J-123 = B): the company-level alert never reaches a manager
      AND c.status <> 'VETOED_BY_EMPLOYEE'
      AND (c.status = 'EXPIRED_COMMITTED' OR c.sovereign_veto_window_expiry <= clock_timestamp())
 $$;
@@ -2812,7 +2829,10 @@ CREATE TABLE IF NOT EXISTS notification (
                       'emergency_hr_review',   -- CHRO: review after emergency ended
                       'emergency_misuse_notice',   -- v1.6.3 (Q5): the declarer is told of a MISUSE finding
                       'emergency_cosign_request',  -- v1.6.3 (Q5): a restricted declarer needs a co-signer
-                      'default_department_review')), -- v1.6.20-r2 (J-101 = A): vp_hr — a department named 'General' exists
+                      'default_department_review',   -- v1.6.20-r2 (J-101 = A): vp_hr — a department named 'General' exists
+                      'no_department_reminder',      -- v1.6.21 (Karin 31.10): vp_hr — X employees have no department
+                      'no_department_cuckoo',        -- v1.6.21 (J-123 = B): vp_hr — group wording, no person
+                      'team_not_calculated')),       -- v1.6.21-r4 (J-137 = A): vp_hr — a team of ≥ 10 had no Shadow Balance row that month
     ref_id          uuid NOT NULL,
     silent          boolean NOT NULL DEFAULT false,
     created_at      timestamptz NOT NULL DEFAULT clock_timestamp()
@@ -2834,6 +2854,112 @@ BEGIN
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_default_department_review
     ON notification (recipient_id, kind, ref_id) WHERE kind = 'default_department_review';
+
+-- v1.6.21 upgrade (Karin 31.10, J-122 / J-123 = B): the kind list gains 'no_department_reminder' and
+-- 'no_department_cuckoo' (same expression as the fresh table). One reminder per vp_hr and company (unique); X (the
+-- count) is computed when it is read, never stored. One group Cuckoo notice per vp_hr and company (unique).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'notification_kind_check' AND conrelid = 'notification'::regclass
+                AND pg_get_constraintdef(oid) NOT LIKE '%no_department_cuckoo%') THEN
+    ALTER TABLE notification DROP CONSTRAINT notification_kind_check;
+    ALTER TABLE notification ADD CONSTRAINT notification_kind_check CHECK (kind IN (
+      'distress_alert', 'distress_awareness', 'distress_closed', 'emergency_declared', 'emergency_hr_review',
+      'emergency_misuse_notice', 'emergency_cosign_request', 'default_department_review', 'no_department_reminder',
+      'no_department_cuckoo'));
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_no_department_reminder
+    ON notification (recipient_id, kind, ref_id) WHERE kind = 'no_department_reminder';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_no_department_cuckoo
+    ON notification (recipient_id, kind, ref_id) WHERE kind = 'no_department_cuckoo';
+
+-- v1.6.21-r4 upgrade (J-137 = A): the kind list gains 'team_not_calculated' (same expression as the fresh table);
+-- one notice per vp_hr and reference (= company, team, month), so re-running the pack adds none.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'notification_kind_check' AND conrelid = 'notification'::regclass
+                AND pg_get_constraintdef(oid) NOT LIKE '%team_not_calculated%') THEN
+    ALTER TABLE notification DROP CONSTRAINT notification_kind_check;
+    ALTER TABLE notification ADD CONSTRAINT notification_kind_check CHECK (kind IN (
+      'distress_alert', 'distress_awareness', 'distress_closed', 'emergency_declared', 'emergency_hr_review',
+      'emergency_misuse_notice', 'emergency_cosign_request', 'default_department_review', 'no_department_reminder',
+      'no_department_cuckoo', 'team_not_calculated'));
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_team_not_calculated
+    ON notification (recipient_id, kind, ref_id) WHERE kind = 'team_not_calculated';
+
+-- v1.6.21 (J-108 = A, Karin 31.10): the company's ONE decision on the 'General' notice — 'default_department'
+-- ('ברירת מחדל': 'General' rows marked as the default department) or 'real_department' ('זו מחלקה אמיתית').
+-- After a decision the notice never comes back for that company. Who decided is in the WORM audit log only.
+CREATE TABLE IF NOT EXISTS default_department_decision (
+    company_id  uuid PRIMARY KEY REFERENCES companies(company_id) ON DELETE CASCADE,
+    decision    text NOT NULL CHECK (decision IN ('default_department', 'real_department')),
+    decided_at  timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+ALTER TABLE default_department_decision ENABLE ROW LEVEL SECURITY;
+ALTER TABLE default_department_decision FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE default_department_decision FROM PUBLIC, anon, authenticated;
+
+-- v1.6.21 (J-115 = A, Karin 31.10): the Happiness Debt / מס קיפוח of employees WITHOUT a department (marker), taken
+-- at every team Shadow Balance refresh. It is only PART OF THE COMPANY TOTAL (board report / CHR Real EBITDA) —
+-- never a row anyone reads: RLS forced, no client grant. employee_count = the employees whose figures are in it
+-- (the differencing rule uses it: 1–9 → the company total is not shown).
+CREATE TABLE IF NOT EXISTS shadow_balance_no_department (
+    snapshot_id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id              uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    employee_count          int NOT NULL CHECK (employee_count >= 0),
+    contributor_count       int NOT NULL CHECK (contributor_count >= 0),
+    deprived_count          int NOT NULL CHECK (deprived_count >= 0),
+    deprivation_tax_amount  numeric(14, 2) NOT NULL,
+    happiness_debt_balance  numeric(14, 2) NOT NULL,
+    calculated_at           timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_no_department_company
+    ON shadow_balance_no_department (company_id, calculated_at DESC);
+ALTER TABLE shadow_balance_no_department ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shadow_balance_no_department FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE shadow_balance_no_department FROM PUBLIC, anon, authenticated;
+
+-- v1.6.21-r3 (J-132 = yes, Karin 01.11): the Happiness Debt / מס קיפוח of the SMALL TEAMS — real teams with no
+-- Shadow Balance row (shadow_balance_aggregate) in the company month of the snapshot (teams below 10…), taken at
+-- every team Shadow Balance refresh like the no-department share (J-120). It is part of the company total of the
+-- board report and is shown only as ONE merged 'אחר' row (J-121 rule), never one row per team. employee_count = the
+-- employees in it (the J-121 remainder rule uses it). No team name, no person: RLS forced, no client grant.
+CREATE TABLE IF NOT EXISTS shadow_balance_small_teams (
+    snapshot_id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id              uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    employee_count          int NOT NULL CHECK (employee_count >= 0),
+    deprived_count          int NOT NULL CHECK (deprived_count >= 0),
+    deprivation_tax_amount  numeric(14, 2) NOT NULL,
+    happiness_debt_balance  numeric(14, 2) NOT NULL,
+    -- v1.6.21-r4 (J-137 = A): how many of these teams were not refreshed this month and contribute their latest
+    -- earlier-month row (J-139) — the X of the note "כולל נתונים מחודשים קודמים של X צוותים"
+    stale_team_count        int NOT NULL DEFAULT 0 CHECK (stale_team_count >= 0),
+    calculated_at           timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_small_teams_company
+    ON shadow_balance_small_teams (company_id, calculated_at DESC);
+ALTER TABLE shadow_balance_small_teams ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shadow_balance_small_teams FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE shadow_balance_small_teams FROM PUBLIC, anon, authenticated;
+
+-- v1.6.21-r4 (J-137 = A, Karin 01.11): the reference of a vp_hr reminder 'team_not_calculated' — ONE row per
+-- company, team (name only) and company month in which a team of ≥ 10 had no Shadow Balance row. The notification
+-- points at it (ref_id); the text function reads the team name from here (B6: no free text on notification).
+-- No count, no metric, no person column; RLS forced, no client grant.
+CREATE TABLE IF NOT EXISTS team_not_calculated_ref (
+    ref_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id    uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    team_name     varchar(100) NOT NULL,
+    period_month  date NOT NULL CHECK (period_month = date_trunc('month', period_month)::date),
+    created_at    timestamptz NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (company_id, team_name, period_month)
+);
+ALTER TABLE team_not_calculated_ref ENABLE ROW LEVEL SECURITY;
+ALTER TABLE team_not_calculated_ref FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE team_not_calculated_ref FROM PUBLIC, anon, authenticated;
 
 -- ---------------------------------------------------------------------------
 -- B3: projects (v1.6.3: the project manager sees project-level workload aggregates only).
