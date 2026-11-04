@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # CHR-ETRS MVP v1.6.21 · tests/run_tests.sh — fresh DB → CLDR/tz reference → schema → rpc → tests (PostgreSQL 17)
 # Version: 1.6.21-mvp (supersedes 1.6.20-mvp, 1.6.19-mvp); runs tests/test_v1_5.sql, tests/test_agents_v1_6_16.sql (agents, v3;
-# content v1.6.21), tests/test_board_v1_6_19.sql (filename kept; content v1.6.21) (v1.6.19 board report, leaver batching, ILS estimate, levels) and
+# content v1.6.21), tests/test_board_v1_6_19.sql (filename kept; content v1.6.21) (v1.6.19 board report, leaver batching, ILS estimate, levels),
+# tests/test_assign_authz.sql (J-143 security fix: rpc_assign_task self / direct manager only) and
 # the v1.4 → v1.6.21 migration tests (tests/test_migration.sh)
 # twice: as superuser (event-trigger guard + timezone preflight) and as a non-superuser owner (O-53 fallback). Usage: PGHOST=/tmp PGPORT=54317 PGUSER=postgres ./tests/run_tests.sh
 set -euo pipefail
@@ -23,6 +24,11 @@ psql -qc "DROP DATABASE IF EXISTS ${DB}_board" postgres
 psql -qc "CREATE DATABASE ${DB}_board" postgres
 psql -d "${DB}_board" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql
 psql -d "${DB}_board" -v ON_ERROR_STOP=1 -qAt -f tests/test_board_v1_6_19.sql
+# J-143 security fix: rpc_assign_task authorization (self or direct manager only) on a fresh DB
+psql -qc "DROP DATABASE IF EXISTS ${DB}_authz" postgres
+psql -qc "CREATE DATABASE ${DB}_authz" postgres
+psql -d "${DB}_authz" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql
+psql -d "${DB}_authz" -v ON_ERROR_STOP=1 -qAt -f tests/test_assign_authz.sql
 # v1.4 → v1.6.21 migration: dry run, apply, counts, catalog = fresh, idempotence, rollback — in both modes
 MIG_MODE=super ./tests/test_migration.sh
 MIG_MODE=nosuper ./tests/test_migration.sh

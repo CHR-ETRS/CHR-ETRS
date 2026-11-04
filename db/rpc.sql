@@ -419,10 +419,63 @@ REVOKE ALL ON FUNCTION rpc_daily_reset_spoons_job() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_daily_reset_spoons_job() TO service_role;
 
 -- ---------------------------------------------------------------------------
+-- Security fix (J-143): who may assign a task to whom.
+-- Direct manager = the SOLID line users.reports_to (schema.sql: "SOLID line = direct manager";
+-- dotted_line_to never grants access). Same pattern as the manager vault / approved-absence checks:
+-- the subordinate and the manager must both still be employed.
+-- ---------------------------------------------------------------------------
+
+-- TRUE when the caller (auth.uid()) is the active DIRECT manager of the active employee p_subject.
+-- Reads users only; never spoon_budget, early_leave_log or any energy data.
+CREATE OR REPLACE FUNCTION fn_is_direct_manager_of(p_subject uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM users s
+      JOIN users m ON m.user_id = s.reports_to
+     WHERE s.user_id = p_subject
+       AND s.reports_to = auth.uid()
+       AND s.employment_ended_at IS NULL
+       AND m.employment_ended_at IS NULL
+  );
+$$;
+
+REVOKE ALL ON FUNCTION fn_is_direct_manager_of(uuid) FROM PUBLIC;
+
+-- Raises 403 access_denied (SQLSTATE 42501) unless the caller assigns to herself or is the assignee's
+-- direct manager. Called FIRST in rpc_assign_task, before any read or write of spoon_budget /
+-- early_leave_log, so a refusal reveals nothing about the assignee's כפיות.
+CREATE OR REPLACE FUNCTION fn_assert_may_assign_task(p_assignee uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF p_assignee IS NOT NULL AND p_assignee = auth.uid() THEN
+    RETURN;                                   -- self-assignment
+  END IF;
+  IF p_assignee IS NULL OR NOT fn_is_direct_manager_of(p_assignee) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_may_assign_task(uuid) FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
 -- rpc_assign_task — compute s_final, Circuit Breaker v1.5, debit, insert.
 -- Client does NOT send s_base for pricing — RPC computes from task_kind/flags.
 -- Farming s_base=0 does NOT refill spoons (debit 0).
 -- When the debit brings the day to ≤3 the go-home entry is logged automatically.
+-- Security fix (J-143): only self or the assignee's direct manager (else 403 access_denied), checked
+-- before ANY read / write — the circuit-breaker / anti-GET codes below are unchanged.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_assign_task(
   p_assignee_id     uuid,
@@ -451,6 +504,8 @@ BEGIN
   IF auth.uid() IS NULL THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
+  -- J-143: authorization BEFORE any read or write (spoon_budget, early_leave_log, task).
+  PERFORM fn_assert_may_assign_task(p_assignee_id);
 
   IF p_task_kind = 'farming' THEN
     v_s_base := 0;  -- Farming does NOT refill; cost 0
