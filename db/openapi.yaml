@@ -500,6 +500,12 @@ paths:
 
         Lazy reset also runs inside CB / assign paths.
 
+        Who may call (Karin 04.11): only the employee herself (p_user_id = her own id or omitted; active employment)
+        or a system process (J-148: identified only by the connection role — service_role / the server key or a
+        server-side session — never by a parameter, header or claim). Anyone else — the direct manager, any manager,
+        vp_hr, another company — → 403 `access_denied` before anything is read or written. No signed-in user (anonymous
+        client) → 403 `consent_required` (the existing code; J-160: also when a p_user_id is sent).
+
         '
       requestBody:
         required: false
@@ -520,7 +526,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/SpoonBudget'
         '403':
-          $ref: '#/components/responses/BusinessError403'
+          description: access_denied (not the employee herself and not a system process; no detail) | consent_required
+            (anonymous client) | anti_get_blocked (unchanged).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+              example:
+                code: access_denied
+                message: access_denied
   /rpc/rpc_daily_reset_spoons_job:
     post:
       tags:
@@ -556,7 +570,21 @@ paths:
         manager, the dotted line — → 403 `access_denied`, checked before the assignee''s spoons are read, so the
         answer is the same at any spoon level (never circuit_breaker_active / anti_get_blocked for a non-authorized
         caller) and nothing is written (no debit, no task, no early-leave entry). No signed-in user → 403
-        anti_get_blocked (unchanged).'
+        anti_get_blocked (unchanged).
+
+        J-146 A (Karin 04.11): who sees what when the call is refused. (1) The employee assigning to HERSELF sees
+        the exact reason, unchanged (403 circuit_breaker_active / anti_get_blocked, or the SQL error of a bad input).
+        (2) Her direct manager (assigning to someone else) gets ONE neutral answer for EVERY refusal after the
+        authorization check — Circuit Breaker at 4–5 (Fighting) or ≤3, too few spoons, a bad modifier, a missing or
+        too long task name: 403 `assignment_unavailable` (J-152 = A, Karin 04.11), SQLSTATE 42501,
+        message = hint = assignment_unavailable, details http_hint=403;code=assignment_unavailable — the same code,
+        body and fields in every case, raised from one handler. The Hebrew text for the screen comes from
+        /rpc/rpc_notification_message_he with p_kind assignment_unavailable. Nothing is written on a refusal (no
+        task row, no debit, no early-leave entry, no notification, no audit row). (3) Anyone else (J-153 = A, Karin)
+        → always the identical 403 access_denied, whatever the employee''s spoons. Timing: all refusals of (2)
+        evaluate the same checks in the same order (budget row, Circuit Breaker AND cost, then one raise); a
+        bad-input refusal ends earlier (it depends only on the manager''s own input), and lock waits / caching are
+        not equalized (no artificial delay).'
       requestBody:
         required: true
         content:
@@ -602,8 +630,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Task'
         '403':
-          description: access_denied (J-143 — caller is neither the assignee nor her direct manager; checked first),
-            circuit_breaker_active or anti_get_blocked
+          description: 'access_denied (J-143 / J-153 = A — caller is neither the assignee nor her direct manager;
+            checked first; identical at any spoon level); assignment_unavailable (J-146 A — the direct manager,
+            every refusal reason, one neutral answer); circuit_breaker_active or anti_get_blocked (self-assignment
+            only, unchanged).'
           content:
             application/json:
               schema:
@@ -765,7 +795,14 @@ paths:
         deprivation_tax_cost = system snapshot of the latest team deprivation_tax_amount. UPDATE/DELETE → 403 ledger_immutable.
 
         Shredded subject → 403 vault_sealed. O-13: one hash chain per company (org_id) with automatic GENESIS record;
-        broken chain writes audit alert and blocks writes (403 ledger_chain_broken).'
+        broken chain writes audit alert and blocks writes (403 ledger_chain_broken).
+
+        Who may call (Karin 04.11, J-147): only an active cfo of the ledger''s company (p_org_id, default = her own
+        company; p_subject_user_id, if sent, must be an employee of the same company). J-163 (Karin 04.11): no system
+        path — not granted to service_role (a service_role call is refused by PostgreSQL: 42501 permission denied),
+        and a server-side call without a signed-in cfo gets 403 `access_denied`. manager, vp_hr, legal_ethics and
+        every role of another company → 403 `access_denied` before anything is read or written, with no detail.
+        Anonymous client → 403 anti_get_blocked (unchanged).'
       requestBody:
         required: true
         content:
@@ -803,7 +840,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ManagerLedger'
         '403':
-          description: ledger_immutable or anti_get_blocked
+          description: access_denied (not an active cfo of that company; no detail),
+            ledger_immutable, ledger_chain_broken, vault_sealed or anti_get_blocked (anonymous)
           content:
             application/json:
               schema:
@@ -1078,7 +1116,13 @@ paths:
       summary: 'Upsert EVA salary inputs and turnover tier (tier: vp_hr only)'
       description: 'No multiplier. The deprivation tax is a team/company figure. O-2 (Karin 24.10): turnover_tier
         defaults automatically from org_role.tier (1→junior, 2–3→mid, 4→senior, 5/outside→NULL excluded unless overridden),
-        with the CHRO (vp_hr) able to override per employee.'
+        with the CHRO (vp_hr) able to override per employee.
+
+        Who may call (Karin 04.11, J-149): only an active vp_hr or cfo of the SAME company as the employee — the
+        employee herself, managers, legal_ethics and other companies no longer write → 403 `access_denied` before
+        anything is read or written (also for an unknown p_user_id: no existence hint). The turnover tier stays vp_hr
+        only (a cfo sending p_turnover_tier → 403 anti_get_blocked, unchanged). Anonymous → 403 anti_get_blocked
+        (unchanged). No system path.'
       requestBody:
         required: true
         content:
@@ -1115,7 +1159,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/EmployeeValueAsset'
         '403':
-          $ref: '#/components/responses/BusinessError403'
+          description: access_denied (not an active vp_hr / cfo of the employee's company; no detail) or
+            anti_get_blocked (anonymous; turnover tier by a non-vp_hr)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+              example:
+                code: access_denied
+                message: access_denied
   /rpc/rpc_team_aggregate_refresh:
     post:
       tags:
@@ -4667,7 +4719,9 @@ paths:
         for the vp_hr who received it). v1.6.21 (J-123 = B) no_department_cuckoo → "בקרב העובדים בלי מחלקה יש סימני
         העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות, כדי שההתראות יגיעו למנהלת הנכונה." (J-129 approved; active vp_hr of a company with a delivered
         company-level alert; no number, no name). J-128 = A: one kind per call — the reminder count never comes in
-        the same response as any metric of the no-department group. Other kinds → null. The text is
+        the same response as any metric of the no-department group. J-146 A assignment_unavailable → "לא ניתן להקצות
+        לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר." (any signed-in caller; the screen text of
+        the neutral 403 of /rpc/rpc_assign_task; no number, no name). Other kinds → null. The text is
         fixed per kind (no names, no ids) and is never stored in the notification row. The notice itself is
         created once per vp_hr and company by the pack after an upgrade (re-runs add none); it is visible only
         to its recipient (/notification, RLS).'
@@ -5057,7 +5111,8 @@ components:
     BusinessError403:
       description: 'Business rule failure → HTTP 403. SQLSTATE 42501 + HINT business code.
 
-        Codes: circuit_breaker_active | anti_get_blocked | ledger_immutable | questionnaire_immutable | others.'
+        Codes: circuit_breaker_active | anti_get_blocked | ledger_immutable | questionnaire_immutable |
+        assignment_unavailable (J-146 A, rpc_assign_task by the direct manager) | others.'
       content:
         application/json:
           schema:
@@ -5161,6 +5216,7 @@ components:
           - invalid_team
           - invalid_decision
           - default_department_already_decided
+          - assignment_unavailable
         message:
           type: string
           description: 'Must equal code (or human text WITHOUT spoon/HRV numbers). Glass Box.

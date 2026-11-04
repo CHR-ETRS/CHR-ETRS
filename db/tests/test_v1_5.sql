@@ -20,6 +20,11 @@
 --   * deprived employee needs TWO consecutive weeks (previous-week fixtures added).
 -- v1.6.17 (Karin 31.10): tests changed BY DESIGN and marked "v1.6.17": Cantril is MONTHLY → 10 (was short 2);
 --   TPS-12 / IHS quarterly participation = 10 (was "לא הוגדר" → 0).
+-- J-147 / J-150 (Karin 04.11): the ledger checks of sections 9 and O-13 run as the company's cfo (was a manager);
+--   'manager cannot set turnover tier' now expects access_denied (follows from the sensitive-RPC authorization).
+--   Six fixture statements now print true instead of whole rows, so no user id appears in the output (no check changed).
+-- J-146 A (Karin 04.11): the 4 manager-assign Circuit Breaker checks in section 5 changed BY DESIGN — the direct
+--   manager now gets the neutral 403 assignment_unavailable; self-assignment keeps circuit_breaker_active (tests/test_assign_authz.sql).
 -- The agents tests live in tests/test_agents_v1_6_16.sql (filename kept; content v1.6.17).
 -- =============================================================================
 \set QUIET on
@@ -175,18 +180,18 @@ SELECT t_assert('EVA has no multiplier / role_key columns',
 SELECT t_as('00000000-0000-0000-0000-00000000bbbb');
 SET ROLE authenticated;
 SELECT rpc_upsert_employee_value_asset(t_emp('D5', i), 100000, NULL, NULL,
-       CASE WHEN i <= 2 THEN 'junior' WHEN i <= 4 THEN 'mid' ELSE 'senior' END)
+       CASE WHEN i <= 2 THEN 'junior' WHEN i <= 4 THEN 'mid' ELSE 'senior' END) IS NOT NULL AS upserted
   FROM generate_series(1, 5) i;
 RESET ROLE;
 SELECT t_as('00000000-0000-0000-0000-00000000aaaa');
 SET ROLE authenticated;
-SELECT t_expect_err('manager cannot set turnover tier',
-  format($$SELECT rpc_upsert_employee_value_asset(%L, 1, NULL, NULL, 'senior')$$, t_emp('D5', 1)), 'anti_get_blocked');
+SELECT t_expect_err('manager cannot set turnover tier (J-150: 403 access_denied — a manager no longer writes salary data at all)',
+  format($$SELECT rpc_upsert_employee_value_asset(%L, 1, NULL, NULL, 'senior')$$, t_emp('D5', 1)), 'access_denied');
 SELECT t_expect_err('client cannot set deprivation flag',
   format($$SELECT rpc_set_deprivation_flag(%L, true)$$, t_emp('D5', 1)), '42501');
 RESET ROLE;
-SELECT rpc_set_deprivation_flag(t_emp('D5', 1), true);
-SELECT rpc_set_deprivation_flag(t_emp('D5', 2), true);
+SELECT rpc_set_deprivation_flag(t_emp('D5', 1), true) IS NOT NULL AS flagged;
+SELECT rpc_set_deprivation_flag(t_emp('D5', 2), true) IS NOT NULL AS flagged;
 SELECT t_assert('turnover range view: junior 100000 → 30000–50000',
   (SELECT turnover_cost_min = 30000 AND turnover_cost_max = 50000 FROM employee_turnover_cost_range_v WHERE user_id = t_emp('D5', 1)));
 
@@ -312,24 +317,24 @@ RESET ROLE;
 
 -- ============ 5. Spoons ============
 -- Employee E = D9-1; manager assigns tasks.
-SELECT fn_ensure_local_spoon_budget(t_emp('D9', 1));
+SELECT fn_ensure_local_spoon_budget(t_emp('D9', 1)) IS NOT NULL AS budget_ok;
 SELECT t_expect_err('spoons hard max 12', format($$UPDATE spoon_budget SET current_spoon_count = 13 WHERE user_id = %L$$, t_emp('D9', 1)), '23514');
 UPDATE spoon_budget SET current_spoon_count = 6 WHERE user_id = t_emp('D9', 1);
 SELECT t_as('00000000-0000-0000-0000-00000000aaaa');
 SET ROLE authenticated;
 SELECT t_assert('fighting allowed at 6 (→5)', (SELECT s_final = 1 FROM rpc_assign_task(t_emp('D9', 1), 'f1', 'fighting')));
-SELECT t_expect_err('fighting blocked at 5', format($$SELECT rpc_assign_task(%L, 'f2', 'fighting')$$, t_emp('D9', 1)), 'circuit_breaker_active');
+SELECT t_expect_err('fighting blocked at 5 (J-146 A: the direct manager gets the neutral assignment_unavailable)', format($$SELECT rpc_assign_task(%L, 'f2', 'fighting')$$, t_emp('D9', 1)), 'assignment_unavailable');
 SELECT t_assert('farming allowed at 5', (SELECT task_kind = 'farming' FROM rpc_assign_task(t_emp('D9', 1), 'farm', 'farming')));
 RESET ROLE;
 UPDATE spoon_budget SET current_spoon_count = 4 WHERE user_id = t_emp('D9', 1);
 SELECT t_assert('day_status at 4 = FIGHTING_BLOCKED', (SELECT day_status = 'FIGHTING_BLOCKED' FROM spoon_budget WHERE user_id = t_emp('D9', 1)));
 SELECT t_as('00000000-0000-0000-0000-00000000aaaa');
 SET ROLE authenticated;
-SELECT t_expect_err('fighting blocked at 4', format($$SELECT rpc_assign_task(%L, 'f3', 'fighting')$$, t_emp('D9', 1)), 'circuit_breaker_active');
+SELECT t_expect_err('fighting blocked at 4 (J-146 A: neutral assignment_unavailable for the manager)', format($$SELECT rpc_assign_task(%L, 'f3', 'fighting')$$, t_emp('D9', 1)), 'assignment_unavailable');
 -- farming with +1 modifier: 4 → 3 → go home logged
 SELECT t_assert('farming +1 at 4 → 3', (SELECT s_final = 1 FROM rpc_assign_task(t_emp('D9', 1), 'farm2', 'farming', false, false, '[1]')));
-SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Farming', format($$SELECT rpc_assign_task(%L, 'farm3', 'farming')$$, t_emp('D9', 1)), 'circuit_breaker_active');
-SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Fighting', format($$SELECT rpc_assign_task(%L, 'fight3', 'fighting')$$, t_emp('D9', 1)), 'circuit_breaker_active');
+SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Farming (J-146 A: neutral for the manager)', format($$SELECT rpc_assign_task(%L, 'farm3', 'farming')$$, t_emp('D9', 1)), 'assignment_unavailable');
+SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Fighting (J-146 A: neutral for the manager)', format($$SELECT rpc_assign_task(%L, 'fight3', 'fighting')$$, t_emp('D9', 1)), 'assignment_unavailable');
 SELECT t_assert('manager feed: pseudonym + locked text only',
   (SELECT count(*) = 1 AND bool_and(display_pseudonym = t_pseudo('D9', 1) AND entry_text = 'יציאה מוקדמת מאושרת') FROM early_leave_manager_v));
 RESET ROLE;
@@ -458,7 +463,13 @@ SELECT t_assert('shop allowed at 3 spoons (10 golden basic item)',
 RESET ROLE;
 
 -- ============ 9. Ledger ============
-SELECT t_as('00000000-0000-0000-0000-00000000aaaa');
+-- J-147 (Karin 04.11): only an active cfo of the company (or a system process) appends — the ledger calls below
+-- run as TestCo's cfo (was Manager M); what they verify is unchanged (row chain, vault_sealed).
+INSERT INTO auth.users (id) VALUES ('00000000-0000-0000-0000-00000000cf01');
+INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date, has_employee_profile)
+VALUES ('00000000-0000-0000-0000-00000000cf01', '00000000-0000-0000-0000-0000000000c1',
+        'cfo@x', 'CFO', 'Mgmt', 'cfo', 'vp', 'Asia/Jerusalem', CURRENT_DATE - 400, false);
+SELECT t_as('00000000-0000-0000-0000-00000000cf01');
 SET ROLE authenticated;
 SELECT ledger_id IS NOT NULL AS appended FROM rpc_ledger_append('restoration_note', 1, 2, t_emp('D5', 1), '00000000-0000-0000-0000-0000000000c1', 'D5');
 SELECT ledger_id IS NOT NULL AS appended FROM rpc_ledger_append('restoration_note', 3, 4, t_emp('D5', 2), '00000000-0000-0000-0000-0000000000c1', 'D5');
@@ -498,7 +509,7 @@ SELECT t_assert('employee shreds her own key (self-request)', (SELECT shredded_a
 RESET ROLE;
 SELECT t_assert('crypto-shredding removes key material', (SELECT key_material IS NULL AND shredded_at IS NOT NULL FROM pseudonym_key WHERE user_id = t_emp('D5', 1)));
 SELECT t_assert('chain still verifies after shredding', fn_ledger_verify_chain('00000000-0000-0000-0000-0000000000c1'));
-SELECT t_as('00000000-0000-0000-0000-00000000aaaa');
+SELECT t_as('00000000-0000-0000-0000-00000000cf01');   -- J-147: TestCo's cfo (was Manager M)
 SET ROLE authenticated;
 SELECT t_expect_err('no new pseudonym for a shredded subject', format($$SELECT rpc_ledger_append('x', NULL, NULL, %L)$$, t_emp('D5', 1)), 'vault_sealed');
 SELECT t_expect_err('clients cannot read pseudonym keys', $$SELECT * FROM pseudonym_key$$, '42501');
@@ -2363,7 +2374,7 @@ RESET ROLE;
 SELECT t_assert('v1.6.16: one deprived week alone is not enough (cb15 has only last week so far → not deprived)',
   NOT fn_is_employee_deprived('00000000-0000-0000-0000-00000000cb15'));
 -- Now cb15 (junior, no salary row) reports morning check-in with high distress → 8 spoons, then midday or task brings avg spoons to 4 (<5) → deprived!
-SELECT fn_ensure_local_spoon_budget('00000000-0000-0000-0000-00000000cb15');
+SELECT fn_ensure_local_spoon_budget('00000000-0000-0000-0000-00000000cb15') IS NOT NULL AS budget_ok;
 UPDATE spoon_budget SET current_spoon_count = 4, reported_at = clock_timestamp()
  WHERE user_id = '00000000-0000-0000-0000-00000000cb15' AND budget_date = fn_user_local_date('00000000-0000-0000-0000-00000000cb15');
 -- cb16 (junior, no salary row) reports healthy spoons = 9 (>=5) and low B_t → NOT deprived, but is the 10th contributor!
@@ -3072,7 +3083,7 @@ UPDATE users SET timezone = (
      AND ((clock_timestamp() AT TIME ZONE name)::time BETWEEN TIME '12:05' AND TIME '14:55')
    ORDER BY name LIMIT 1
 ) WHERE user_id = '00000000-0000-0000-0000-00000000cb11';
-SELECT fn_ensure_local_spoon_budget('00000000-0000-0000-0000-00000000cb11');
+SELECT fn_ensure_local_spoon_budget('00000000-0000-0000-0000-00000000cb11') IS NOT NULL AS budget_ok;
 UPDATE spoon_budget SET current_spoon_count = 9, reported_at = clock_timestamp()
  WHERE user_id = '00000000-0000-0000-0000-00000000cb11'
    AND budget_date = fn_user_local_date('00000000-0000-0000-0000-00000000cb11');
@@ -3355,7 +3366,12 @@ SELECT t_assert('v1.6.12 O-13: fn_ledger_verify_chain returns false on a broken 
 SELECT t_assert('v1.6.12 O-13: …and writes audit alert ledger_chain_broken',
   EXISTS (SELECT 1 FROM access_audit_log WHERE company_id = '00000000-0000-0000-0000-0000000000cc'
              AND action = 'ledger_chain_broken' AND scope->>'reason' = 'current_hash_mismatch'));
-SELECT t_as('00000000-0000-0000-0000-00000000cb00');
+-- J-147 (Karin 04.11): the write is made by SmallBoardCo's own cfo (was a manager of ANOTHER company).
+INSERT INTO auth.users (id) VALUES ('00000000-0000-0000-0000-00000000cccf');
+INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date, has_employee_profile)
+VALUES ('00000000-0000-0000-0000-00000000cccf', '00000000-0000-0000-0000-0000000000cc',
+        'cfo@sc', 'SC CFO', 'Board', 'cfo', 'vp', 'Asia/Jerusalem', CURRENT_DATE - 400, false);
+SELECT t_as('00000000-0000-0000-0000-00000000cccf');
 SET ROLE authenticated;
 SELECT t_expect_err('v1.6.12 O-13: rpc_ledger_append blocks writes to a broken company chain → 403 ledger_chain_broken',
   $$SELECT rpc_ledger_append('note', 1, 1, NULL, '00000000-0000-0000-0000-0000000000cc', 'Ops')$$, 'ledger_chain_broken');

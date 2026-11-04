@@ -7,10 +7,20 @@
 **Pack version:** `1.6.21-mvp`  
 **Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
 
+> **Sensitive-RPC authorization (Karin 04.11, J-147 – J-151, branch `db/authz-sensitive-rpcs`, second local commit):**
+> - `rpc_daily_reset_spoons`: only the employee herself (active) or a system process; `rpc_upsert_employee_value_asset` (salary data): only an active vp_hr or cfo of the employee's company — the employee herself no longer writes (J-149); `rpc_ledger_append`: only an active cfo of the ledger's company — legal_ethics, vp_hr, managers, other companies and system processes are blocked (J-147, J-163 = no system path; not granted to service_role). Anyone else → **403 `access_denied`**, checked first, no detail.
+> - A system process = the connection's own role only (`fn_is_client_call`: service_role / server-side session), never a parameter, header or claim (J-148). Anonymous codes unchanged (`consent_required` / `anti_get_blocked`); CB / Anti-GET codes unchanged.
+> - J-163 (Karin 04.11): no real system process writes ledger events, so the system path of `rpc_ledger_append` was removed (no schema / migration change). J-152 = A (`assignment_unavailable` / 403 kept); J-154 decided (input errors stay neutral; screens must validate input first). Tests: `tests/test_sensitive_authz.sql`. Details and J-159 – J-165: `ADR_GAPS.md`.
+>
+> **J-146 A (Karin 04.11, branch `db/authz-sensitive-rpcs`, local commit on top of 1ea87b7) — one neutral refusal for the direct manager in `rpc_assign_task`:**
+> - The direct manager (assigning to someone else) gets ONE answer for every refusal after the authorization check (Circuit Breaker, too few כפיות, bad input): **403 `assignment_unavailable`** (J-152 = A, Karin), same body and fields every time; screen text via `rpc_notification_message_he('assignment_unavailable')`: "לא ניתן להקצות לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר."
+> - The employee assigning to herself still sees the exact reason (`circuit_breaker_active` / `anti_get_blocked`). Anyone else: always the identical 403 `access_denied` (J-153 = A). Anonymous: `anti_get_blocked` (unchanged). A refusal writes nothing.
+> - Also recorded: J-142 = A (current behaviour), J-143–J-145 approved. Details, J-152–J-158 and the client conflict found on a remote branch: `ADR_GAPS.md`.
+>
 > **Security fix (2026-11-04, branch `db/assign-task-authz`, local commit on top of 78e02d9) — `rpc_assign_task` authorization (J-143):**
 > - Before: `rpc_assign_task` (SECURITY DEFINER, so RLS does not protect `spoon_budget`) only checked that a user was signed in — any signed-in user could assign a task to anyone, debit her כפיות and, near the threshold, write an `early_leave_log` (WORM) entry.
 > - Now: only the employee herself or her active **direct manager** (`users.reports_to`, the solid line) may assign; anyone else → **403 `access_denied`** (SQLSTATE 42501, the pack's usual authorization error). The check (`fn_assert_may_assign_task` → `fn_is_direct_manager_of`) runs **first**, before any read or write of `spoon_budget`, `early_leave_log` or `task`, so the answer reveals nothing about energy.
-> - Unchanged: the circuit-breaker / anti-GET codes for an authorized caller (pending decision), and 403 `anti_get_blocked` for a call without a signed-in user.
+> - Unchanged at the time: the circuit-breaker / anti-GET codes for an authorized caller (since J-146 A: only for self-assignment; the direct manager gets `assignment_unavailable`), and 403 `anti_get_blocked` for a call without a signed-in user.
 > - Tests: `tests/test_assign_authz.sql` (own fresh DB in `tests/run_tests.sh`). Interpretations J-143–J-146 and the other `rpc_*` functions with a similar gap (not fixed here) are in `ADR_GAPS.md`.
 >
 > **v1.6.21-r4 (2026-11-01, local commit on top of 0305b5b):** Karin closed **J-137 = A** and approved **J-138** as implemented:
@@ -121,7 +131,7 @@ Specs→Code pack from **locked decisions only**. Anything not locked is `TODO` 
 | `openapi.yaml` | PostgREST reads + RPC writes + error contract (403 / 400 / 409 / 422 codes) |
 | `ADR_GAPS.md` | Closed in this version + still open + questions for Karin |
 | `migrations/migrate_v1_4_to_v1_6_19.sql`, `migrations/run_migration.sh`, `migrations/preflight_tz.sql`, `migrations/legacy_ddl_guard.sql`, `migrations/legacy_lockdown_fallback.sql` | Upgrade of a v1.4 database (v1.6.19, see below; replaces `migrate_v1_4_to_v1_6_18.sql`, `migrate_v1_4_to_v1_6_17.sql`, `migrate_v1_4_to_v1_6_16.sql` and `migrate_v1_4_to_v1_6_13.sql`; also upgrades a v1.6.17 database in place) + source timezone preflight + superuser event-trigger guard for the legacy tables, or the non-superuser fallback lockdown |
-| `tests/test_v1_5.sql`, `tests/test_agents_v1_6_16.sql`, `tests/test_board_v1_6_19.sql`, `tests/test_assign_authz.sql`, `tests/run_tests.sh` | Scratch PostgreSQL 17 validation (fresh DB; the agents and board tests each run on their own fresh DB) |
+| `tests/test_v1_5.sql`, `tests/test_agents_v1_6_16.sql`, `tests/test_board_v1_6_19.sql`, `tests/test_assign_authz.sql`, `tests/test_sensitive_authz.sql`, `tests/run_tests.sh` | Scratch PostgreSQL 17 validation (fresh DB; the agents and board tests each run on their own fresh DB) |
 | `tests/test_migration.sh`, `tests/catalog_snapshot.sql`, `tests/data_hash.sql`, `tests/fixtures/` | Migration tests on a real-structure v1.4 fixture |
 
 Install target is a **fresh database** (`ref_country_calendar.sql`, then `schema.sql`, then `rpc.sql`; all re-apply cleanly).
@@ -372,6 +382,10 @@ Do **not** run Supabase tests from this pack until Stage A 27/27 (Karin).
 | `tests/` | בדיקות על PostgreSQL 17 נקי (כולל `test_agents_v1_6_16.sql` — 18 בדיקות v3, ו־`test_board_v1_6_19.sql` — דוח הדירקטוריון v1.6.19) |
 
 תיקון אבטחה (04.11, J-143): `rpc_assign_task` מאפשר שיוך משימה רק לעובדת עצמה או למנהל/ת הישיר/ה שלה (`users.reports_to`); כל משתמש אחר מקבל 403 `access_denied` עוד לפני קריאת הכפיות — בלי חיוב כפיות, בלי משימה ובלי רישום יציאה מוקדמת. קודי מפסק הזרם / Anti-GET לא שונו.
+
+הרשאות לפונקציות רגישות (04.11, J-147 – J-151): איפוס כפיות — רק העובדת עצמה או תהליך מערכת; נתוני שכר (`rpc_upsert_employee_value_asset`) — רק vp_hr או cfo פעילים של אותה חברה (העובדת כבר לא כותבת את השכר שלה); יומן הכספים (`rpc_ledger_append`) — רק cfo פעיל של אותה חברה (legal_ethics ותהליכי מערכת נחסמים, J-163). כל אחר מקבל 403 `access_denied` בלי פרטים. תהליך מערכת מזוהה רק לפי תפקיד החיבור (service_role), לעולם לא לפי שדה שהלקוח שולח.
+
+החלטה J-146 A (04.11): מנהל/ת ישיר/ה שמקצה משימה לעובדת ונדחה/ית מקבל/ת תמיד אותה תשובה ניטרלית — 403 `assignment_unavailable` עם הטקסט "לא ניתן להקצות לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר." — בלי לדעת אם הסיבה היא מפסק הזרם, מחסור בכפיות או סיבה אחרת. רק עובדת שמקצה לעצמה רואה את הסיבה המדויקת. כל אדם אחר מקבל תמיד 403 `access_denied` זהה (J-153 = A).
 
 עיקרי 1.6.19 (31.10): שורת "יצא עם העוזבים" ורשימת העוזבים מתעדכנות רק באצוות של 10 עוזבים חדשים (J-43, הוכרע); אומדן כפית שמומשה בש"ח (A-3); רמות אימות 0–4, תיק אימות, הצמדה לשכר, שכבות הדוח וממשל; 5 מקורות (A-10).
 

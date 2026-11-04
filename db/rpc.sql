@@ -292,15 +292,29 @@ REVOKE ALL ON FUNCTION fn_ensure_local_spoon_budget(uuid) FROM PUBLIC;
 --   Farming at 4–5 stays allowed. The CB never touches questionnaires or the shop.
 -- Lock #1 (Karin, 2026-10-20): at ≤3 spoons ALL tasks are blocked, Farming included.
 -- ---------------------------------------------------------------------------
+-- TRUE when the Circuit Breaker blocks a task of p_task_kind at p_spoons remaining (same rule as below, no raise).
+-- J-146 A: evaluates BOTH conditions on every call (no short-circuit) so every refusal does the same work.
+CREATE OR REPLACE FUNCTION fn_cb_task_blocked(p_spoons int, p_task_kind task_kind_enum)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v_go_home  boolean := (p_spoons IS NULL OR p_spoons <= 3);
+  v_fighting boolean := (p_task_kind = 'fighting' AND COALESCE(p_spoons, 0) <= 5);
+BEGIN
+  RETURN v_go_home OR v_fighting;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_cb_task_blocked(int, task_kind_enum) FROM PUBLIC;
+
 CREATE OR REPLACE FUNCTION fn_cb_check_task(p_spoons int, p_task_kind task_kind_enum)
 RETURNS void
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  IF p_spoons IS NULL OR p_spoons <= 3 THEN
-    PERFORM fn_raise_business('circuit_breaker_active');
-  END IF;
-  IF p_task_kind = 'fighting' AND p_spoons <= 5 THEN
+  IF fn_cb_task_blocked(p_spoons, p_task_kind) THEN
     PERFORM fn_raise_business('circuit_breaker_active');
   END IF;
 END;
@@ -335,8 +349,130 @@ $$;
 REVOKE ALL ON FUNCTION fn_log_early_leave(uuid) FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
+-- Sensitive-RPC authorization (Karin 04.11: J-147 – J-150; the old J-146 gap list).
+--   rpc_daily_reset_spoons          → the employee herself (active) or a system process;
+--   rpc_upsert_employee_value_asset → an active vp_hr or cfo of the employee's company;
+--   rpc_ledger_append               → an active cfo of the ledger's company only (J-163 = Karin 04.11: no
+--                                     system path — no real system process writes ledger events).
+-- Checked FIRST (after the signed-in check), before any read or write of business tables; anyone else
+-- → 403 access_denied with no detail. J-148: a system process is identified ONLY by the connection's
+-- own role (fn_is_client_call: the role set by SET ROLE — PostgREST sets it from the role of the
+-- verified JWT; service_role / the server key or a server-side login is not a client), never by a
+-- parameter, flag, header or claim the client sends.
+-- ---------------------------------------------------------------------------
+
+-- TRUE for a system process: the connection's current role is not a client role (authenticated / anon).
+CREATE OR REPLACE FUNCTION fn_is_system_call()
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+AS $$
+BEGIN
+  RETURN NOT fn_is_client_call();
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_is_system_call() FROM PUBLIC, anon, authenticated;
+
+-- TRUE when the caller (auth.uid()) is still employed and holds one of p_roles (users.app_role) in p_company.
+CREATE OR REPLACE FUNCTION fn_caller_active_role_in(p_company uuid, p_roles text[])
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  RETURN p_company IS NOT NULL AND EXISTS (
+    SELECT 1 FROM users c
+     WHERE c.user_id = auth.uid()
+       AND c.company_id = p_company
+       AND c.employment_ended_at IS NULL
+       AND c.app_role = ANY (p_roles));
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_caller_active_role_in(uuid, text[]) FROM PUBLIC, anon, authenticated;
+
+-- Company of a user, or NULL (internal; never returned to a client).
+CREATE OR REPLACE FUNCTION fn_user_company(p_user_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  RETURN (SELECT u.company_id FROM users u WHERE u.user_id = p_user_id);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_user_company(uuid) FROM PUBLIC, anon, authenticated;
+
+-- 403 access_denied unless a system process, or the signed-in, still-employed employee resets her OWN כפיות.
+CREATE OR REPLACE FUNCTION fn_assert_may_reset_spoons(p_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF fn_is_system_call() THEN
+    RETURN;
+  END IF;
+  IF p_user_id IS NULL OR p_user_id IS DISTINCT FROM auth.uid()
+     OR NOT EXISTS (SELECT 1 FROM users u WHERE u.user_id = p_user_id AND u.employment_ended_at IS NULL) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_may_reset_spoons(uuid) FROM PUBLIC, anon, authenticated;
+
+-- 403 access_denied unless the caller is an active vp_hr or cfo of the SAME company as the employee
+-- (J-149: the employee herself no longer writes her salary data; no system path).
+CREATE OR REPLACE FUNCTION fn_assert_may_write_value_asset(p_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF NOT fn_caller_active_role_in(fn_user_company(p_user_id), ARRAY['vp_hr', 'cfo']) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_may_write_value_asset(uuid) FROM PUBLIC, anon, authenticated;
+
+-- 403 access_denied unless the caller is an active cfo of the ledger company p_org_id and the subject (if any) is an
+-- employee of the same company (J-147 / J-161). J-163 (Karin 04.11): no system path — a service_role / server-side
+-- call without a signed-in cfo is refused like anyone else.
+CREATE OR REPLACE FUNCTION fn_assert_may_append_ledger(p_org_id uuid, p_subject_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF NOT fn_caller_active_role_in(p_org_id, ARRAY['cfo'])
+     OR (p_subject_user_id IS NOT NULL AND fn_user_company(p_subject_user_id) IS DISTINCT FROM p_org_id) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_may_append_ledger(uuid, uuid) FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
 -- rpc_daily_reset_spoons — ALWAYS set to 12 at employee local midnight day (N-1 / Q-008)
 -- No debt carryover. Keyed to (now() AT TIME ZONE u.timezone)::date — not org UTC.
+-- Authorization (Karin 04.11): only the employee herself (active) or a system process (J-148);
+-- anyone else → 403 access_denied, checked before any read / write. Anonymous client → consent_required.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_daily_reset_spoons(p_user_id uuid DEFAULT NULL)
 RETURNS spoon_budget
@@ -349,15 +485,13 @@ DECLARE
   v_local_date date;
   v_row spoon_budget;
 BEGIN
-  IF v_uid IS NULL THEN
+  -- No subject, or an anonymous CLIENT call (not a system process, J-148): the existing consent_required.
+  IF v_uid IS NULL OR (auth.uid() IS NULL AND fn_is_client_call()) THEN
     RAISE EXCEPTION 'consent_required'
       USING ERRCODE = '42501', DETAIL = 'http_hint=403;code=consent_required', HINT = 'consent_required';
   END IF;
 
-  IF auth.uid() IS NOT NULL AND auth.uid() <> v_uid AND fn_app_role() NOT IN ('manager', 'vp_hr') THEN
-    RAISE EXCEPTION 'anti_get_blocked'
-      USING ERRCODE = '42501', DETAIL = 'http_hint=403;code=anti_get_blocked', HINT = 'anti_get_blocked';
-  END IF;
+  PERFORM fn_assert_may_reset_spoons(v_uid);   -- self (active) or system, else 403 access_denied
 
   v_local_date := fn_user_local_date(v_uid);
   IF v_local_date IS NULL THEN
@@ -470,12 +604,73 @@ $$;
 REVOKE ALL ON FUNCTION fn_assert_may_assign_task(uuid) FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
+-- J-146 A (Karin): when the caller assigns to SOMEONE ELSE (her authorized direct manager), every refusal
+-- after the authorization check returns ONE neutral answer: 403 assignment_unavailable (J-152 = A), same
+-- SQLSTATE / message / DETAIL / HINT, raised from ONE place. Only the employee assigning to herself sees
+-- the exact reason (circuit_breaker_active / anti_get_blocked, unchanged). Strangers keep 403 access_denied
+-- (J-153 = A, Karin: always the identical 403 access_denied) and anonymous callers keep anti_get_blocked.
+-- Hebrew text of the neutral answer: rpc_notification_message_he('assignment_unavailable') (J-155).
+-- ---------------------------------------------------------------------------
+
+-- The fixed Hebrew text of the neutral assignment refusal (no digits, no names, no ids).
+CREATE OR REPLACE FUNCTION fn_assignment_unavailable_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT 'לא ניתן להקצות לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר.'::text
+$$;
+
+REVOKE ALL ON FUNCTION fn_assignment_unavailable_he() FROM PUBLIC;
+
+-- The business refusal code of an assignment, or NULL when it may go ahead. Computes every rule first
+-- (Circuit Breaker, then the cost against today's כפיות) and only then picks the code, so all refusals
+-- evaluate the same checks in the same order.
+CREATE OR REPLACE FUNCTION fn_assign_refusal_reason(p_spoons int, p_task_kind task_kind_enum, p_cost int)
+RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v_cb    boolean := fn_cb_task_blocked(p_spoons, p_task_kind);
+  v_short boolean := (p_spoons IS NULL OR p_cost > p_spoons);
+BEGIN
+  IF v_cb THEN
+    RETURN 'circuit_breaker_active';
+  ELSIF v_short THEN
+    RETURN 'anti_get_blocked';     -- distinct from CB (Q-001 / N-1–N-3 API v2), self only
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assign_refusal_reason(int, task_kind_enum, int) FROM PUBLIC;
+
+-- Re-raise a refusal for the caller of rpc_assign_task: the exact error when she assigns to herself
+-- (called from an exception handler: p_self = true → the caller re-raises the original), else the single
+-- neutral 403 assignment_unavailable. Returns only when p_self is true.
+CREATE OR REPLACE FUNCTION fn_assign_neutral_refusal(p_self boolean)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF p_self IS NOT TRUE THEN
+    PERFORM fn_raise_business('assignment_unavailable');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assign_neutral_refusal(boolean) FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
 -- rpc_assign_task — compute s_final, Circuit Breaker v1.5, debit, insert.
 -- Client does NOT send s_base for pricing — RPC computes from task_kind/flags.
 -- Farming s_base=0 does NOT refill spoons (debit 0).
 -- When the debit brings the day to ≤3 the go-home entry is logged automatically.
 -- Security fix (J-143): only self or the assignee's direct manager (else 403 access_denied), checked
--- before ANY read / write — the circuit-breaker / anti-GET codes below are unchanged.
+-- before ANY read / write — the circuit-breaker / anti-GET codes are unchanged for self-assignment.
+-- J-146 A: for an assignment to someone else, every refusal after that check (Circuit Breaker, too few
+-- כפיות, any other error) → ONE neutral 403 assignment_unavailable, raised from one handler.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_assign_task(
   p_assignee_id     uuid,
@@ -500,12 +695,18 @@ DECLARE
   v_budget     spoon_budget;
   v_row        task;
   v_elem       jsonb;
+  v_self       boolean;
+  v_reason     text;
 BEGIN
   IF auth.uid() IS NULL THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
   -- J-143: authorization BEFORE any read or write (spoon_budget, early_leave_log, task).
   PERFORM fn_assert_may_assign_task(p_assignee_id);
+  v_self := (p_assignee_id = auth.uid());
+
+  -- J-146 A: everything below runs in ONE block on every path; a refusal for someone else is neutral.
+  BEGIN
 
   IF p_task_kind = 'farming' THEN
     v_s_base := 0;  -- Farming does NOT refill; cost 0
@@ -536,11 +737,10 @@ BEGIN
      AND budget_date = fn_user_local_date(p_assignee_id)
    FOR UPDATE;
 
-  PERFORM fn_cb_check_task(v_budget.current_spoon_count, p_task_kind);
-
-  IF v_cost > v_budget.current_spoon_count THEN
-    -- Distinct from CB: anti_get_blocked (Q-001 / N-1–N-3 API v2) → HTTP 403
-    PERFORM fn_raise_business('anti_get_blocked');
+  -- Circuit Breaker, then cost vs today's כפיות — both always evaluated (fn_assign_refusal_reason).
+  v_reason := fn_assign_refusal_reason(v_budget.current_spoon_count, p_task_kind, v_cost);
+  IF v_reason IS NOT NULL THEN
+    PERFORM fn_raise_business(v_reason);
   END IF;
 
   IF v_cost > 0 THEN
@@ -565,6 +765,11 @@ BEGIN
   IF v_budget.current_spoon_count <= 3 THEN
     PERFORM fn_log_early_leave(p_assignee_id);
   END IF;
+
+  EXCEPTION WHEN OTHERS THEN
+    PERFORM fn_assign_neutral_refusal(v_self);   -- someone else → 403 assignment_unavailable
+    RAISE;                                       -- self → the exact original error
+  END;
 
   RETURN v_row;
 END;
@@ -1139,6 +1344,10 @@ DROP FUNCTION IF EXISTS rpc_set_display_pseudonym(varchar);
 -- rpc_ledger_append — WORM insert only; hash chain computed by trigger.
 -- Subject = HMAC pseudonym (never user id). deprivation_tax_cost = system snapshot
 -- of the latest team_aggregate.deprivation_tax_amount for (org, department).
+-- Authorization (Karin 04.11, J-147 / J-163): only an active cfo of the ledger's company (subject from the same
+-- company); manager / vp_hr / legal_ethics / other companies / a system process without a signed-in cfo → 403
+-- access_denied, checked before any read / write. No EXECUTE for service_role. Anonymous client → anti_get_blocked
+-- (unchanged).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_ledger_append(
   p_event_type       varchar,
@@ -1158,11 +1367,12 @@ DECLARE
   v_row manager_ledger;
   v_tax numeric(14, 2);
 BEGIN
-  IF v_uid IS NULL OR fn_app_role() NOT IN ('manager', 'vp_hr', 'legal_ethics') THEN
-    PERFORM fn_raise_business('anti_get_blocked');
+  IF v_uid IS NULL AND fn_is_client_call() THEN
+    PERFORM fn_raise_business('anti_get_blocked');                  -- anonymous client: unchanged
   END IF;
 
-  p_org_id := COALESCE(p_org_id, fn_my_company());
+  p_org_id := COALESCE(p_org_id, fn_my_company());                 -- the caller's own company by default
+  PERFORM fn_assert_may_append_ledger(p_org_id, p_subject_user_id); -- active cfo of p_org_id, else 403
 
   IF p_org_id IS NOT NULL AND p_department IS NOT NULL THEN
     SELECT t.deprivation_tax_amount INTO v_tax
@@ -1185,7 +1395,8 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) FROM PUBLIC;
+-- J-163 (Karin 04.11): clients (authenticated) only; the service_role grant is revoked (also on re-apply / upgrade).
+REVOKE ALL ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) FROM PUBLIC, service_role;
 GRANT EXECUTE ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) TO authenticated;
 
 -- Crypto-shredding & Offboarding Retention (lock #7 + v1.6.12 Karin 24.10, O-14):
@@ -3031,8 +3242,10 @@ REVOKE ALL ON FUNCTION rpc_update_profile_timezone(text, char) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_update_profile_timezone(text, char) TO authenticated;
 
 -- ---------------------------------------------------------------------------
--- rpc_upsert_employee_value_asset — salary inputs (self or manager/vp_hr) and
--- turnover tier override (vp_hr / CHRO only; O-2: defaults automatically from org_role.tier).
+-- rpc_upsert_employee_value_asset — salary inputs and turnover tier override (vp_hr / CHRO only;
+-- O-2: defaults automatically from org_role.tier).
+-- Authorization (Karin 04.11, J-149): only an active vp_hr or cfo of the employee's company — the employee
+-- herself and managers no longer write; anyone else → 403 access_denied, before any read / write.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_upsert_employee_value_asset(
   p_user_id           uuid,
@@ -3051,11 +3264,9 @@ DECLARE
   v_row employee_value_asset;
 BEGIN
   IF v_uid IS NULL THEN
-    PERFORM fn_raise_business('anti_get_blocked');
+    PERFORM fn_raise_business('anti_get_blocked');                  -- anonymous: unchanged
   END IF;
-  IF v_uid <> p_user_id AND fn_app_role() NOT IN ('manager', 'vp_hr') THEN
-    PERFORM fn_raise_business('anti_get_blocked');
-  END IF;
+  PERFORM fn_assert_may_write_value_asset(p_user_id);              -- vp_hr / cfo of the same company, else 403
   IF p_turnover_tier IS NOT NULL AND fn_app_role() <> 'vp_hr' THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
@@ -6685,7 +6896,8 @@ REVOKE ALL ON FUNCTION fn_no_department_cuckoo_for_vp_hr(uuid) FROM PUBLIC;
 -- 'default_department_review' → the J-101 text; v1.6.21 'no_department_reminder' → the reminder with X = the
 -- CURRENT count of employees without a department in the caller's company, only for its active vp_hr and only
 -- while X > 0 (else NULL); v1.6.21 (J-123 = B) 'no_department_cuckoo' → the group wording, only for an active vp_hr
--- of a company with a delivered company-level alert; other kinds → NULL. J-128 = A: ONE kind per call, so the
+-- of a company with a delivered company-level alert; J-146 A 'assignment_unavailable' → the neutral assignment
+-- refusal text, for any caller; other kinds → NULL. J-128 = A: ONE kind per call, so the
 -- reminder count is never returned together with any metric of the no-department group.
 DROP FUNCTION IF EXISTS rpc_notification_message_he(text);   -- v1.6.21-r4 (J-137 = A): p_ref_id added
 CREATE OR REPLACE FUNCTION rpc_notification_message_he(p_kind text, p_ref_id uuid DEFAULT NULL)
@@ -6698,7 +6910,9 @@ AS $$
 DECLARE
   v_comp uuid := fn_caller_vp_hr_company();
 BEGIN
-  IF p_kind = 'default_department_review' THEN
+  IF p_kind = 'assignment_unavailable' THEN
+    RETURN fn_assignment_unavailable_he();                        -- J-146 A / J-155: neutral assignment refusal
+  ELSIF p_kind = 'default_department_review' THEN
     RETURN fn_default_department_notice_he();
   ELSIF p_kind = 'no_department_reminder' AND v_comp IS NOT NULL THEN
     RETURN fn_no_department_reminder_for_vp_hr(v_comp);
