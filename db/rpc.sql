@@ -2528,19 +2528,21 @@ $$;
 
 REVOKE ALL ON FUNCTION fn_team_latest_earlier_row(uuid, text) FROM PUBLIC;
 
--- v1.6.21-r3 (J-132 = yes, Karin 01.11): the small-teams share of the company Shadow Balance (all small teams
--- together), stored in shadow_balance_small_teams (no client access). Taken at every team Shadow Balance refresh,
--- right after the no-department share (J-120 pattern; rows with 0 included). v1.6.21-r4 (J-137 = A, J-139): a team
--- with no row this month but an earlier one ("stale") contributes its latest earlier-month row (debt, tax, deprived)
--- and is counted in stale_team_count; a team that never had a row is computed from its employees now (same formulas
--- as the team refresh). employee_count = the current employees of all those teams (the J-121 rule uses it).
-CREATE OR REPLACE FUNCTION fn_shadow_small_teams_snapshot(p_org_id uuid)
-RETURNS void
+-- v1.6.21-r5 (J-139 = A, Karin 04.11): the small-teams share of the company Shadow Balance NOW (all small teams
+-- together) — the ONE computation used by the board report snapshot AND the live board-member figures. A team with
+-- no row this month but an earlier one ("stale") contributes its latest earlier-month row (debt, tax, deprived) and
+-- is counted in stale_team_count; a team that never had a row is computed from its employees now (same formulas as
+-- the team refresh). employee_count = the current employees of all those teams (the J-121 rule uses it).
+CREATE OR REPLACE FUNCTION fn_small_teams_live(p_org_id uuid)
+RETURNS TABLE (employee_count int, deprived_count int, deprivation_tax_amount numeric,
+               happiness_debt_balance numeric, stale_team_count int)
 LANGUAGE plpgsql
+STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
+  RETURN QUERY
   WITH m AS (
     SELECT fn_effective_turnover_tier(u.user_id) AS tier,
            fn_is_employee_deprived(u.user_id) AS deprived,
@@ -2563,10 +2565,28 @@ BEGIN
       FROM shadow_balance_aggregate s
      WHERE s.aggregate_id IN (SELECT DISTINCT m.prev_row FROM m WHERE m.prev_row IS NOT NULL)
   )
+  SELECT f.emp, f.dep + st.dep, round(f.tax + st.tax, 2), round(f.debt + st.debt, 2), st.teams
+    FROM fresh f, stale st;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_small_teams_live(uuid) FROM PUBLIC;
+
+-- v1.6.21-r3 (J-132 = yes, Karin 01.11): the small-teams share of the company Shadow Balance, stored in
+-- shadow_balance_small_teams (no client access). Taken at every team Shadow Balance refresh, right after the
+-- no-department share (J-120 pattern; rows with 0 included). v1.6.21-r4/r5 (J-137 = A, J-139 = A): the figures
+-- come from fn_small_teams_live, the same computation as the live board-member figures.
+CREATE OR REPLACE FUNCTION fn_shadow_small_teams_snapshot(p_org_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
   INSERT INTO shadow_balance_small_teams (company_id, employee_count, deprived_count, deprivation_tax_amount,
                                           happiness_debt_balance, stale_team_count)
-  SELECT p_org_id, f.emp, f.dep + st.dep, round(f.tax + st.tax, 2), round(f.debt + st.debt, 2), st.teams
-    FROM fresh f, stale st;
+  SELECT p_org_id, l.employee_count, l.deprived_count, l.deprivation_tax_amount, l.happiness_debt_balance, l.stale_team_count
+    FROM fn_small_teams_live(p_org_id) l;
 END;
 $$;
 
@@ -3279,7 +3299,8 @@ RETURNS TABLE (
   other_group_label_he       text,
   other_happiness_debt_balance numeric,
   other_deprivation_tax_amount numeric,
-  company_total_display_he   text
+  company_total_display_he   text,
+  other_stale_teams_note_he  text
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -3315,6 +3336,8 @@ DECLARE
   v_o_debt     numeric;
   v_o_tax      numeric;
   v_display    text;
+  v_st         record;        -- v1.6.21-r5 (J-139 = A): the small teams together (fn_small_teams_live)
+  v_note       text;
 BEGIN
   -- Governance roles (board_chair, board_member, owner_shareholder) of the company only
   IF auth.uid() IS NULL OR v_role IS NULL OR v_comp IS NULL
@@ -3433,15 +3456,20 @@ BEGIN
          AND u.employment_ended_at IS NULL
          AND fn_effective_turnover_tier(u.user_id) IS NOT NULL
     )
-    SELECT count(*) FILTER (WHERE m.deprived)::int,
-           round(COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.t_grp)) FILTER (WHERE m.deprived), 0), 2),
-           round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived), 0), 2),
-           round(COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.t_grp)) FILTER (WHERE m.deprived AND m.small), 0), 2),
-           round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived AND m.small), 0), 2)
-      INTO v_dep_n, v_debt, v_tax, v_o_debt, v_o_tax
+    -- v1.6.21-r5 (J-139 = A): live employees outside the small teams + the small teams together exactly as the
+    -- board report takes them (a stale team = its latest earlier-month row) — so 'אחר' and the total match the report.
+    SELECT count(*) FILTER (WHERE m.deprived AND NOT m.small)::int,
+           round(COALESCE(sum(m.tier_salary * fn_turnover_tier_midpoint_factor(m.t_grp)) FILTER (WHERE m.deprived AND NOT m.small), 0), 2),
+           round(COALESCE(sum(m.tier_salary * fn_chr_productivity_factor()) FILTER (WHERE m.deprived AND NOT m.small), 0), 2)
+      INTO v_dep_n, v_debt, v_tax
       FROM m;
-    IF NOT v_other THEN
-      v_o_debt := NULL; v_o_tax := NULL;
+    SELECT * INTO v_st FROM fn_small_teams_live(v_comp);
+    v_dep_n := v_dep_n + v_st.deprived_count;
+    v_debt  := round(v_debt + v_st.happiness_debt_balance, 2);
+    v_tax   := round(v_tax + v_st.deprivation_tax_amount, 2);
+    IF v_other THEN
+      v_o_debt := v_st.happiness_debt_balance; v_o_tax := v_st.deprivation_tax_amount;
+      v_note   := fn_stale_teams_note_he(v_st.stale_team_count);   -- J-137 / J-139: only on a shown 'אחר', X > 0
     END IF;
     v_shadow := round(COALESCE(v_debt, 0) + COALESCE(v_tax, 0), 2);
     v_gaap := COALESCE(p_gaap_reported_ebitda,
@@ -3462,7 +3490,7 @@ BEGIN
     v_ihs_n, v_ihs_avg,
     v_wl_n, v_epwi_t, v_epwi_c, v_pewi,
     v_sb_n, v_dep_n, v_debt, v_tax, v_shadow, v_gaap, v_real_ebit,
-    CASE WHEN v_o_debt IS NOT NULL THEN fn_other_group_label_he() END, v_o_debt, v_o_tax, v_display;
+    CASE WHEN v_o_debt IS NOT NULL THEN fn_other_group_label_he() END, v_o_debt, v_o_tax, v_display, v_note;
 END;
 $$;
 

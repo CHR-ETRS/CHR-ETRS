@@ -6614,6 +6614,12 @@ components:
           nullable: true
           description: v1.6.21 (J-115 / J-121 = A) — "אין מספיק נתונים להצגה בתקופה זו" when the undisplayed remainder
             (after the 'אחר' merge) is 1-9 employees; then the sensitive figures are null.
+        other_stale_teams_note_he:
+          type: string
+          nullable: true
+          description: v1.6.21-r5 (J-139 = A) — "כולל נתונים מחודשים קודמים של X צוותים", only when the 'אחר' row is
+            shown and X > 0 (never a team name). A team not calculated this month counts in 'אחר' and in the total with
+            its last calculated Shadow Balance row, exactly as in the board report.
     ShopPurchase:
       type: object
       description: 'Employee-private EverStore purchase record (RLS: own rows only; strictly hidden from managers,

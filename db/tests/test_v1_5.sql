@@ -2750,10 +2750,12 @@ BEGIN
     v_c := md5('j137-' || k)::uuid;
     INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
     VALUES (v_c, 'J137 ' || k, 'IL', 0, 4, 'Asia/Jerusalem');
-    INSERT INTO auth.users (id) VALUES (md5('j137-mgr-' || k)::uuid), (md5('j137-hr-' || k)::uuid);
+    INSERT INTO auth.users (id) VALUES (md5('j137-mgr-' || k)::uuid), (md5('j137-hr-' || k)::uuid), (md5('j137-chair-' || k)::uuid);
     INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date, has_employee_profile) VALUES
       (md5('j137-mgr-' || k)::uuid, v_c, 'mgr@j137' || k, 'J137 Mgr ' || k, 'Exec', 'manager', 'direct_manager', 'Asia/Jerusalem', CURRENT_DATE - 200, true),
-      (md5('j137-hr-' || k)::uuid, v_c, 'hr@j137' || k, 'J137 HR ' || k, 'HR', 'vp_hr', 'vp', 'Asia/Jerusalem', CURRENT_DATE - 200, false);
+      (md5('j137-hr-' || k)::uuid, v_c, 'hr@j137' || k, 'J137 HR ' || k, 'HR', 'vp_hr', 'vp', 'Asia/Jerusalem', CURRENT_DATE - 200, false),
+      -- v1.6.21-r5 (J-139): a board chair (no turnover tier, not in any figure) to read the live board-member figures
+      (md5('j137-chair-' || k)::uuid, v_c, 'chair@j137' || k, 'J137 Chair ' || k, 'Board', 'board_chair', 'board_chair', 'Asia/Jerusalem', CURRENT_DATE - 200, false);
     v_teams := CASE k WHEN 'd' THEN ARRAY['Ops', 'Fin', 'Legal'] ELSE ARRAY['Ops', 'Fin', ''] END;
     v_size  := CASE k WHEN 'd' THEN ARRAY[10, 10, 3] ELSE ARRAY[10, 10, 3] END;
     n := 0;
@@ -2818,6 +2820,31 @@ SELECT t_assert('J-137 = A (clarified): F — stale teams exist (X = 1) but ''א
   (SELECT j->'other_group' = 'null'::jsonb AND j::text NOT LIKE '%כולל נתונים מחודשים קודמים%'
           AND NOT j ? 'company_total_display_he' AND (j->>'happiness_debt_balance')::numeric = d.happiness_debt_balance
      FROM t_j137_rep r, t_j137 x, fn_company_month_shadow(x.c, x.m) d WHERE r.k = 'f' AND x.k = 'f'));
+-- v1.6.21-r5 J-139 = A (Karin 04.11): the live board-member figures take the stale team exactly as the report does.
+SELECT t_as(md5('j137-chair-d')::uuid);
+SET ROLE authenticated;
+CREATE TEMP TABLE t_j139_macro_d AS SELECT * FROM rpc_get_board_macro_metrics(1000000);
+RESET ROLE;
+SELECT t_as(md5('j137-chair-f')::uuid);
+SET ROLE authenticated;
+CREATE TEMP TABLE t_j139_macro_f AS SELECT * FROM rpc_get_board_macro_metrics(1000000);
+RESET ROLE;
+SELECT t_assert('J-139 = A: D — same team set, same month: the live ''אחר'' debt and מס קיפוח equal the board report''s (Fin = its latest earlier-month row), same note (X = 1), same stale count, same company total',
+  (SELECT m.other_group_label_he = r.j->'other_group'->>'label_he'
+          AND m.other_happiness_debt_balance = (r.j->'other_group'->>'happiness_debt_balance')::numeric
+          AND m.other_deprivation_tax_amount = (r.j->'other_group'->>'deprivation_tax')::numeric
+          AND m.other_happiness_debt_balance = round(2 * x.sal * x.f_debt, 2) + round(1 * x.sal * x.f_debt, 2)
+          AND m.other_stale_teams_note_he = r.j->'other_group'->>'stale_teams_note_he'
+          AND m.other_stale_teams_note_he = 'כולל נתונים מחודשים קודמים של 1 צוותים'
+          AND (SELECT l.stale_team_count FROM fn_small_teams_live(x.c) l) = fn_company_month_stale_team_count(x.c, x.m)
+          AND m.happiness_debt_balance = d.happiness_debt_balance AND m.deprivation_tax_amount = d.deprivation_tax
+     FROM t_j139_macro_d m, t_j137_rep r, t_j137 x, fn_company_month_shadow(x.c, x.m) d WHERE r.k = 'd' AND x.k = 'd'));
+SELECT t_assert('J-139 = A: F — ''אחר'' cannot be shown in either place → no row and no note in the live figures although X = 1; same total as the report',
+  (SELECT m.other_group_label_he IS NULL AND m.other_happiness_debt_balance IS NULL AND m.other_deprivation_tax_amount IS NULL
+          AND m.other_stale_teams_note_he IS NULL AND r.j->'other_group' = 'null'::jsonb
+          AND (SELECT l.stale_team_count FROM fn_small_teams_live(x.c) l) = 1 AND fn_company_month_stale_team_count(x.c, x.m) = 1
+          AND m.happiness_debt_balance = d.happiness_debt_balance AND m.deprivation_tax_amount = d.deprivation_tax
+     FROM t_j139_macro_f m, t_j137_rep r, t_j137 x, fn_company_month_shadow(x.c, x.m) d WHERE r.k = 'f' AND x.k = 'f'));
 -- vp_hr reminder for last month (closed): D's Ops (10) had no row then → one notice; Fin (row) and Legal (3) none.
 -- (each refresh in its own statement, so that the checks below see its rows)
 CREATE TEMP TABLE t_j137_runs AS SELECT 'open_month' AS run, fn_refresh_team_not_calculated_reminders(md5('j137-d')::uuid, (SELECT m FROM t_j137 WHERE k = 'd')) AS n;
