@@ -1,6 +1,6 @@
 -- =============================================================================
 -- CHR-ETRS MVP v1.6.21 · rpc.sql
--- Version: 1.6.21-mvp r4 (2026-11-01 IL; r4 = J-137 A stale teams in 'אחר' + note, vp_hr 'team_not_calculated' reminder; J-138 approved; r3 = J-129 approved text, J-132 small teams in the board report total as one 'אחר' row (shadow_balance_small_teams); r2 = tests only (J-135); r1 = J-123 B company-level Cuckoo without identifiers + vp_hr group notice, J-128 A reminder count never with a group metric, J-121 A 'אחר' merge in the board-member figures, J-126 A audited automatic close of the 'General' notice; 2026-10-31: J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
+-- Version: 1.6.21-mvp r5 (2026-11-04; r5 = J-140 reminder wording approved; r4 2026-11-01 IL; r4 = J-137 A stale teams in 'אחר' + note, vp_hr 'team_not_calculated' reminder; J-138 approved; r3 = J-129 approved text, J-132 small teams in the board report total as one 'אחר' row (shadow_balance_small_teams); r2 = tests only (J-135); r1 = J-123 B company-level Cuckoo without identifiers + vp_hr group notice, J-128 A reminder count never with a group metric, J-121 A 'אחר' merge in the board-member figures, J-126 A audited automatic close of the 'General' notice; 2026-10-31: J-115 A no-department share of the company totals + 1-9 placeholder, J-112 A company-level Cuckoo, J-108 A immediate 'General' notice + decision, no-department reminder) — supersedes 1.6.20-mvp r2 (2026-10-31 IL; merged as PR #9, c3a57b6; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker), 1.6.19-mvp (2026-10-31 IL; merged as PR #8, 4f676aa), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; v1.6.14 / v1.6.15 never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp (2026-10-20 20:30 IL), 1.6.2-mvp (2026-10-20 11:05 IL), 1.6.1-mvp (2026-10-20 10:58 IL), 1.6.0-mvp (2026-10-20 10:30 IL), 1.5.0-mvp and 1.4.0-mvp (2026-10-06)
 -- SoT: ADR index + Karin's approved locks of 2026-10-20. ALL writes via RPC.
 -- Paths: POST /rpc/<function_name> with rpc_* names.
 -- New in 1.6.0: red team alert (respondent N≥5), shop by employee profile, crypto-shred
@@ -6631,12 +6631,12 @@ $$;
 REVOKE ALL ON FUNCTION rpc_notification_message_he(text, uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_notification_message_he(text, uuid) TO authenticated;
 
--- v1.6.21-r4 (J-137 = A, J-140 — wording for Karin's approval): the vp_hr reminder text; the team name only.
+-- v1.6.21-r4 (J-137 = A) / r5 (J-140 approved, Karin 04.11): the exact vp_hr reminder text; the team name only, no data.
 CREATE OR REPLACE FUNCTION fn_team_not_calculated_he(p_team text)
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
-AS $$ SELECT 'לצוות ' || p_team || ' לא בוצע חישוב מאזן הצל בחודש שהסתיים.' $$;
+AS $$ SELECT 'לצוות ' || p_team || ' לא בוצע חישוב מאזן הצל בחודש שהסתיים. כדאי לבדוק שהנתונים של הצוות הוזנו, כדי שיופיע בנפרד בדוח.' $$;
 
 -- v1.6.21-r4 (J-137 = A): the reminder text of one 'team_not_calculated' notice of the CALLER — only for an active
 -- vp_hr of the reference's company who is the notice's recipient; else NULL.

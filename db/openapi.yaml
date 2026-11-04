@@ -4649,7 +4649,8 @@ paths:
         v1.6.21 no_department_reminder → "יש X עובדים בלי מחלקה. כל עוד הם לא משויכים, חלק מההתראות לא יכולות
         לפעול עבורם." with X = the current count of the caller''s company, only for an active vp_hr and only while
         X > 0 (count only, no names). v1.6.21-r4 (J-137 = A) team_not_calculated (with p_ref_id) → "לצוות {team}
-        לא בוצע חישוב מאזן הצל בחודש שהסתיים." (J-140, wording awaiting Karin''s approval; the team name only, only
+        לא בוצע חישוב מאזן הצל בחודש שהסתיים. כדאי לבדוק שהנתונים של הצוות הוזנו, כדי שיופיע בנפרד בדוח." (J-140
+        approved; the team name only, no data, only
         for the vp_hr who received it). v1.6.21 (J-123 = B) no_department_cuckoo → "בקרב העובדים בלי מחלקה יש סימני
         העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות, כדי שההתראות יגיעו למנהלת הנכונה." (J-129 approved; active vp_hr of a company with a delivered
         company-level alert; no number, no name). J-128 = A: one kind per call — the reminder count never comes in

@@ -2846,9 +2846,14 @@ SELECT t_as(md5('j137-hr-d')::uuid);
 SET ROLE authenticated;
 SELECT t_assert('J-137 = A: vp_hr reads her notice and its text — the team name only (no digit, no id, no pseudonym) — J-140 wording',
   (SELECT count(*) = 1 FROM notification WHERE kind = 'team_not_calculated')
-  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) = 'לצוות Ops לא בוצע חישוב מאזן הצל בחודש שהסתיים.'
+  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) = 'לצוות Ops לא בוצע חישוב מאזן הצל בחודש שהסתיים. כדאי לבדוק שהנתונים של הצוות הוזנו, כדי שיופיע בנפרד בדוח.'
   AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) !~ '[0-9]'
   AND rpc_notification_message_he('team_not_calculated') IS NULL);
+SELECT t_assert('J-140 approved: exact rendered reminder for the sample team "Ops" — no digit, no person_id / user_id / pseudonym',
+  rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref))
+    = 'לצוות Ops לא בוצע חישוב מאזן הצל בחודש שהסתיים. כדאי לבדוק שהנתונים של הצוות הוזנו, כדי שיופיע בנפרד בדוח.'
+  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) !~ '[0-9]'
+  AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) !~* '(person_id|user_id|pseudonym|[0-9a-f]{8}-[0-9a-f]{4})');
 RESET ROLE;
 SELECT t_as(md5('j137-mgr-d')::uuid);
 SET ROLE authenticated;
