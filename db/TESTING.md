@@ -64,7 +64,7 @@ python3 -m venv /tmp/venv-oas
 ```bash
 cd db                                   # the folder holding schema.sql, rpc.sql, openapi.yaml, tests/
 ./tests/run_tests.sh 2>&1 | tee /tmp/run_tests.log; echo "exit ${PIPESTATUS[0]}"
-grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (db/authz-sensitive-rpcs, sensitive-RPC authorization: 1477; J-146 A on db/authz-sensitive-rpcs: 1415; main 1ea87b7 incl. test_assign_authz.sql: 1389 — the r5 figure 1361 below was the count before test_assign_authz.sql (28) was added; v1.6.21-r5: 1361; v1.6.21-r4: 1357; v1.6.21-r3: 1346; v1.6.21-r2: 1336; v1.6.21-r1: 1335; v1.6.21: 1318; v1.6.20-r2: 1285)
+grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (db/authz-sensitive-rpcs, J-163 no ledger system path: 1477 — 3 system-ledger checks replaced, total unchanged; sensitive-RPC authorization: 1477; J-146 A on db/authz-sensitive-rpcs: 1415; main 1ea87b7 incl. test_assign_authz.sql: 1389 — the r5 figure 1361 below was the count before test_assign_authz.sql (28) was added; v1.6.21-r5: 1361; v1.6.21-r4: 1357; v1.6.21-r3: 1346; v1.6.21-r2: 1336; v1.6.21-r1: 1335; v1.6.21: 1318; v1.6.20-r2: 1285)
 grep -c "WARNING:  FAIL" /tmp/run_tests.log            # must be 0 (a FAIL also stops the run with exit ≠ 0)
 grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 114 passed, 0 failed · nosuper: 108 passed, 0 failed
 /tmp/venv-oas/bin/openapi-spec-validator openapi.yaml   # → openapi.yaml: OK
@@ -77,7 +77,7 @@ What `run_tests.sh` does, in order (each on a fresh database):
 2. Fresh DB → pack → `tests/test_agents_v1_6_16.sql` (agents; 299 checks).
 3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 246 checks in v1.6.21-r4 too (J-102 catalog allowlist + fn_team_latest_earlier_row, which reads stored team rows only); 246 in v1.6.21-r1: +4 J-126 automatic close, +3 J-128 count never with a group metric; 239 in v1.6.21; +20 J-108 immediate notice and the two decisions, the no-department reminder; 219 in v1.6.20-r2).
 3a. Fresh DB → pack → `tests/test_assign_authz.sql` (rpc_assign_task authorization; 54 checks with J-146 A: +26 — direct manager: 6 refusal reasons give 1 identical neutral answer, data / visible rows unchanged, exact text; self keeps the exact reason; J-153 = A: 26 stranger answers identical `access_denied` at 12 / 5 / 3 כפיות; helpers internal; 28 with J-143).
-3b. Fresh DB → pack → `tests/test_sensitive_authz.sql` (sensitive-RPC authorization, J-147 – J-150; 62 checks: J-148 system recognition 4; reset spoons 16; value asset 16; ledger 21; identical answers / no digit / 37 refusals 3; structure 2).
+3b. Fresh DB → pack → `tests/test_sensitive_authz.sql` (sensitive-RPC authorization, J-147 – J-150; 62 checks: J-148 system recognition 4; reset spoons 16; value asset 16; ledger 21 (J-163: service_role refused / server session access_denied / data unchanged, no service_role grant); identical answers / no digit / 37 refusals 3; structure 2).
 4. `MIG_MODE=super ./tests/test_migration.sh` — v1.4 → v1.6.21 migration as superuser (event-trigger DDL guard +
    timezone preflight): dry run, apply, counts, catalog = fresh, idempotence, rollback.
 5. `MIG_MODE=nosuper ./tests/test_migration.sh` — the same as a **non-superuser** owner: the script itself creates

@@ -6,7 +6,7 @@
 -- DIRECT manager (users.reports_to, solid line) may assign; anyone else → 403 access_denied BEFORE any read or
 -- write: כפיות unchanged, no spoon_budget row created, no task row, no early_leave_log row.
 -- J-146 A (Karin 04.11): for the authorized direct manager every refusal after that check is ONE neutral 403
--- assignment_unavailable (J-152 name / status pending Karin); only self-assignment shows the exact reason; strangers
+-- assignment_unavailable (J-152 = A, Karin); only self-assignment shows the exact reason; strangers
 -- always get the identical 403 access_denied (J-153 = A).
 -- Same harness as tests/test_v1_5.sql (pgTAP-style PASS lines; pgTAP itself is not installed). Every check
 -- prints "PASS <name>"; any failure aborts. No identifier is printed.

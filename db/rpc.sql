@@ -352,7 +352,8 @@ REVOKE ALL ON FUNCTION fn_log_early_leave(uuid) FROM PUBLIC;
 -- Sensitive-RPC authorization (Karin 04.11: J-147 – J-150; the old J-146 gap list).
 --   rpc_daily_reset_spoons          → the employee herself (active) or a system process;
 --   rpc_upsert_employee_value_asset → an active vp_hr or cfo of the employee's company;
---   rpc_ledger_append               → an active cfo of the ledger's company or a system process.
+--   rpc_ledger_append               → an active cfo of the ledger's company only (J-163 = Karin 04.11: no
+--                                     system path — no real system process writes ledger events).
 -- Checked FIRST (after the signed-in check), before any read or write of business tables; anyone else
 -- → 403 access_denied with no detail. J-148: a system process is identified ONLY by the connection's
 -- own role (fn_is_client_call: the role set by SET ROLE — PostgREST sets it from the role of the
@@ -447,8 +448,9 @@ $$;
 
 REVOKE ALL ON FUNCTION fn_assert_may_write_value_asset(uuid) FROM PUBLIC, anon, authenticated;
 
--- 403 access_denied unless the ledger company is known and the caller is a system process, or an active cfo
--- of that company whose subject (if any) is an employee of the same company (J-147 / J-161 / J-162).
+-- 403 access_denied unless the caller is an active cfo of the ledger company p_org_id and the subject (if any) is an
+-- employee of the same company (J-147 / J-161). J-163 (Karin 04.11): no system path — a service_role / server-side
+-- call without a signed-in cfo is refused like anyone else.
 CREATE OR REPLACE FUNCTION fn_assert_may_append_ledger(p_org_id uuid, p_subject_user_id uuid)
 RETURNS void
 LANGUAGE plpgsql
@@ -457,9 +459,6 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
-  IF p_org_id IS NOT NULL AND fn_is_system_call() THEN
-    RETURN;
-  END IF;
   IF NOT fn_caller_active_role_in(p_org_id, ARRAY['cfo'])
      OR (p_subject_user_id IS NOT NULL AND fn_user_company(p_subject_user_id) IS DISTINCT FROM p_org_id) THEN
     PERFORM fn_raise_business('access_denied');
@@ -606,7 +605,7 @@ REVOKE ALL ON FUNCTION fn_assert_may_assign_task(uuid) FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
 -- J-146 A (Karin): when the caller assigns to SOMEONE ELSE (her authorized direct manager), every refusal
--- after the authorization check returns ONE neutral answer: 403 assignment_unavailable (J-152), same
+-- after the authorization check returns ONE neutral answer: 403 assignment_unavailable (J-152 = A), same
 -- SQLSTATE / message / DETAIL / HINT, raised from ONE place. Only the employee assigning to herself sees
 -- the exact reason (circuit_breaker_active / anti_get_blocked, unchanged). Strangers keep 403 access_denied
 -- (J-153 = A, Karin: always the identical 403 access_denied) and anonymous callers keep anti_get_blocked.
@@ -1345,9 +1344,10 @@ DROP FUNCTION IF EXISTS rpc_set_display_pseudonym(varchar);
 -- rpc_ledger_append — WORM insert only; hash chain computed by trigger.
 -- Subject = HMAC pseudonym (never user id). deprivation_tax_cost = system snapshot
 -- of the latest team_aggregate.deprivation_tax_amount for (org, department).
--- Authorization (Karin 04.11, J-147): only an active cfo of the ledger's company (subject from the same
--- company) or a system process (J-148); manager / vp_hr / legal_ethics / other companies → 403 access_denied,
--- checked before any read / write. Anonymous client → anti_get_blocked (unchanged).
+-- Authorization (Karin 04.11, J-147 / J-163): only an active cfo of the ledger's company (subject from the same
+-- company); manager / vp_hr / legal_ethics / other companies / a system process without a signed-in cfo → 403
+-- access_denied, checked before any read / write. No EXECUTE for service_role. Anonymous client → anti_get_blocked
+-- (unchanged).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_ledger_append(
   p_event_type       varchar,
@@ -1372,7 +1372,7 @@ BEGIN
   END IF;
 
   p_org_id := COALESCE(p_org_id, fn_my_company());                 -- the caller's own company by default
-  PERFORM fn_assert_may_append_ledger(p_org_id, p_subject_user_id); -- cfo of p_org_id or system, else 403
+  PERFORM fn_assert_may_append_ledger(p_org_id, p_subject_user_id); -- active cfo of p_org_id, else 403
 
   IF p_org_id IS NOT NULL AND p_department IS NOT NULL THEN
     SELECT t.deprivation_tax_amount INTO v_tax
@@ -1395,8 +1395,9 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) TO authenticated, service_role;
+-- J-163 (Karin 04.11): clients (authenticated) only; the service_role grant is revoked (also on re-apply / upgrade).
+REVOKE ALL ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) FROM PUBLIC, service_role;
+GRANT EXECUTE ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) TO authenticated;
 
 -- Crypto-shredding & Offboarding Retention (lock #7 + v1.6.12 Karin 24.10, O-14):
 --   (1) Self-request (rpc_request_crypto_shred / rpc_crypto_shred_pseudonym_key by the employee

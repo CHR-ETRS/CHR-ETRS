@@ -4,7 +4,7 @@
 --   psql -v ON_ERROR_STOP=1 -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f tests/test_sensitive_authz.sql
 --   rpc_daily_reset_spoons          → the employee herself (active) or a system process;
 --   rpc_upsert_employee_value_asset → an active vp_hr or cfo of the employee's company (J-149: not the employee);
---   rpc_ledger_append               → an active cfo of the ledger's company or a system process (J-147).
+--   rpc_ledger_append               → an active cfo of the ledger's company only (J-147; J-163: no system path).
 -- Anyone else → 403 access_denied (no detail, no digit) and NOTHING changes (fingerprint of every touched table
 -- before = after). J-148: a system process = the connection's own role only (fn_is_client_call), never a
 -- parameter / header / claim. Anonymous codes unchanged. Same harness as tests/test_assign_authz.sql
@@ -269,21 +269,30 @@ SELECT t_assert('ledger: cfo of the same company appends to her own company by d
   (SELECT org_id = t_co('A') FROM rpc_ledger_append('authz_note', 3, 4)));
 RESET ROLE;
 SELECT t_as(NULL);
--- J-163 (conflict, for Karin): a system process passes the authorization check, but the existing schema rule
--- chk_ledger_manager_or_genesis (every non-GENESIS row names its actor in manager_id) refuses a row without one.
+-- J-163 (Karin 04.11): no system path — a system process is refused and nothing is written.
+CREATE TEMP TABLE t_sys_snap AS SELECT t_snapshot() AS db;
 SET ROLE service_role;
-SELECT t_assert('ledger: system process (service_role) passes authorization (not access_denied); the existing schema rule then refuses a row without an actor (23514, J-163)',
-  (SELECT sig->>'code' = '23514' FROM (SELECT t_err_sig(format('SELECT rpc_ledger_append(%L, 5, 6, NULL, %L::uuid)', 'system_note', t_co('A'))) sig) x));
+CREATE TEMP TABLE t_sys_sig AS
+  SELECT t_err_sig(format('SELECT rpc_ledger_append(%L, 5, 6, NULL, %L::uuid)', 'system_note', t_co('A'))) AS svc;
 RESET ROLE;
-SELECT t_assert('ledger: system process (server-side session) passes authorization; same schema rule (23514, J-163)',
-  (SELECT sig->>'code' = '23514' FROM (SELECT t_err_sig(format('SELECT rpc_ledger_append(%L, 7, 8, NULL, %L::uuid)', 'system_note', t_co('A'))) sig) x));
-SELECT t_assert('ledger: a system process must name the company (J-162) → 403 access_denied',
-  (SELECT sig->>'message' = 'access_denied' FROM (SELECT t_err_sig('SELECT rpc_ledger_append(''system_note'', 1, 1)') sig) x));
+ALTER TABLE t_sys_sig ADD COLUMN srv jsonb;
+UPDATE t_sys_sig SET srv = t_err_sig(format('SELECT rpc_ledger_append(%L, 7, 8, NULL, %L::uuid)', 'system_note', t_co('A')));
+SELECT t_assert('ledger (J-163): service_role is refused before the function runs — no EXECUTE privilege (42501 insufficient_privilege, message names only the function, no digit)',
+  (SELECT svc->>'code' = '42501' AND svc->>'message' = 'permission denied for function rpc_ledger_append'
+          AND (svc->>'message') !~ '[0-9]' FROM t_sys_sig));
+SELECT t_assert('ledger (J-163): a server-side session (no signed-in cfo) → 403 access_denied (42501, no detail)',
+  (SELECT srv->>'code' = '42501' AND srv->>'message' = 'access_denied' AND srv->>'hint' = 'access_denied'
+          AND srv->>'details' = 'http_hint=403;code=access_denied' FROM t_sys_sig));
+SELECT t_assert('ledger (J-163): after both system attempts nothing changed (before = after)',
+  t_snapshot() = (SELECT db FROM t_sys_snap));
 SELECT t_assert('ledger: exactly the 2 allowed cfo rows were added; the chain of company A verifies; company B untouched',
   (SELECT count(*) FROM manager_ledger WHERE org_id = t_co('A')) = (SELECT n FROM t_ledger_before) + 2
   AND fn_ledger_verify_chain(t_co('A'))
   AND (SELECT count(*) = 1 FROM manager_ledger WHERE org_id = t_co('B')));
-SELECT t_assert('ledger: rpc_ledger_append is granted to service_role', has_function_privilege('service_role', 'rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar)', 'EXECUTE'));
+SELECT t_assert('ledger (J-163): rpc_ledger_append is NOT granted to service_role (clients = authenticated only)',
+  NOT has_function_privilege('service_role', 'rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar)', 'EXECUTE')
+  AND has_function_privilege('authenticated', 'rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar)', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar)', 'EXECUTE'));
 
 -- ============ 4. the 403 carries no information ============
 SELECT t_assert('every access_denied answer is the same (code, message, details, hint) across the 3 functions',
