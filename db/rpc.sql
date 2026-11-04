@@ -349,8 +349,131 @@ $$;
 REVOKE ALL ON FUNCTION fn_log_early_leave(uuid) FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
+-- Sensitive-RPC authorization (Karin 04.11: J-147 – J-150; the old J-146 gap list).
+--   rpc_daily_reset_spoons          → the employee herself (active) or a system process;
+--   rpc_upsert_employee_value_asset → an active vp_hr or cfo of the employee's company;
+--   rpc_ledger_append               → an active cfo of the ledger's company or a system process.
+-- Checked FIRST (after the signed-in check), before any read or write of business tables; anyone else
+-- → 403 access_denied with no detail. J-148: a system process is identified ONLY by the connection's
+-- own role (fn_is_client_call: the role set by SET ROLE — PostgREST sets it from the role of the
+-- verified JWT; service_role / the server key or a server-side login is not a client), never by a
+-- parameter, flag, header or claim the client sends.
+-- ---------------------------------------------------------------------------
+
+-- TRUE for a system process: the connection's current role is not a client role (authenticated / anon).
+CREATE OR REPLACE FUNCTION fn_is_system_call()
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+AS $$
+BEGIN
+  RETURN NOT fn_is_client_call();
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_is_system_call() FROM PUBLIC, anon, authenticated;
+
+-- TRUE when the caller (auth.uid()) is still employed and holds one of p_roles (users.app_role) in p_company.
+CREATE OR REPLACE FUNCTION fn_caller_active_role_in(p_company uuid, p_roles text[])
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  RETURN p_company IS NOT NULL AND EXISTS (
+    SELECT 1 FROM users c
+     WHERE c.user_id = auth.uid()
+       AND c.company_id = p_company
+       AND c.employment_ended_at IS NULL
+       AND c.app_role = ANY (p_roles));
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_caller_active_role_in(uuid, text[]) FROM PUBLIC, anon, authenticated;
+
+-- Company of a user, or NULL (internal; never returned to a client).
+CREATE OR REPLACE FUNCTION fn_user_company(p_user_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  RETURN (SELECT u.company_id FROM users u WHERE u.user_id = p_user_id);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_user_company(uuid) FROM PUBLIC, anon, authenticated;
+
+-- 403 access_denied unless a system process, or the signed-in, still-employed employee resets her OWN כפיות.
+CREATE OR REPLACE FUNCTION fn_assert_may_reset_spoons(p_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF fn_is_system_call() THEN
+    RETURN;
+  END IF;
+  IF p_user_id IS NULL OR p_user_id IS DISTINCT FROM auth.uid()
+     OR NOT EXISTS (SELECT 1 FROM users u WHERE u.user_id = p_user_id AND u.employment_ended_at IS NULL) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_may_reset_spoons(uuid) FROM PUBLIC, anon, authenticated;
+
+-- 403 access_denied unless the caller is an active vp_hr or cfo of the SAME company as the employee
+-- (J-149: the employee herself no longer writes her salary data; no system path).
+CREATE OR REPLACE FUNCTION fn_assert_may_write_value_asset(p_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF NOT fn_caller_active_role_in(fn_user_company(p_user_id), ARRAY['vp_hr', 'cfo']) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_may_write_value_asset(uuid) FROM PUBLIC, anon, authenticated;
+
+-- 403 access_denied unless the ledger company is known and the caller is a system process, or an active cfo
+-- of that company whose subject (if any) is an employee of the same company (J-147 / J-161 / J-162).
+CREATE OR REPLACE FUNCTION fn_assert_may_append_ledger(p_org_id uuid, p_subject_user_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF p_org_id IS NOT NULL AND fn_is_system_call() THEN
+    RETURN;
+  END IF;
+  IF NOT fn_caller_active_role_in(p_org_id, ARRAY['cfo'])
+     OR (p_subject_user_id IS NOT NULL AND fn_user_company(p_subject_user_id) IS DISTINCT FROM p_org_id) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_may_append_ledger(uuid, uuid) FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
 -- rpc_daily_reset_spoons — ALWAYS set to 12 at employee local midnight day (N-1 / Q-008)
 -- No debt carryover. Keyed to (now() AT TIME ZONE u.timezone)::date — not org UTC.
+-- Authorization (Karin 04.11): only the employee herself (active) or a system process (J-148);
+-- anyone else → 403 access_denied, checked before any read / write. Anonymous client → consent_required.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_daily_reset_spoons(p_user_id uuid DEFAULT NULL)
 RETURNS spoon_budget
@@ -363,15 +486,13 @@ DECLARE
   v_local_date date;
   v_row spoon_budget;
 BEGIN
-  IF v_uid IS NULL THEN
+  -- No subject, or an anonymous CLIENT call (not a system process, J-148): the existing consent_required.
+  IF v_uid IS NULL OR (auth.uid() IS NULL AND fn_is_client_call()) THEN
     RAISE EXCEPTION 'consent_required'
       USING ERRCODE = '42501', DETAIL = 'http_hint=403;code=consent_required', HINT = 'consent_required';
   END IF;
 
-  IF auth.uid() IS NOT NULL AND auth.uid() <> v_uid AND fn_app_role() NOT IN ('manager', 'vp_hr') THEN
-    RAISE EXCEPTION 'anti_get_blocked'
-      USING ERRCODE = '42501', DETAIL = 'http_hint=403;code=anti_get_blocked', HINT = 'anti_get_blocked';
-  END IF;
+  PERFORM fn_assert_may_reset_spoons(v_uid);   -- self (active) or system, else 403 access_denied
 
   v_local_date := fn_user_local_date(v_uid);
   IF v_local_date IS NULL THEN
@@ -1224,6 +1345,9 @@ DROP FUNCTION IF EXISTS rpc_set_display_pseudonym(varchar);
 -- rpc_ledger_append — WORM insert only; hash chain computed by trigger.
 -- Subject = HMAC pseudonym (never user id). deprivation_tax_cost = system snapshot
 -- of the latest team_aggregate.deprivation_tax_amount for (org, department).
+-- Authorization (Karin 04.11, J-147): only an active cfo of the ledger's company (subject from the same
+-- company) or a system process (J-148); manager / vp_hr / legal_ethics / other companies → 403 access_denied,
+-- checked before any read / write. Anonymous client → anti_get_blocked (unchanged).
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_ledger_append(
   p_event_type       varchar,
@@ -1243,11 +1367,12 @@ DECLARE
   v_row manager_ledger;
   v_tax numeric(14, 2);
 BEGIN
-  IF v_uid IS NULL OR fn_app_role() NOT IN ('manager', 'vp_hr', 'legal_ethics') THEN
-    PERFORM fn_raise_business('anti_get_blocked');
+  IF v_uid IS NULL AND fn_is_client_call() THEN
+    PERFORM fn_raise_business('anti_get_blocked');                  -- anonymous client: unchanged
   END IF;
 
-  p_org_id := COALESCE(p_org_id, fn_my_company());
+  p_org_id := COALESCE(p_org_id, fn_my_company());                 -- the caller's own company by default
+  PERFORM fn_assert_may_append_ledger(p_org_id, p_subject_user_id); -- cfo of p_org_id or system, else 403
 
   IF p_org_id IS NOT NULL AND p_department IS NOT NULL THEN
     SELECT t.deprivation_tax_amount INTO v_tax
@@ -1271,7 +1396,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) TO authenticated;
+GRANT EXECUTE ON FUNCTION rpc_ledger_append(varchar, numeric, numeric, uuid, uuid, varchar) TO authenticated, service_role;
 
 -- Crypto-shredding & Offboarding Retention (lock #7 + v1.6.12 Karin 24.10, O-14):
 --   (1) Self-request (rpc_request_crypto_shred / rpc_crypto_shred_pseudonym_key by the employee
@@ -3116,8 +3241,10 @@ REVOKE ALL ON FUNCTION rpc_update_profile_timezone(text, char) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_update_profile_timezone(text, char) TO authenticated;
 
 -- ---------------------------------------------------------------------------
--- rpc_upsert_employee_value_asset — salary inputs (self or manager/vp_hr) and
--- turnover tier override (vp_hr / CHRO only; O-2: defaults automatically from org_role.tier).
+-- rpc_upsert_employee_value_asset — salary inputs and turnover tier override (vp_hr / CHRO only;
+-- O-2: defaults automatically from org_role.tier).
+-- Authorization (Karin 04.11, J-149): only an active vp_hr or cfo of the employee's company — the employee
+-- herself and managers no longer write; anyone else → 403 access_denied, before any read / write.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION rpc_upsert_employee_value_asset(
   p_user_id           uuid,
@@ -3136,11 +3263,9 @@ DECLARE
   v_row employee_value_asset;
 BEGIN
   IF v_uid IS NULL THEN
-    PERFORM fn_raise_business('anti_get_blocked');
+    PERFORM fn_raise_business('anti_get_blocked');                  -- anonymous: unchanged
   END IF;
-  IF v_uid <> p_user_id AND fn_app_role() NOT IN ('manager', 'vp_hr') THEN
-    PERFORM fn_raise_business('anti_get_blocked');
-  END IF;
+  PERFORM fn_assert_may_write_value_asset(p_user_id);              -- vp_hr / cfo of the same company, else 403
   IF p_turnover_tier IS NOT NULL AND fn_app_role() <> 'vp_hr' THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;

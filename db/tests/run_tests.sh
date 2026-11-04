@@ -2,7 +2,8 @@
 # CHR-ETRS MVP v1.6.21 · tests/run_tests.sh — fresh DB → CLDR/tz reference → schema → rpc → tests (PostgreSQL 17)
 # Version: 1.6.21-mvp (supersedes 1.6.20-mvp, 1.6.19-mvp); runs tests/test_v1_5.sql, tests/test_agents_v1_6_16.sql (agents, v3;
 # content v1.6.21), tests/test_board_v1_6_19.sql (filename kept; content v1.6.21) (v1.6.19 board report, leaver batching, ILS estimate, levels),
-# tests/test_assign_authz.sql (J-143 security fix: rpc_assign_task self / direct manager only; J-146 A neutral refusal) and
+# tests/test_assign_authz.sql (J-143 security fix: rpc_assign_task self / direct manager only; J-146 A neutral refusal),
+# tests/test_sensitive_authz.sql (J-147 – J-150: rpc_daily_reset_spoons / rpc_upsert_employee_value_asset / rpc_ledger_append) and
 # the v1.4 → v1.6.21 migration tests (tests/test_migration.sh)
 # twice: as superuser (event-trigger guard + timezone preflight) and as a non-superuser owner (O-53 fallback). Usage: PGHOST=/tmp PGPORT=54317 PGUSER=postgres ./tests/run_tests.sh
 set -euo pipefail
@@ -29,6 +30,11 @@ psql -qc "DROP DATABASE IF EXISTS ${DB}_authz" postgres
 psql -qc "CREATE DATABASE ${DB}_authz" postgres
 psql -d "${DB}_authz" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql
 psql -d "${DB}_authz" -v ON_ERROR_STOP=1 -qAt -f tests/test_assign_authz.sql
+# Sensitive-RPC authorization (Karin 04.11, J-147 – J-150): reset spoons / value asset / ledger on a fresh DB
+psql -qc "DROP DATABASE IF EXISTS ${DB}_sens" postgres
+psql -qc "CREATE DATABASE ${DB}_sens" postgres
+psql -d "${DB}_sens" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql
+psql -d "${DB}_sens" -v ON_ERROR_STOP=1 -qAt -f tests/test_sensitive_authz.sql
 # v1.4 → v1.6.21 migration: dry run, apply, counts, catalog = fresh, idempotence, rollback — in both modes
 MIG_MODE=super ./tests/test_migration.sh
 MIG_MODE=nosuper ./tests/test_migration.sh
