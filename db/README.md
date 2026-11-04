@@ -7,6 +7,12 @@
 **Pack version:** `1.6.21-mvp`  
 **Agents SoT (v1.6.16):** agents-bot-instructions-v3 — [Google Doc](https://docs.google.com/document/d/15j_l-t0RtmMr3iK9pUxei5cczRePgK88xivUyBZzaqw/edit) · DOCX `1HAhxi3vssSfuMkcT9SRvKHx4LkfIBnEU` · GitHub `docs/agents/agents-bot-instructions-v3.md` (when v3 conflicts with an earlier decision, **v3 wins**; conflicts are listed in `ADR_GAPS.md`)
 
+> **Security fix (2026-11-04, branch `db/assign-task-authz`, local commit on top of 78e02d9) — `rpc_assign_task` authorization (J-143):**
+> - Before: `rpc_assign_task` (SECURITY DEFINER, so RLS does not protect `spoon_budget`) only checked that a user was signed in — any signed-in user could assign a task to anyone, debit her כפיות and, near the threshold, write an `early_leave_log` (WORM) entry.
+> - Now: only the employee herself or her active **direct manager** (`users.reports_to`, the solid line) may assign; anyone else → **403 `access_denied`** (SQLSTATE 42501, the pack's usual authorization error). The check (`fn_assert_may_assign_task` → `fn_is_direct_manager_of`) runs **first**, before any read or write of `spoon_budget`, `early_leave_log` or `task`, so the answer reveals nothing about energy.
+> - Unchanged: the circuit-breaker / anti-GET codes for an authorized caller (pending decision), and 403 `anti_get_blocked` for a call without a signed-in user.
+> - Tests: `tests/test_assign_authz.sql` (own fresh DB in `tests/run_tests.sh`). Interpretations J-143–J-146 and the other `rpc_*` functions with a similar gap (not fixed here) are in `ADR_GAPS.md`.
+>
 > **v1.6.21-r4 (2026-11-01, local commit on top of 0305b5b):** Karin closed **J-137 = A** and approved **J-138** as implemented:
 > - **J-137:** a team counts as displayed in a month only with a Shadow Balance row from that month (board report and live board-member figures). A team not refreshed this month is in 'אחר' with its latest earlier-month row (J-139); a SHOWN 'אחר' row then carries "כולל נתונים מחודשים קודמים של X צוותים" (X > 0 only, no team name). vp_hr gets a 'team_not_calculated' reminder (team name only, via `rpc_notification_message_he`, one per team per month, idempotent) for a team of ≥ 10 without a row in a closed month.
 > - **J-138:** the 'אחר' row shows only Happiness Debt and מס קיפוח (no headcount, no team names) and is null when it cannot be shown.
@@ -115,7 +121,7 @@ Specs→Code pack from **locked decisions only**. Anything not locked is `TODO` 
 | `openapi.yaml` | PostgREST reads + RPC writes + error contract (403 / 400 / 409 / 422 codes) |
 | `ADR_GAPS.md` | Closed in this version + still open + questions for Karin |
 | `migrations/migrate_v1_4_to_v1_6_19.sql`, `migrations/run_migration.sh`, `migrations/preflight_tz.sql`, `migrations/legacy_ddl_guard.sql`, `migrations/legacy_lockdown_fallback.sql` | Upgrade of a v1.4 database (v1.6.19, see below; replaces `migrate_v1_4_to_v1_6_18.sql`, `migrate_v1_4_to_v1_6_17.sql`, `migrate_v1_4_to_v1_6_16.sql` and `migrate_v1_4_to_v1_6_13.sql`; also upgrades a v1.6.17 database in place) + source timezone preflight + superuser event-trigger guard for the legacy tables, or the non-superuser fallback lockdown |
-| `tests/test_v1_5.sql`, `tests/test_agents_v1_6_16.sql`, `tests/test_board_v1_6_19.sql`, `tests/run_tests.sh` | Scratch PostgreSQL 17 validation (fresh DB; the agents and board tests each run on their own fresh DB) |
+| `tests/test_v1_5.sql`, `tests/test_agents_v1_6_16.sql`, `tests/test_board_v1_6_19.sql`, `tests/test_assign_authz.sql`, `tests/run_tests.sh` | Scratch PostgreSQL 17 validation (fresh DB; the agents and board tests each run on their own fresh DB) |
 | `tests/test_migration.sh`, `tests/catalog_snapshot.sql`, `tests/data_hash.sql`, `tests/fixtures/` | Migration tests on a real-structure v1.4 fixture |
 
 Install target is a **fresh database** (`ref_country_calendar.sql`, then `schema.sql`, then `rpc.sql`; all re-apply cleanly).
@@ -364,6 +370,8 @@ Do **not** run Supabase tests from this pack until Stage A 27/27 (Karin).
 | `ADR_GAPS.md` | מה נסגר בגרסה זו, מה פתוח, ושאלות לקארין |
 | `migrations/` | שדרוג מסד v1.4 ל־v1.6.19 (וגם מסד v1.6.18 במקום) (בדיקת אזור זמן מקדימה, הרצת ניסיון, החלה עם גיבוי, שחזור) + נעילת DROP/ALTER על טבלאות legacy (טריגר אירועים עם superuser, ובלעדיו — נעילה חלופית) |
 | `tests/` | בדיקות על PostgreSQL 17 נקי (כולל `test_agents_v1_6_16.sql` — 18 בדיקות v3, ו־`test_board_v1_6_19.sql` — דוח הדירקטוריון v1.6.19) |
+
+תיקון אבטחה (04.11, J-143): `rpc_assign_task` מאפשר שיוך משימה רק לעובדת עצמה או למנהל/ת הישיר/ה שלה (`users.reports_to`); כל משתמש אחר מקבל 403 `access_denied` עוד לפני קריאת הכפיות — בלי חיוב כפיות, בלי משימה ובלי רישום יציאה מוקדמת. קודי מפסק הזרם / Anti-GET לא שונו.
 
 עיקרי 1.6.19 (31.10): שורת "יצא עם העוזבים" ורשימת העוזבים מתעדכנות רק באצוות של 10 עוזבים חדשים (J-43, הוכרע); אומדן כפית שמומשה בש"ח (A-3); רמות אימות 0–4, תיק אימות, הצמדה לשכר, שכבות הדוח וממשל; 5 מקורות (A-10).
 

@@ -549,7 +549,14 @@ paths:
         When a debit brings the day to ≤3, the go-home entry is logged automatically.
 
         Insufficient spoons for cost → 403 anti_get_blocked (no numbers in message). Lock #1 (O-10): at ≤3 spoons
-        ALL tasks are blocked, Farming included.'
+        ALL tasks are blocked, Farming included.
+
+        Security fix (J-143): only the employee herself (p_assignee_id = caller) or her active DIRECT manager
+        (users.reports_to, solid line) may assign. Anyone else — a peer, a manager of another team, a skip-level
+        manager, the dotted line — → 403 `access_denied`, checked before the assignee''s spoons are read, so the
+        answer is the same at any spoon level (never circuit_breaker_active / anti_get_blocked for a non-authorized
+        caller) and nothing is written (no debit, no task, no early-leave entry). No signed-in user → 403
+        anti_get_blocked (unchanged).'
       requestBody:
         required: true
         content:
@@ -595,12 +602,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/Task'
         '403':
-          description: circuit_breaker_active or anti_get_blocked
+          description: access_denied (J-143 — caller is neither the assignee nor her direct manager; checked first),
+            circuit_breaker_active or anti_get_blocked
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
               examples:
+                accessDenied:
+                  value:
+                    code: access_denied
+                    message: access_denied
+                    http_status: 403
                 circuitBreaker:
                   value:
                     code: circuit_breaker_active
