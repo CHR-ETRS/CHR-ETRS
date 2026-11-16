@@ -1,10 +1,21 @@
-# CHR-ETRS MVP v1.6.20 · openapi.yaml
-# Version: 1.6.20-mvp r2 (2026-10-31 IL; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
+# CHR-ETRS MVP v1.7.0 · openapi.yaml
+# Version: 1.7.0-mvp (2026-11-16 IL; Karin 16.11, J-178 – J-219) — supersedes 1.6.21-mvp; 1.6.20-mvp r2 (2026-10-31 IL; r1 = J-96 A, the default-department marker; r2 = J-101 A notice + J-102 A team groupings exclude the marker) — supersedes 1.6.19-mvp (2026-10-31 IL), 1.6.18-mvp (2026-10-31 IL), 1.6.17-mvp (2026-10-31 IL), 1.6.16-mvp (2026-10-30 IL), 1.6.13-mvp (2026-10-25 IL; 1.6.14 / 1.6.15 planned, never built), 1.6.12-mvp (2026-10-24 IL), 1.6.11-mvp (2026-10-24 IL), 1.6.10-mvp (2026-10-21 IL), 1.6.9-mvp (2026-10-21 IL), 1.6.8-mvp (2026-10-21 IL), 1.6.7-mvp (2026-10-20 22:05 IL), 1.6.6-mvp (2026-10-20 21:15 IL), 1.6.5-mvp (2026-10-20 21:00 IL), 1.6.4-mvp (2026-10-20 20:45 IL), 1.6.3-mvp, 1.6.2-mvp, 1.6.1-mvp, 1.6.0-mvp, 1.5.0-mvp and 1.4.0-mvp
 openapi: 3.0.3
 info:
   title: CHR-ETRS MVP v1 API
-  version: 1.6.21-mvp
-  description: "**v1.6.21 (Karin 31.10):**\n\
+  version: 1.7.0-mvp
+  description: "**v1.7.0 (Karin 16.11, J-178 – J-219):**\n\
+    - app_role adds only researcher and external_auditor. IT / works council / safety officer stay employees with a\
+    \ vp_hr-granted capability (/rpc/rpc_grant_capability).\n\
+    - Research (researchers from config only): acknowledgement, company code (HMAC), DPA per company + researcher,\
+    \ vp_hr approval, export of completed quarters at threshold 20 with the difference rule (/rpc/rpc_research_*).\n\
+    - External auditor (J-203) with an access window; auditor letters for verification levels 3 / 4 (J-214).\n\
+    - Kiosk badge login (service role only) with a one-time vp_hr activation code (J-208 / J-219).\n\
+    - EverStore external suppliers only via config; supplier e-mail and monthly report (J-211 – J-213).\n\
+    - Leavers: day 31 donates the remaining golden spoons to a nonprofit (J-196 / J-197).\n\
+    - Questionnaire amounts: Cantril 2 through golden_spoons_per_cantril (monthly); TPS-12 / IHS 10; a vp_hr change\
+    \ (1–20) applies from the next period only.\n\
+    \n**v1.6.21 (Karin 31.10):**\n\
     - J-115 = A: employees without a real department are part of the company totals of מס קיפוח and Happiness\
     \ Debt and of CHR Real EBITDA (same total); never a separate row. When that remainder is 1-9 employees the\
     \ total is hidden and shows \"אין מספיק נתונים להצגה בתקופה זו\" (J-118, board report + reconciliation +\
@@ -1543,8 +1554,9 @@ paths:
         Circuit Breaker.
 
         Rewards (v1.6.17, v3 §3.6 + Karin 30.10 / 31.10): participation only, the same amount whatever the answers
-        — read from agent_settings via questionnaire_definition.reward_setting_key: PCQ-12, Cantril and other monthly
-        questionnaires golden_spoons_per_questionnaire (10); daily and weekly (short) golden_spoons_per_short_questionnaire
+        — read from agent_settings via questionnaire_definition.reward_setting_key: PCQ-12 and other monthly
+        questionnaires golden_spoons_per_questionnaire (10); Cantril golden_spoons_per_cantril (2, monthly — v1.7.0,
+        Karin 16.11); daily and weekly (short) golden_spoons_per_short_questionnaire
         (2); IHS / TPS-12 (quarterly) golden_spoons_per_quarterly_questionnaire (10, adjustable per company). A
         setting that is "לא הוגדר" pays 0 with reward_status not_defined. No Golden Spoons are ever computed from
         a score.
@@ -3404,11 +3416,13 @@ paths:
         vp_hr only
       description: 'Both values null = reset to the default. Locked keys (Karin 30.10 closed values, privacy floors)
         → 403 setting_locked. v1.6.18 (A-14, Karin 31.10): golden_spoons_per_questionnaire, golden_spoons_per_short_questionnaire
-        and golden_spoons_per_quarterly_questionnaire are adjustable per company — vp_hr only (cfo and anyone else
+        and golden_spoons_per_quarterly_questionnaire (v1.7.0: + golden_spoons_per_cantril) are adjustable per company — vp_hr only (cfo and anyone else
         → 403 insufficient_privilege, including a reset), 1–20 per questionnaire (else 422 questionnaire_reward_out_of_range),
         at most one decimal (else 400 invalid_setting_value). Every change is written to questionnaire_reward_history
-        (WORM, effective_from = now) and to the WORM access_audit_log (value before / after) and applies from now
-        on only.'
+        (WORM) and to the WORM access_audit_log (who, when, value before / after, effective_from). v1.7.0 (Karin
+        16.11): a change applies from the NEXT period only — effective_from = the start of the next company-local
+        month (monthly / short / Cantril) or quarter (TPS-12 / IHS); the current period keeps its amount (J-220). The
+        settings screen shows "N כפיות זהב (מהתקופה הבאה: M כפיות זהב)".'
       requestBody:
         required: true
         content:
@@ -5079,6 +5093,1352 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_researcher_acknowledge:
+    post:
+      tags:
+      - research
+      summary: "J-215: the researcher logs her acknowledgement (required before any research RPC)"
+      description: "v1.7.0 (Karin 16.11). Researcher accounts only (app_role researcher, created from db/config/research_dpa.json). Writes a WORM researcher_ack row + an audit row. Returns {\"acknowledged\": true}."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_version:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 access_denied (not a researcher)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_research_my_companies:
+    post:
+      tags:
+      - research
+      summary: "J-184: the companies the researcher holds a valid DPA for — code + sector + size band only"
+      description: "v1.7.0 (Karin 16.11). Each item: {company_code (HMAC-SHA256 with the server secret, never the company id), sector_he, size_band (20–99 | 100–499 | 500–1999 | 2000+, or null when fewer than 3 platform companies share sector + band)}. No company name, id or person data."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        '403':
+          description: "403 onboarding_not_acknowledged (J-215) | access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_research_request:
+    post:
+      tags:
+      - research
+      summary: "J-187: ask one company (by code) for a range of quarters"
+      description: "v1.7.0 (Karin 16.11). One request = one company. p_quarter_from / p_quarter_to = \"YYYY-Qn\"; p_deletion_commitment must be true (J-239). The company needs a DPA with this researcher valid today (J-187 / J-189). Returns {request_id, status: pending}."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_code
+              - p_quarter_from
+              - p_quarter_to
+              - p_research_period_end
+              - p_deletion_commitment
+              properties:
+                p_company_code:
+                  type: string
+                p_quarter_from:
+                  type: string
+                p_quarter_to:
+                  type: string
+                p_research_period_end:
+                  type: string
+                  format: date
+                p_deletion_commitment:
+                  type: boolean
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_research_request | 403 dpa_not_valid | onboarding_not_acknowledged"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_research_request | 403 dpa_not_valid | onboarding_not_acknowledged"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_research_list_requests:
+    post:
+      tags:
+      - research
+      summary: "J-188: vp_hr lists the research requests of her company"
+      description: "v1.7.0 (Karin 16.11). vp_hr of the company only. Requests with status and approval dates; no researcher identity beyond what the DPA config holds."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        '403':
+          description: "403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_research_decide:
+    post:
+      tags:
+      - research
+      summary: "J-188: vp_hr approves / rejects a request of her company"
+      description: "v1.7.0 (Karin 16.11). Approval valid until min(end of the research period, 1 year from today). Audited (research_decide)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_request_id
+              - p_approve
+              properties:
+                p_request_id:
+                  type: string
+                  format: uuid
+                p_approve:
+                  type: boolean
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 insufficient_privilege (not vp_hr of that company)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_research_revoke:
+    post:
+      tags:
+      - research
+      summary: "J-188: vp_hr revokes an approval (next export refused)"
+      description: "v1.7.0 (Karin 16.11). Audited (research_revoke)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_request_id
+              properties:
+                p_request_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_research_export:
+    post:
+      tags:
+      - research
+      summary: "J-180 – J-186: export one approved request (one company)"
+      description: "v1.7.0 (Karin 16.11). Output keys: company_code, dataset, sector_he, size_band, quarters. Only completed calendar quarters 14 days after their end (company time zone, J-185). Per quarter: PCQ-12 / IHS / TPS-12 {n, average, score_range {p25, p75}} + response_rate_pct (J-183). Research threshold 20: any metric under 20, or an N that differs by 1–19 from an earlier export of the same company + quarter + metric (J-180 / J-186), hides the WHOLE quarter: {shown: false, display_he: \"אין מספיק נתונים להצגה בתקופה זו\"}. Published cells (quarter / metric / N) are logged in research_export_log (WORM). No person ids, names or company id."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_request_id
+              properties:
+                p_request_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 research_not_approved | dpa_not_valid | onboarding_not_acknowledged"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_method_comment_send:
+    post:
+      tags:
+      - research
+      summary: "J-191 / J-192 / J-216: a researcher sends a text-only comment on the method"
+      description: "v1.7.0 (Karin 16.11). Text 5–2000 characters, no attachments. Stored permanently (WORM, no author column) and queued (outbox) to each address of db/config/method_team.json (starts empty → delivery \"recipients_not_configured\", queued 0). Returns {stored, queued, delivery, warning_code: text_only_no_attachments, warning_he: \"לא הוגדר\"}."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_body
+              properties:
+                p_body:
+                  type: string
+                p_method_version:
+                  type: string
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_comment_length | 403 onboarding_not_acknowledged"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_comment_length | 403 onboarding_not_acknowledged"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_grant_capability:
+    post:
+      tags:
+      - roles
+      summary: "J-199 / J-201 / J-202: vp_hr grants it_admin | works_council | safety_officer to an employee of her company"
+      description: "v1.7.0 (Karin 16.11). The holder stays an employee (app_role unchanged). Idempotent; audited (capability_grant)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_user_id
+              - p_capability
+              properties:
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_capability:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_capability | invalid_user | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_capability | invalid_user | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_revoke_capability:
+    post:
+      tags:
+      - roles
+      summary: "vp_hr revokes a capability (the grant row is kept, marked revoked)"
+      description: "v1.7.0 (Karin 16.11). Audited (capability_revoke). A capability also ends with the employment (J-236)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_user_id
+              - p_capability
+              properties:
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_capability:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_my_capabilities:
+    post:
+      tags:
+      - roles
+      summary: "The caller's own active capabilities"
+      description: "v1.7.0 (Karin 16.11). Array of capability names; no ids."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+  /rpc/rpc_provision_external_auditor:
+    post:
+      tags:
+      - roles
+      summary: "J-203: vp_hr opens an external-auditor account with an access window + data-month range"
+      description: "v1.7.0 (Karin 16.11). app_role external_auditor, no employee profile, her company. Audited."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_user_id
+              - p_email
+              - p_full_name
+              - p_timezone
+              - p_access_from
+              - p_access_until
+              - p_data_month_from
+              - p_data_month_to
+              properties:
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_email:
+                  type: string
+                p_full_name:
+                  type: string
+                p_timezone:
+                  type: string
+                p_access_from:
+                  type: string
+                  format: date-time
+                p_access_until:
+                  type: string
+                  format: date-time
+                p_data_month_from:
+                  type: string
+                  format: date
+                p_data_month_to:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_auditor | invalid_auditor_window | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_auditor | invalid_auditor_window | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_set_auditor_access:
+    post:
+      tags:
+      - roles
+      summary: "J-203: vp_hr changes the auditor's access window / data months (her company only)"
+      description: "v1.7.0 (Karin 16.11). Audited (auditor_access_set)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_user_id
+              - p_access_from
+              - p_access_until
+              - p_data_month_from
+              - p_data_month_to
+              properties:
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_access_from:
+                  type: string
+                  format: date-time
+                p_access_until:
+                  type: string
+                  format: date-time
+                p_data_month_from:
+                  type: string
+                  format: date
+                p_data_month_to:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_auditor | invalid_auditor_window | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_auditor | invalid_auditor_window | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_auditor_change_log:
+    post:
+      tags:
+      - roles
+      summary: "J-203: the auditor's change log — time, role, action AND the acting user id"
+      description: "v1.7.0 (Karin 16.11). Karin's explicit exception (16.11): actor_user_id is returned in THIS output only. Rows = audit rows of her company inside her data months whose action is a change (_put / _set / _sync / grant / revoke / provision / upload / cancel / decide, J-229). Never the subject or scope of a row. Only inside the access window."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        '403':
+          description: "403 access_denied (outside the window / not an auditor)"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_auditor_verification_levels:
+    post:
+      tags:
+      - roles
+      summary: "J-203: the auditor reads the verification levels of a month inside her data range"
+      description: "v1.7.0 (Karin 16.11). Read only."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_month
+              properties:
+                p_month:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_upload_auditor_letter:
+    post:
+      tags:
+      - board
+      summary: "J-214: vp_hr uploads an auditor letter for a metric and period"
+      description: "v1.7.0 (Karin 16.11). p_assurance limited → level 3, reasonable → level 4, valid only for its own period. The file is immutable (storage path + sha256, 64 hex); uploader and time are logged (WORM). When the same person entered the metric evidence and uploaded the letter, the board shows \"הוזן ואושר על ידי אותו אדם\"."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_metric_key
+              - p_period_from
+              - p_period_to
+              - p_assurance
+              - p_storage_path
+              - p_sha256
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_metric_key:
+                  type: string
+                p_period_from:
+                  type: string
+                  format: date
+                p_period_to:
+                  type: string
+                  format: date
+                p_assurance:
+                  type: string
+                p_storage_path:
+                  type: string
+                p_sha256:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_auditor_letter (e.g. bad sha256) | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_auditor_letter (e.g. bad sha256) | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_cancel_auditor_letter:
+    post:
+      tags:
+      - board
+      summary: "J-214: vp_hr marks a letter \"בוטל\" (never deleted)"
+      description: "v1.7.0 (Karin 16.11). The month falls back to level 2 with a board note."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_letter_id
+              properties:
+                p_letter_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_kiosk_contract:
+    post:
+      tags:
+      - kiosk
+      summary: "J-200 / J-219: the kiosk contract (enforced client-side)"
+      description: "v1.7.0 (Karin 16.11). {\"idle_logout_seconds\": 180, \"warning_seconds_before\": 30, \"max_pin_attempts\": 5, \"enforced\": \"client\"}. Constant; callable before sign-in."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /rpc/rpc_kiosk_issue_activation:
+    post:
+      tags:
+      - kiosk
+      summary: "J-219: vp_hr issues the one-time activation code of an employee's badge (first PIN / PIN reset)"
+      description: "v1.7.0 (Karin 16.11). The badge number is stored only as an HMAC with the server secret (J-208). Returns {activation_code} ONCE; stored as a bcrypt hash. Clears the old PIN and any lock."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_user_id
+              - p_badge_number
+              properties:
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_badge_number:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_badge | invalid_user | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_badge | invalid_user | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_kiosk_release:
+    post:
+      tags:
+      - kiosk
+      summary: "J-208: vp_hr releases a locked badge (the PIN is kept)"
+      description: "v1.7.0 (Karin 16.11). Audited."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_user_id
+              properties:
+                p_user_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_badge | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_badge | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_kiosk_set_pin:
+    post:
+      tags:
+      - kiosk
+      summary: "J-219: set the first PIN with the activation code — service role only (Edge Function)"
+      description: "v1.7.0 (Karin 16.11). PIN = 4 digits. Wrong / used code → {ok: false, code: invalid_credentials} (neutral; never reveals whether the badge exists). Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_badge_number
+              - p_activation_code
+              - p_pin
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_badge_number:
+                  type: string
+                p_activation_code:
+                  type: string
+                p_pin:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_pin_format"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_kiosk_login:
+    post:
+      tags:
+      - kiosk
+      summary: "J-208 / J-219: badge + PIN login — service role only (Edge Function)"
+      description: "v1.7.0 (Karin 16.11). Success → {ok: true, login_ticket} (one-time; only its sha256 is stored; exchange + TTL = the Edge Function PR, TTL \"לא הוגדר\"). Wrong PIN → {ok: false, code: invalid_credentials} and after the 3rd {message_he: \"נשארו 2 ניסיונות\"}, after the 4th {message_he: \"נשאר ניסיון 1\"}; the 5th locks → {code: badge_locked} until vp_hr releases. Never raises. Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_badge_number
+              - p_pin
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_badge_number:
+                  type: string
+                p_pin:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /rpc/rpc_everstore_supplier_notice:
+    post:
+      tags:
+      - everstore
+      summary: "J-213: the order-screen text for an external supplier benefit"
+      description: "v1.7.0 (Karin 16.11). \"הספק יודע שאת עובדת בארגון שמשלם לו, אבל לא יודע מה מצבך או כמה כפיות מוזהבות יש לך.\""
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: string
+  /rpc/rpc_put_nonprofit:
+    post:
+      tags:
+      - leavers
+      summary: "J-197: vp_hr adds a nonprofit of her company (optionally the company default)"
+      description: "v1.7.0 (Karin 16.11). One default per company. Audited."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_name_he
+              properties:
+                p_name_he:
+                  type: string
+                p_is_default:
+                  type: boolean
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_nonprofit | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_nonprofit | 403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_list_nonprofits:
+    post:
+      tags:
+      - leavers
+      summary: "J-197: the nonprofits of the caller's company"
+      description: "v1.7.0 (Karin 16.11). "
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /rpc/rpc_choose_my_nonprofit:
+    post:
+      tags:
+      - leavers
+      summary: "J-197: an employee (or a leaver inside her 30-day window) chooses where her remaining golden spoons go"
+      description: "v1.7.0 (Karin 16.11). Her choice wins over the company default."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_nonprofit_id
+              properties:
+                p_nonprofit_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_nonprofit | 403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_nonprofit | 403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_get_nonprofit_monthly_transfer:
+    post:
+      tags:
+      - leavers
+      summary: "J-196: cfo / vp_hr — the month's donation per nonprofit (aggregate only)"
+      description: "v1.7.0 (Karin 16.11). {month, legal_donor: \"TODO לא הוגדר\", ils_per_golden_spoon: \"לא הוגדר\", rows: [{nonprofit_he, golden_spoons}]}. No names, leaving dates or counts."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_month
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_month:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_queue_leaver_reminders:
+    post:
+      tags:
+      - leavers
+      summary: "J-196: system job — queue the leaver reminders (leaving day; one week before day 30)"
+      description: "v1.7.0 (Karin 16.11). Service role only. Outbox to the leaver's own address: {golden_spoons_balance, deadline, nonprofit_he, change_link: \"לא הוגדר\"}; idempotent. Day 31 (rpc_expire_departed_golden_spoons) donates the balance (record first, then zero); without any nonprofit nothing is donated and the shred waits (J-223)."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_now:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+  /rpc/rpc_manager_team_view:
+    post:
+      tags:
+      - managers
+      summary: "J-205: manager view — p_view subtree | department"
+      description: "v1.7.0 (Karin 16.11). subtree: her solid subtree (below 5 reporters → the department view). department: her whole department, shown only when it passes 5 AND (department − team) is 0 or ≥ 5; else {shown: none, display_he: \"אין מספיק נתונים להצגה בתקופה זו\"}. rpc_subtree_summary is unchanged."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_view
+              properties:
+                p_view:
+                  type: string
+                p_month:
+                  type: string
+                  format: date
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_hr_monthly_changes:
+    post:
+      tags:
+      - managers
+      summary: "J-218: vp_hr monthly changes — metric_changes and settings_changes, each sorted by size"
+      description: "v1.7.0 (Karin 16.11). Metric section: PCQ-12 per department this month vs the previous month, only departments with ≥ 5 reporters in both months. Settings section: questionnaire-reward changes taking effect in the month."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_month:
+                  type: string
+                  format: date
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 insufficient_privilege"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_post_action_update:
+    post:
+      tags:
+      - managers
+      summary: "A manager / vp_hr posts an action update linked to a board metric (3–300 characters)"
+      description: "v1.7.0 (Karin 16.11). Kept permanently (WORM); no author stored."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_metric_key
+              - p_body
+              properties:
+                p_metric_key:
+                  type: string
+                p_body:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: "400 invalid_action_update | 403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: "400 invalid_action_update | 403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_list_action_updates:
+    post:
+      tags:
+      - managers
+      summary: "Everyone in the company reads its action updates (metric, text, date; no author)"
+      description: "v1.7.0 (Karin 16.11). "
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /rpc/rpc_it_connection_status:
+    post:
+      tags:
+      - roles
+      summary: "J-199: the it_admin capability — directory-sync connection status of her company"
+      description: "v1.7.0 (Karin 16.11). {connected, last_status, last_run_at, provider: \"לא הוגדר\"}. No person data."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_safety_shift_breakdown:
+    post:
+      tags:
+      - roles
+      summary: "J-202: the safety_officer capability — PCQ-12 per shift"
+      description: "v1.7.0 (Karin 16.11). Only after the entry-system sync delivered shifts; until then {available: false, reason: no_directory_sync}. Shifts under 5 reporters show the standard hidden text."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_month:
+                  type: string
+                  format: date
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+        '403':
+          description: "403 access_denied"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_outbox_mark_sent:
+    post:
+      tags:
+      - system
+      summary: "System: mark an outbox message sent (service role only)"
+      description: "v1.7.0 (Karin 16.11). Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_outbox_id
+              properties:
+                p_outbox_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                nullable: true
+  /rpc/fn_sync_research_config:
+    post:
+      tags:
+      - system
+      summary: "J-181 / J-187 / J-189: load db/config/research_dpa.json (service role only)"
+      description: "v1.7.0 (Karin 16.11). Creates researcher accounts (no company, no employee profile) and upserts DPAs (≤ 2 years). Nothing is deleted. Audited. Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_config
+              properties:
+                p_config:
+                  type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+  /rpc/fn_sync_supplier_offers:
+    post:
+      tags:
+      - system
+      summary: "J-211: load db/config/everstore_supplier_offers.json (service role only)"
+      description: "v1.7.0 (Karin 16.11). External offers: provider_kind external_supplier, no company. An id that belongs to a platform / organization item → 400 item_id_taken. Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_config
+              properties:
+                p_config:
+                  type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+  /rpc/fn_sync_method_team:
+    post:
+      tags:
+      - system
+      summary: "J-191: load db/config/method_team.json (service role only)"
+      description: "v1.7.0 (Karin 16.11). Adds addresses; nothing is deleted. Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_config
+              properties:
+                p_config:
+                  type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+  /rpc/fn_sync_company_service_end:
+    post:
+      tags:
+      - system
+      summary: "J-190: load db/config/company_service_end.json (service role only)"
+      description: "v1.7.0 (Karin 16.11). Sets companies.service_ended_at. Audited. Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_config
+              properties:
+                p_config:
+                  type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+  /rpc/fn_archive_research_exports:
+    post:
+      tags:
+      - system
+      summary: "J-190 (DRAFT): copy export-log rows of companies whose service ended ≥ 24 months ago to the WORM archive"
+      description: "v1.7.0 (Karin 16.11). Service role only. Copy, never delete (J-233). Returns the number copied."
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                p_now:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+  /rpc/fn_directory_sync_apply:
+    post:
+      tags:
+      - system
+      summary: "J-195 / J-202: apply one directory-sync run for a company (service role only)"
+      description: "v1.7.0 (Karin 16.11). {\"status\": \"ok\"|\"failed\", \"shifts\": [{\"email\", \"shift_code\"}]}. Provider / protocol \"לא הוגדרו\". Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company
+              - p_run
+              properties:
+                p_company:
+                  type: string
+                  format: uuid
+                p_run:
+                  type: object
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: integer
+  /rpc/fn_supplier_monthly_report:
+    post:
+      tags:
+      - system
+      summary: "J-212: build + queue a supplier's monthly report (service role only)"
+      description: "v1.7.0 (Karin 16.11). Rows per organization and per benefit: {organization, benefit_item_id, order_count, amount_payable_golden_spoons}. No dates, order codes, sequence or names. Idempotent per supplier + month. Service role only (no EXECUTE for anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_supplier
+              - p_month
+              properties:
+                p_supplier:
+                  type: string
+                p_month:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
 components:
   securitySchemes:
     bearerAuth:
@@ -5086,7 +6446,7 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Supabase JWT. app_role = privilege class (employee|manager|vp_hr=CHRO|legal_ethics|owner_shareholder|board_*|cfo
-        — v1.6.16 agents finance viewer); org_role_code = position in the role tree.
+        — v1.6.16 agents finance viewer|researcher|external_auditor — v1.7.0, Karin 16.11; no signup path); org_role_code = position in the role tree.
   parameters:
     select:
       name: select
@@ -5310,6 +6670,8 @@ components:
           - board_member
           - owner_shareholder
           - cfo
+          - researcher
+          - external_auditor
         department:
           type: string
         company_id:
@@ -6037,6 +7399,7 @@ components:
           - golden_spoons_per_questionnaire
           - golden_spoons_per_short_questionnaire
           - golden_spoons_per_quarterly_questionnaire
+          - golden_spoons_per_cantril
         golden_spoons_reward:
           type: number
           nullable: true
@@ -6092,6 +7455,7 @@ components:
           - golden_spoons_per_questionnaire
           - golden_spoons_per_short_questionnaire
           - golden_spoons_per_quarterly_questionnaire
+          - golden_spoons_per_cantril
           - null
           description: 'v1.6.18 (A-14): snapshot — the setting that paid this submission (null on pre-1.6.18 rows).'
         reward_effective_from:

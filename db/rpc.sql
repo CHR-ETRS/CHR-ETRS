@@ -91,7 +91,7 @@
 --   * Deprived employee (classify_deprived = fn_is_employee_deprived): same thresholds, now TWO
 --     consecutive weeks (v3 §6.2); counted at group level only.
 --   * Departed employees may redeem in EverStore for exit_redemption_days (30) after employment ends;
---     day 31 → rpc_expire_departed_golden_spoons resets the balance (golden_spoons_ledger).
+--     day 31 → rpc_expire_departed_golden_spoons DONATES the balance (v1.7.0, J-196; golden_spoons_ledger).
 --   * Agents section at the end: settings, EverStore budget summary (vp_hr / cfo, small-cell merge),
 --     open Golden Spoons liability, daily budget summary, margin / comparison gate, burnout trend
 --     (full / partial / none + 5th team-movement signal), Happiness Debt events, board report with
@@ -408,6 +408,27 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION fn_user_company(uuid) FROM PUBLIC, anon, authenticated;
+
+-- v1.7.0 (Karin 16.11): does the CALLER hold an active (not revoked) capability granted by vp_hr in this company?
+-- Capabilities (it_admin / works_council / safety_officer) live in user_capability (modules/20_j_capabilities.sql);
+-- they are NOT app roles. A system call never holds a capability.
+CREATE OR REPLACE FUNCTION fn_has_capability_in(p_company uuid, p_capability text)
+RETURNS boolean
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR p_company IS NULL OR to_regclass('public.user_capability') IS NULL THEN
+    RETURN false;
+  END IF;
+  RETURN EXISTS (SELECT 1 FROM user_capability c JOIN users u ON u.user_id = c.user_id
+                  WHERE c.user_id = auth.uid() AND c.company_id = p_company AND u.company_id = p_company
+                    AND c.capability = p_capability AND c.revoked_at IS NULL AND u.employment_ended_at IS NULL);
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_has_capability_in(uuid, text) FROM PUBLIC, anon, authenticated;
 
 -- 403 access_denied unless a system process, or the signed-in, still-employed employee resets her OWN כפיות.
 CREATE OR REPLACE FUNCTION fn_assert_may_reset_spoons(p_user_id uuid)
@@ -1505,7 +1526,10 @@ BEGIN
   IF NEW.employment_ended_at IS NOT NULL AND (OLD.employment_ended_at IS NULL OR NEW.employment_ended_at IS DISTINCT FROM OLD.employment_ended_at) THEN
     UPDATE users SET consent_vault = false WHERE user_id = NEW.user_id AND consent_vault IS TRUE;
     PERFORM fn_schedule_crypto_shred(NEW.user_id, NEW.employment_ended_at);
-    IF NEW.employment_ended_at + interval '30 days' <= clock_timestamp() THEN
+    -- v1.7.0 (Karin 16.11, J-196 order): a retroactive end date shreds at once only when no golden spoons balance
+    -- is left; otherwise the day-31 donation runs first and rpc_run_scheduled_crypto_shred shreds after it.
+    IF NEW.employment_ended_at + interval '30 days' <= clock_timestamp()
+       AND NOT EXISTS (SELECT 1 FROM avatar_state a WHERE a.user_id = NEW.user_id AND a.golden_spoons > 0) THEN
       PERFORM fn_crypto_shred_pseudonym_key(NEW.user_id);
     END IF;
   ELSIF OLD.employment_ended_at IS NOT NULL AND NEW.employment_ended_at IS NULL THEN
@@ -1635,6 +1659,8 @@ BEGIN
      WHERE u.employment_ended_at IS NOT NULL
        AND (pk.shredded_at IS NULL)
        AND COALESCE(pk.scheduled_shred_at, u.employment_ended_at + interval '30 days') <= clock_timestamp()
+       -- v1.7.0 (J-196 order): never shred before the remaining golden spoons balance was donated
+       AND NOT EXISTS (SELECT 1 FROM avatar_state a WHERE a.user_id = u.user_id AND a.golden_spoons > 0)
   LOOP
     PERFORM fn_crypto_shred_pseudonym_key(r.user_id);
     v_n := v_n + 1;
@@ -1744,6 +1770,10 @@ BEGIN
   IF NOT FOUND THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
+  -- v1.7.0 (J-211): an organization's internal benefit is sold only to that organization's employees
+  IF v_item.company_id IS NOT NULL AND v_item.company_id IS DISTINCT FROM fn_user_company(v_uid) THEN
+    PERFORM fn_raise_business('anti_get_blocked');
+  END IF;
 
   IF v_item.currency = 'chr_coins' THEN
     -- O-16: CHR Coins shelf deferred to v2 → refused in v1
@@ -1823,6 +1853,10 @@ REVOKE ALL ON FUNCTION rpc_everstore_purchase(varchar, varchar, date) FROM PUBLI
 GRANT EXECUTE ON FUNCTION rpc_everstore_purchase(varchar, varchar, date) TO authenticated;
 
 -- CHRO (vp_hr) adds or updates an EverStore catalog item across the 8 locked categories (v1.6.13, Karin 25.10).
+-- v1.7.0 (Karin 16.11, J-211): ONLY an internal benefit of HER OWN company (provider_kind 'organization', provider =
+-- the organization's name, company_id = her company). An item with an external supplier (p_provider other than her
+-- organization) → 403 supplier_item_config_only: external offers enter only through db/config (CHR-ETRS team,
+-- fn_sync_supplier_offers). Platform / external / another company's items cannot be overwritten → 403 access_denied.
 CREATE OR REPLACE FUNCTION rpc_everstore_upsert_item(
   p_item_id             varchar,
   p_display_name        varchar,
@@ -1840,10 +1874,19 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_row shop_item_catalog;
+  v_row  shop_item_catalog;
+  v_comp uuid := fn_my_company();
+  v_org  text := (SELECT c.company_name::text FROM companies c WHERE c.company_id = fn_my_company());
 BEGIN
-  IF auth.uid() IS NULL OR NOT fn_is_chro() THEN
+  IF auth.uid() IS NULL OR NOT fn_is_chro() OR v_comp IS NULL THEN
     PERFORM fn_raise_business('access_denied');
+  END IF;
+  IF NULLIF(btrim(COALESCE(p_provider, '')), '') IS NOT NULL AND btrim(p_provider) IS DISTINCT FROM v_org THEN
+    PERFORM fn_raise_business('supplier_item_config_only');            -- J-211: external supplier → config only
+  END IF;
+  IF EXISTS (SELECT 1 FROM shop_item_catalog c WHERE c.item_id = btrim(p_item_id)
+              AND NOT (c.provider_kind = 'organization' AND c.company_id = v_comp)) THEN
+    PERFORM fn_raise_business('access_denied');                        -- not her organization's item
   END IF;
   IF p_item_id IS NULL OR length(btrim(p_item_id)) = 0
      OR p_display_name IS NULL OR length(btrim(p_display_name)) = 0
@@ -1863,12 +1906,12 @@ BEGIN
   INSERT INTO shop_item_catalog (
     item_id, display_name, name_he, category, provider, tier,
     price_coins, currency, cosmetic_only,
-    real_money_purchase_allowed, affects_daily_energy_spoons, is_active
+    real_money_purchase_allowed, affects_daily_energy_spoons, is_active, provider_kind, company_id
   ) VALUES (
-    btrim(p_item_id), btrim(p_display_name), btrim(p_name_he), p_category, p_provider,
+    btrim(p_item_id), btrim(p_display_name), btrim(p_name_he), p_category, v_org,
     COALESCE(p_tier, 'custom'::shop_tier_enum),
     p_price_golden_spoons, 'golden_spoons', COALESCE(p_cosmetic_only, p_category = 'cosmetic'),
-    false, false, COALESCE(p_is_active, true)
+    false, false, COALESCE(p_is_active, true), 'organization', v_comp
   )
   ON CONFLICT (item_id) DO UPDATE SET
     display_name  = EXCLUDED.display_name,
@@ -2142,6 +2185,45 @@ BEGIN
 END;
 $$;
 
+-- v1.7.0 (Karin 16.11, A-14): the participation amount of a reward setting in effect for a company at an instant:
+-- the latest questionnaire_reward_history row whose effective_from (start of a period) has arrived — the later
+-- recorded_at wins when two changes target the same period — else the pack default (or a pre-1.7.0 override row).
+-- One amount per company: there is no team / department dimension anywhere in this chain.
+CREATE OR REPLACE FUNCTION fn_questionnaire_reward_at(p_key text, p_company uuid, p_at timestamptz)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE(
+    (SELECT h.value_after FROM questionnaire_reward_history h
+      WHERE h.company_id = p_company AND h.setting_key = p_key AND h.effective_from <= p_at
+      ORDER BY h.effective_from DESC, h.recorded_at DESC LIMIT 1),
+    fn_agent_setting_num(p_company, p_key))
+$$;
+REVOKE ALL ON FUNCTION fn_questionnaire_reward_at(text, uuid, timestamptz) FROM PUBLIC;
+
+-- v1.7.0 (Karin 16.11, A-14): start of the NEXT reward period of a setting, company-local, as an instant:
+-- the quarterly setting (TPS-12 / IHS) → the next calendar quarter; every other setting (monthly PCQ-12, Cantril,
+-- short daily / weekly questionnaires) → the next calendar month (J-220). A change never applies mid-period.
+CREATE OR REPLACE FUNCTION fn_next_reward_period_start(p_key text, p_company uuid, p_at timestamptz)
+RETURNS timestamptz
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_quarter boolean := p_key = 'golden_spoons_per_quarterly_questionnaire';
+BEGIN
+  RETURN (date_trunc(CASE WHEN v_quarter THEN 'quarter' ELSE 'month' END, fn_agent_local_ts(p_company, p_at))
+          + CASE WHEN v_quarter THEN interval '3 months' ELSE interval '1 month' END)
+         AT TIME ZONE fn_agent_company_tz(p_company);
+END;
+$$;
+REVOKE ALL ON FUNCTION fn_next_reward_period_start(text, uuid, timestamptz) FROM PUBLIC;
+
 -- v1.6.16 (v3 §3.6 + Karin 30.10): participation reward = the fixed amount of the definition's
 -- reward_setting_key in agent_settings. It never receives the answers or the score. NULL = "לא הוגדר".
 CREATE OR REPLACE FUNCTION fn_questionnaire_reward(p_def questionnaire_definition, p_company uuid)
@@ -2151,7 +2233,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT fn_agent_setting_num(p_company, p_def.reward_setting_key)
+  SELECT fn_questionnaire_reward_at(p_def.reward_setting_key, p_company, clock_timestamp())
 $$;
 REVOKE ALL ON FUNCTION fn_questionnaire_reward(questionnaire_definition, uuid) FROM PUBLIC;
 
@@ -3605,9 +3687,11 @@ DECLARE
   v_st         record;        -- v1.6.21-r5 (J-139 = A): the small teams together (fn_small_teams_live)
   v_note       text;
 BEGIN
-  -- Governance roles (board_chair, board_member, owner_shareholder) of the company only
+  -- Governance roles (board_chair, board_member, owner_shareholder) of the company only.
+  -- v1.7.0 (Karin 16.11, J-201): + an employee holding the works_council capability (same company-level report,
+  -- same board threshold 20, no team breakdown).
   IF auth.uid() IS NULL OR v_role IS NULL OR v_comp IS NULL
-     OR NOT v_role.is_governance THEN
+     OR NOT (v_role.is_governance OR fn_has_capability_in(v_comp, 'works_council')) THEN
     PERFORM fn_raise_business('access_denied');
   END IF;
 
@@ -5534,6 +5618,38 @@ REVOKE ALL ON FUNCTION fn_is_finance_viewer(uuid), fn_assert_finance_viewer(uuid
 
 -- ---------- agent settings API (GET / PUT /agents/settings) ----------
 
+-- v1.7.0 (A-14): 'company' when the amount in effect now comes from a company change, else 'default'.
+CREATE OR REPLACE FUNCTION fn_questionnaire_reward_scope(p_key text, p_company uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE((SELECT h.scope_after FROM questionnaire_reward_history h
+                    WHERE h.company_id = p_company AND h.setting_key = p_key AND h.effective_from <= clock_timestamp()
+                    ORDER BY h.effective_from DESC, h.recorded_at DESC LIMIT 1),
+                  CASE WHEN EXISTS (SELECT 1 FROM agent_settings s WHERE s.company_id = p_company AND s.setting_key = p_key)
+                       THEN 'company' ELSE 'default' END)
+$$;
+
+-- v1.7.0 (A-14): display text of a questionnaire amount — the amount now, plus the amount scheduled for the next
+-- period when vp_hr changed it (no names, no ids).
+CREATE OR REPLACE FUNCTION fn_questionnaire_reward_display_he(p_key text, p_company uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT trim_scale(fn_questionnaire_reward_at(p_key, p_company, clock_timestamp()))::text || ' כפיות זהב'
+         || CASE WHEN n.next_value IS DISTINCT FROM fn_questionnaire_reward_at(p_key, p_company, clock_timestamp())
+                 THEN ' (מהתקופה הבאה: ' || trim_scale(n.next_value)::text || ' כפיות זהב)' ELSE '' END
+    FROM (SELECT fn_questionnaire_reward_at(p_key, p_company,
+                   fn_next_reward_period_start(p_key, p_company, clock_timestamp())) AS next_value) n
+$$;
+REVOKE ALL ON FUNCTION fn_questionnaire_reward_scope(text, uuid), fn_questionnaire_reward_display_he(text, uuid) FROM PUBLIC;
+
 -- All settings in effect for a company (cfo / vp_hr only). "לא הוגדר" is shown, never a made-up value.
 CREATE OR REPLACE FUNCTION rpc_get_agent_settings(p_company_id uuid)
 RETURNS TABLE (setting_key text, value_kind text, value_numeric numeric, value_text text, value_status text,
@@ -5546,9 +5662,16 @@ AS $$
 BEGIN
   PERFORM fn_assert_finance_viewer(p_company_id);
   RETURN QUERY
-  SELECT d.setting_key, e.value_kind, e.value_numeric, e.value_text, e.value_status,
-         fn_setting_display_he(e), e.is_locked,
-         CASE WHEN e.company_id IS NULL THEN 'default' ELSE 'company' END, e.source_note
+  SELECT d.setting_key, e.value_kind,
+         CASE WHEN fn_is_questionnaire_reward_key(d.setting_key)
+              THEN fn_questionnaire_reward_at(d.setting_key, p_company_id, clock_timestamp()) ELSE e.value_numeric END,
+         e.value_text, e.value_status,
+         CASE WHEN fn_is_questionnaire_reward_key(d.setting_key)
+              THEN fn_questionnaire_reward_display_he(d.setting_key, p_company_id) ELSE fn_setting_display_he(e) END,
+         e.is_locked,
+         CASE WHEN fn_is_questionnaire_reward_key(d.setting_key)
+              THEN fn_questionnaire_reward_scope(d.setting_key, p_company_id)
+              WHEN e.company_id IS NULL THEN 'default' ELSE 'company' END, e.source_note
     FROM agent_settings d
     CROSS JOIN LATERAL (SELECT (fn_agent_setting_row(p_company_id, d.setting_key)).*) e
    WHERE d.company_id IS NULL
@@ -5583,7 +5706,7 @@ LANGUAGE sql
 IMMUTABLE
 AS $$
   SELECT p_key IN ('golden_spoons_per_questionnaire', 'golden_spoons_per_short_questionnaire',
-                   'golden_spoons_per_quarterly_questionnaire')
+                   'golden_spoons_per_quarterly_questionnaire', 'golden_spoons_per_cantril')   -- v1.7.0: + Cantril (2)
 $$;
 
 -- v1.6.18 (A-14, Karin 31.10): rules for changing a questionnaire amount — only an active vp_hr of the company
@@ -5614,8 +5737,10 @@ REVOKE ALL ON FUNCTION fn_is_questionnaire_reward_key(text), fn_assert_questionn
 
 -- Set (or, with both values NULL, reset) a company override (cfo / vp_hr). Locked keys → 403 setting_locked.
 -- v1.6.18 (A-14): the questionnaire amounts follow fn_assert_questionnaire_reward_change (vp_hr only, 1–20); each
--- change is written to questionnaire_reward_history (WORM, effective_from = now) and to access_audit_log (WORM)
--- with the value before and after. It applies from now on only: submissions keep the amount they snapshotted.
+-- change is written to questionnaire_reward_history (WORM) and to access_audit_log (WORM: who = viewer_id, when =
+-- created_at, value before → after). v1.7.0 (Karin 16.11): a questionnaire amount is NOT written as an immediate
+-- override any more — effective_from = the start of the NEXT period (fn_next_reward_period_start), so nobody in the
+-- current month / quarter earns a different amount, and submissions keep the amount they snapshotted.
 CREATE OR REPLACE FUNCTION rpc_put_agent_setting(
   p_company_id    uuid,
   p_setting_key   text,
@@ -5648,13 +5773,30 @@ BEGIN
       PERFORM fn_raise_bad_request('invalid_setting_value');
     END IF;
     PERFORM fn_assert_questionnaire_reward_change(p_company_id, p_value_numeric);
-    v_before := fn_agent_setting_num(p_company_id, p_setting_key);
+    v_at := fn_next_reward_period_start(p_setting_key, p_company_id, clock_timestamp());
+    v_before := fn_questionnaire_reward_at(p_setting_key, p_company_id, v_at);
   END IF;
   PERFORM fn_validate_agent_setting(v_def.value_kind, p_value_numeric, p_value_text);
   IF p_setting_key = 'score_range_coefficient' AND p_value_numeric IS NOT NULL AND p_value_numeric <= 0 THEN
     PERFORM fn_raise_bad_request('invalid_setting_value');
   END IF;
 
+  IF v_qkey THEN
+    -- v1.7.0: scheduled for the next period only (no immediate override row)
+    INSERT INTO questionnaire_reward_history (company_id, setting_key, value_before, value_after, scope_after, effective_from)
+    VALUES (p_company_id, p_setting_key, v_before,
+            COALESCE(p_value_numeric, (SELECT d.value_numeric FROM agent_settings d
+                                        WHERE d.company_id IS NULL AND d.setting_key = p_setting_key)),
+            CASE WHEN p_value_numeric IS NULL THEN 'default' ELSE 'company' END, v_at);
+    PERFORM fn_audit_view('questionnaire_reward_setting_put',
+                          jsonb_build_object('company_id', p_company_id, 'setting_key', p_setting_key,
+                                             'value_before', v_before,
+                                             'value_after', fn_questionnaire_reward_at(p_setting_key, p_company_id, v_at),
+                                             'effective_from', v_at));
+    PERFORM fn_audit_view('agent_setting_put', jsonb_build_object('company_id', p_company_id, 'setting_key', p_setting_key));
+    RETURN QUERY SELECT * FROM rpc_get_agent_settings(p_company_id) g WHERE g.setting_key = p_setting_key;
+    RETURN;
+  END IF;
   DELETE FROM agent_settings s WHERE s.company_id = p_company_id AND s.setting_key = p_setting_key;
   IF p_value_numeric IS NOT NULL OR p_value_text IS NOT NULL THEN
     INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, value_text, value_status, is_locked, source_note)
@@ -5662,17 +5804,6 @@ BEGIN
             CASE WHEN v_def.value_kind = 'numeric' THEN p_value_numeric END,
             CASE WHEN v_def.value_kind <> 'numeric' THEN p_value_text END,
             'set', false, 'company override');
-  END IF;
-  IF v_qkey THEN
-    v_after := fn_agent_setting_row(p_company_id, p_setting_key);
-    INSERT INTO questionnaire_reward_history (company_id, setting_key, value_before, value_after, scope_after)
-    VALUES (p_company_id, p_setting_key, v_before, v_after.value_numeric,
-            CASE WHEN v_after.company_id IS NULL THEN 'default' ELSE 'company' END)
-    RETURNING effective_from INTO v_at;
-    PERFORM fn_audit_view('questionnaire_reward_setting_put',
-                          jsonb_build_object('company_id', p_company_id, 'setting_key', p_setting_key,
-                                             'value_before', v_before, 'value_after', v_after.value_numeric,
-                                             'effective_from', v_at));
   END IF;
   PERFORM fn_audit_view('agent_setting_put', jsonb_build_object('company_id', p_company_id, 'setting_key', p_setting_key));
   RETURN QUERY SELECT * FROM rpc_get_agent_settings(p_company_id) g WHERE g.setting_key = p_setting_key;
@@ -6024,11 +6155,14 @@ BEGIN
        AND fn_agent_local_ts(u.company_id, v_now)::date > fn_exit_redemption_deadline(u.user_id)
      FOR UPDATE OF a
   LOOP
-    INSERT INTO golden_spoons_ledger (user_id, company_id, event_type, amount, exit_deadline)
-    VALUES (r.user_id, r.company_id, 'expired_after_exit', r.golden_spoons, r.deadline)
-    ON CONFLICT (user_id, event_type, exit_deadline) DO NOTHING;
-    UPDATE avatar_state SET golden_spoons = 0, updated_at = clock_timestamp() WHERE user_id = r.user_id;
-    v_n := v_n + 1;
+    -- v1.7.0 (Karin 16.11, J-196): the remaining balance is DONATED, not reset: (1) balance + nonprofit (her choice
+    -- or the company default J-197), (2) the donation is recorded (ledger 'donated_after_exit' + the monthly
+    -- aggregate), (3) only then the balance is zeroed — the crypto-shred waits for this (rpc_run_scheduled_crypto_shred).
+    -- No nonprofit chosen and no company default → nothing is donated or zeroed (pending, J-223).
+    IF fn_j196_donate_departed(r.user_id, r.company_id, r.golden_spoons, r.deadline, v_now) THEN
+      UPDATE avatar_state SET golden_spoons = 0, updated_at = clock_timestamp() WHERE user_id = r.user_id;
+      v_n := v_n + 1;
+    END IF;
   END LOOP;
   RETURN v_n;
 END;
@@ -6381,6 +6515,7 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT NOT fn_is_client_call()
       OR fn_is_finance_viewer(p_company)
+      OR fn_has_capability_in(p_company, 'safety_officer')   -- v1.7.0 J-202: team level, the agent's own thresholds
       OR (fn_is_org_manager(p_company) AND EXISTS (
             SELECT 1 FROM users u WHERE u.company_id = p_company
                                     AND fn_user_in_team(u.department, u.department_is_default, p_group)
@@ -8431,7 +8566,7 @@ AS $$
 DECLARE
   e metric_verification_evidence := fn_verification_evidence(p_company, p_metric, p_month);
   v_code varchar := fn_metric_questionnaire(p_metric);
-  v_audit boolean;
+  v_letter int;
 BEGIN
   IF e.evidence_id IS NULL
      OR (v_code IS NOT NULL AND e.questionnaire_identified IS NOT TRUE)
@@ -8441,9 +8576,11 @@ BEGIN
   IF v_code IS NOT NULL AND fn_measurement_changes(p_company, v_code, p_month) > 0 THEN
     RETURN 1;
   END IF;
-  v_audit := e.audit_applies_to_metric AND length(btrim(COALESCE(e.audit_standard, ''))) > 0;
-  IF v_audit AND e.audit_scope = 'full' THEN RETURN 4; END IF;
-  IF v_audit AND e.audit_scope = 'limited' THEN RETURN 3; END IF;
+  -- v1.7.0 (Karin 16.11, J-214): level 3 / 4 ONLY with a valid (not cancelled) external auditor letter that vp_hr
+  -- uploaded for this metric and a period covering this month (limited → 3, reasonable → 4). Audit fields entered
+  -- in the evidence alone never lift the level above 2 (modules/40_j_auditor.sql, fn_j214_letter_level).
+  v_letter := fn_j214_letter_level(p_company, p_metric, p_month);
+  IF v_letter IS NOT NULL THEN RETURN v_letter; END IF;
   IF e.ctl_reporting_rate OR e.ctl_confidentiality OR fn_separate_body_control(p_company, p_metric, p_month) THEN
     RETURN 2;
   END IF;
@@ -8452,15 +8589,21 @@ END;
 $$;
 
 -- jsonb {tier, label_he, text_status} of one metric / month.
+-- v1.7.0 (J-214): + the auditor-letter facts (letter_status 'בתוקף' / 'בוטל', same-person label, revocation note);
+-- never a person id.
 CREATE OR REPLACE FUNCTION fn_verification_json(p_company uuid, p_metric text, p_month date)
 RETURNS jsonb
-LANGUAGE sql
+LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT jsonb_build_object('tier', l, 'label_he', fn_assurance_label_he(l), 'text_status', fn_text_status_draft())
-    FROM fn_verification_level(p_company, p_metric, p_month) l
+DECLARE
+  l int := fn_verification_level(p_company, p_metric, p_month);
+BEGIN
+  RETURN jsonb_build_object('tier', l, 'label_he', fn_assurance_label_he(l), 'text_status', fn_text_status_draft())
+         || fn_j214_letter_json(p_company, p_metric, p_month);
+END;
 $$;
 REVOKE ALL ON FUNCTION fn_measurement_changes(uuid, varchar, date), fn_separate_body_control(uuid, text, date),
                        fn_verification_evidence(uuid, text, date), fn_verification_level(uuid, text, date),
@@ -8485,13 +8628,14 @@ BEGIN
      OR p_population_identified IS NULL OR p_timing_identified IS NULL OR p_scoring_identified IS NULL THEN
     PERFORM fn_raise_bad_request('invalid_verification_evidence');
   END IF;
+  -- v1.7.0 (J-214): entered_by is kept internally only for the "הוזן ואושר על ידי אותו אדם" label.
   INSERT INTO metric_verification_evidence (company_id, metric_key, period_month, questionnaire_identified,
     population_identified, timing_identified, scoring_identified, ctl_reporting_rate, ctl_confidentiality,
-    audit_scope, audit_standard, audit_applies_to_metric, industry_comparison)
+    audit_scope, audit_standard, audit_applies_to_metric, industry_comparison, entered_by)
   VALUES (p_company_id, p_metric_key, fn_month_of(p_month), p_questionnaire_identified, p_population_identified,
           p_timing_identified, p_scoring_identified, COALESCE(p_ctl_reporting_rate, false), COALESCE(p_ctl_confidentiality, false),
           p_audit_scope, NULLIF(btrim(p_audit_standard), ''), COALESCE(p_audit_applies_to_metric, false),
-          COALESCE(p_industry_comparison, false));
+          COALESCE(p_industry_comparison, false), auth.uid());
   PERFORM fn_audit_view('verification_evidence_put', jsonb_build_object('company_id', p_company_id, 'metric_key', p_metric_key));
   RETURN jsonb_build_object('metric_key', p_metric_key, 'period_month', fn_month_of(p_month))
          || fn_verification_json(p_company_id, p_metric_key, fn_month_of(p_month));

@@ -37,7 +37,8 @@
 -- New in 1.6.17 (Karin 31.10 via Chief of Drive — fix round closing A-5, A-8, J-3, J-15):
 --   * A-5: TPS-12 and IHS pay a fixed 10 Golden Spoons for participation — agent_settings
 --     golden_spoons_per_quarterly_questionnaire = 10 (adjustable: not locked, a company may override it).
---   * J-3 reversed: Cantril is a MONTHLY questionnaire → golden_spoons_per_questionnaire (10), not the short 2.
+--   * J-3 reversed: Cantril is a MONTHLY questionnaire (v1.7.0, Karin 16.11: stays monthly but pays 2 כפיות זהב
+--     through its own setting golden_spoons_per_cantril — replaces the 31.10 'monthly → 10').
 --   * J-15 confirmed: after employment ends no time benefit (early leave, approved absence / day off) can be
 --     recorded — guard trigger on early_leave_log and approved_absence_entry; EverStore products only in the
 --     30-day window.
@@ -358,6 +359,10 @@ CREATE TABLE IF NOT EXISTS companies (
     created_at   timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
+-- v1.7.0 (Karin 16.11, J-190 DRAFT): the day the company stopped using CHR-ETRS. Set ONLY via config / deploy
+-- (db/config/company_service_end.json, J-193) — never by an app role. NULL = the company is active.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS service_ended_at timestamptz;
+
 CREATE TABLE IF NOT EXISTS users (
     user_id       uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     company_id    uuid REFERENCES companies(company_id) ON DELETE SET NULL,
@@ -383,8 +388,12 @@ CREATE TABLE IF NOT EXISTS users (
     -- v1.6.16 (Karin 30.10, v3 §2.3): 'cfo' added — sees the EverStore budget summary and the open
     -- Golden Spoons liability in ILS together with vp_hr only.
     app_role      text NOT NULL DEFAULT 'employee'
+                  -- v1.7.0 (Karin 16.11): + researcher (J-178/J-181, opened only via config in a PR) and
+                  -- external_auditor (J-203, opened by vp_hr). IT / works council / safety officer are NOT app
+                  -- roles: they stay employees and get a user_capability (modules/20_j_capabilities.sql).
                   CHECK (app_role IN ('employee', 'manager', 'vp_hr', 'legal_ethics',
-                                      'board_chair', 'board_member', 'owner_shareholder', 'cfo')),
+                                      'board_chair', 'board_member', 'owner_shareholder', 'cfo',
+                                      'researcher', 'external_auditor')),
     -- v1.6 (lock #6) / v1.6.12 (O-20): employee interface / wallet. Tier 5 governance roles default to
     -- false unless explicitly marked as also an employee.
     has_employee_profile boolean NOT NULL DEFAULT true,
@@ -434,10 +443,12 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_app_role_check'
                 AND conrelid = 'users'::regclass
                 AND pg_get_constraintdef(oid) LIKE '%board_chair%'
-                AND pg_get_constraintdef(oid) NOT LIKE '%cfo%') THEN
+                AND pg_get_constraintdef(oid) NOT LIKE '%external_auditor%') THEN
+    -- v1.7.0: the same block also adds researcher / external_auditor (and cfo on a pre-1.6.16 database)
     ALTER TABLE users DROP CONSTRAINT users_app_role_check;
     ALTER TABLE users ADD CONSTRAINT users_app_role_check CHECK (app_role IN ('employee', 'manager', 'vp_hr', 'legal_ethics',
-                                                                              'board_chair', 'board_member', 'owner_shareholder', 'cfo'));
+                                                                              'board_chair', 'board_member', 'owner_shareholder', 'cfo',
+                                                                              'researcher', 'external_auditor'));
   END IF;
 END $$;
 
@@ -792,14 +803,35 @@ REVOKE ALL ON FUNCTION fn_user_default_turnover_tier(uuid) FROM PUBLIC;
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS privacy_threshold_config (
     scope   text PRIMARY KEY
-            CHECK (scope IN ('regular', 'cuckoo', 'shadow_balance', 'emergency', 'project', 'board')),
+            CHECK (scope IN ('regular', 'cuckoo', 'shadow_balance', 'emergency', 'project', 'board', 'research')),
     min_n   int NOT NULL,
+    -- v1.7.0 (Karin 16.11, J-180 / J-185): a SEPARATE research scope (research export) locked at 20;
+    -- the existing 5 / 10 / 20 rows are unchanged.
     CONSTRAINT chk_threshold_locked CHECK (
          (scope IN ('regular', 'project') AND min_n = 5)
       OR (scope IN ('cuckoo', 'shadow_balance', 'emergency') AND min_n = 10)
       OR (scope = 'board' AND min_n = 20)
+      OR (scope = 'research' AND min_n = 20)
     )
 );
+
+-- v1.7.0 upgrade: an existing privacy_threshold_config gets the research scope (same expressions as the fresh table).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_threshold_locked'
+                AND conrelid = 'privacy_threshold_config'::regclass
+                AND pg_get_constraintdef(oid) NOT LIKE '%research%') THEN
+    ALTER TABLE privacy_threshold_config DROP CONSTRAINT IF EXISTS privacy_threshold_config_scope_check;
+    ALTER TABLE privacy_threshold_config DROP CONSTRAINT chk_threshold_locked;
+    ALTER TABLE privacy_threshold_config ADD CONSTRAINT privacy_threshold_config_scope_check
+      CHECK (scope IN ('regular', 'cuckoo', 'shadow_balance', 'emergency', 'project', 'board', 'research'));
+    ALTER TABLE privacy_threshold_config ADD CONSTRAINT chk_threshold_locked CHECK (
+         (scope IN ('regular', 'project') AND min_n = 5)
+      OR (scope IN ('cuckoo', 'shadow_balance', 'emergency') AND min_n = 10)
+      OR (scope = 'board' AND min_n = 20)
+      OR (scope = 'research' AND min_n = 20));
+  END IF;
+END $$;
 
 INSERT INTO privacy_threshold_config (scope, min_n) VALUES
   ('regular', 5),
@@ -807,7 +839,8 @@ INSERT INTO privacy_threshold_config (scope, min_n) VALUES
   ('shadow_balance', 10),
   ('emergency', 10),
   ('project', 5),
-  ('board', 20)
+  ('board', 20),
+  ('research', 20)
 ON CONFLICT (scope) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
@@ -1417,6 +1450,20 @@ BEGIN
   );
 END $$;
 
+-- v1.7.0 (Karin 16.11, J-211): who offers an item. 'platform' = the CHR-ETRS opening catalogue (all companies);
+-- 'external_supplier' = an offer the CHR-ETRS team loads from db/config (all companies, no supplier portal in v1);
+-- 'organization' = an internal benefit a company's vp_hr adds (provider = the organization) — only that company.
+ALTER TABLE shop_item_catalog ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES companies(company_id) ON DELETE CASCADE;
+ALTER TABLE shop_item_catalog ADD COLUMN IF NOT EXISTS provider_kind text NOT NULL DEFAULT 'platform';
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_shop_item_provider_kind') THEN
+    ALTER TABLE shop_item_catalog ADD CONSTRAINT chk_shop_item_provider_kind CHECK (
+      (provider_kind = 'organization' AND company_id IS NOT NULL)
+      OR (provider_kind IN ('platform', 'external_supplier') AND company_id IS NULL));
+  END IF;
+END $$;
+
 COMMENT ON TABLE shop_item_catalog IS
   'EverStore catalog (v1.6.13, Karin 25.10): opening seed catalog (קטלוג פתיחה, 8 items) + expandable across 8 categories (cosmetic, time_benefit, health_wellbeing, learning, donation, experience, gift_card, merchandise) with any positive price_golden_spoons > 0. real_money_purchase_allowed=false and affects_daily_energy_spoons=false strictly locked. CHR shelf deferred to v2.';
 
@@ -1549,7 +1596,7 @@ CREATE INDEX IF NOT EXISTS idx_approved_absence_user ON approved_absence_entry (
 -- agent_settings[reward_setting_key] (never a code constant). reward_amount is legacy and always NULL.
 -- Locked catalogue (is_locked = true), pinned by CHECK:
 --   PCQ-12  monthly    golden_spoons_per_questionnaire            (Karin 30.10: 10 כפיות)
---   Cantril monthly    golden_spoons_per_questionnaire            (Karin 31.10: monthly → 10 כפיות; replaces J-3's 2)
+--   Cantril monthly    golden_spoons_per_cantril                  (v1.7.0, Karin 16.11: 2 כפיות זהב, own setting; replaces 31.10 'monthly → 10')
 --   IHS     quarterly  golden_spoons_per_quarterly_questionnaire  (Karin 31.10: 10 כפיות, adjustable)
 --   TPS-12  quarterly  golden_spoons_per_quarterly_questionnaire  (Karin 31.10: 10 כפיות, adjustable); score = (sum − 12) / 48 × 100;
 --           items 1,3,5,11 reversed (6 − x); all 12 required; new employee only after 30 days.
@@ -1566,7 +1613,8 @@ CREATE TABLE IF NOT EXISTS questionnaire_definition (
     reward_amount    numeric(4, 1),     -- legacy (≤ v1.6.13); always NULL from v1.6.16
     reward_setting_key text NOT NULL CHECK (reward_setting_key IN ('golden_spoons_per_questionnaire',
                                             'golden_spoons_per_short_questionnaire',
-                                            'golden_spoons_per_quarterly_questionnaire')),
+                                            'golden_spoons_per_quarterly_questionnaire',
+                                            'golden_spoons_per_cantril')),
     item_count       int NOT NULL CHECK (item_count >= 1),
     answer_min       int,              -- NULL = range not constrained
     answer_max       int,
@@ -1587,7 +1635,7 @@ CREATE TABLE IF NOT EXISTS questionnaire_definition (
       NOT is_locked
       OR (code = 'PCQ-12'  AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire'
           AND item_count = 12 AND answer_min = 1 AND answer_max = 6 AND all_required AND scoring_method = 'pcq12')
-      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire')
+      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_cantril')
       OR (code = 'IHS'     AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
           AND answer_min = 1 AND answer_max = 5 AND all_required AND scoring_method = 'ihs')
       OR (code = 'TPS-12'  AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
@@ -1619,6 +1667,7 @@ BEGIN
     UPDATE questionnaire_definition
        SET reward_type = 'participation', reward_amount = NULL,
            reward_setting_key = CASE
+             WHEN code = 'Cantril' THEN 'golden_spoons_per_cantril'                 -- v1.7.0 (Karin 16.11)
              WHEN frequency IN ('quarterly', 'half_yearly', 'yearly') THEN 'golden_spoons_per_quarterly_questionnaire'
              WHEN frequency = 'monthly' THEN 'golden_spoons_per_questionnaire'
              ELSE 'golden_spoons_per_short_questionnaire' END;
@@ -1628,14 +1677,14 @@ BEGIN
       CHECK (reward_type = 'participation');
     ALTER TABLE questionnaire_definition ADD CONSTRAINT questionnaire_definition_reward_setting_key_check
       CHECK (reward_setting_key IN ('golden_spoons_per_questionnaire', 'golden_spoons_per_short_questionnaire',
-                                    'golden_spoons_per_quarterly_questionnaire'));
+                                    'golden_spoons_per_quarterly_questionnaire', 'golden_spoons_per_cantril'));
     ALTER TABLE questionnaire_definition ADD CONSTRAINT chk_reward_shape
       CHECK (reward_type = 'participation' AND reward_amount IS NULL);
     ALTER TABLE questionnaire_definition ADD CONSTRAINT chk_locked_catalogue CHECK (
       NOT is_locked
       OR (code = 'PCQ-12'  AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire'
           AND item_count = 12 AND answer_min = 1 AND answer_max = 6 AND all_required AND scoring_method = 'pcq12')
-      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire')
+      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_cantril')
       OR (code = 'IHS'     AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
           AND answer_min = 1 AND answer_max = 5 AND all_required AND scoring_method = 'ihs')
       OR (code = 'TPS-12'  AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
@@ -1650,21 +1699,28 @@ BEGIN
   END IF;
 END $$;
 
--- v1.6.17 upgrade (Karin 31.10, J-3 reversed): a v1.6.16 database keyed Cantril to the short setting (2).
--- Re-key it to the monthly setting (10) and re-pin the locked catalogue. No-op on a fresh / current database.
--- Runs BEFORE the seed INSERT: its CHECK is evaluated before ON CONFLICT DO NOTHING.
+-- v1.7.0 upgrade (Karin 16.11; replaces the v1.6.17 block that re-keyed Cantril to the monthly setting = 10):
+-- Cantril stays MONTHLY and is keyed to its own setting golden_spoons_per_cantril (2). Any older key (short 2 of
+-- v1.6.16, monthly 10 of v1.6.17 – v1.6.21) is re-keyed once and the CHECKs are re-pinned. No-op on a fresh / current
+-- database. Runs BEFORE the seed INSERT: its CHECK is evaluated before ON CONFLICT DO NOTHING.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM questionnaire_definition
-              WHERE code = 'Cantril' AND reward_setting_key <> 'golden_spoons_per_questionnaire') THEN
+              WHERE code = 'Cantril' AND reward_setting_key <> 'golden_spoons_per_cantril')
+     OR EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'questionnaire_definition_reward_setting_key_check'
+                   AND pg_get_constraintdef(oid) NOT LIKE '%golden_spoons_per_cantril%') THEN
     ALTER TABLE questionnaire_definition DROP CONSTRAINT IF EXISTS chk_locked_catalogue;
-    UPDATE questionnaire_definition SET reward_setting_key = 'golden_spoons_per_questionnaire', updated_at = clock_timestamp()
-     WHERE code = 'Cantril';
+    ALTER TABLE questionnaire_definition DROP CONSTRAINT IF EXISTS questionnaire_definition_reward_setting_key_check;
+    ALTER TABLE questionnaire_definition ADD CONSTRAINT questionnaire_definition_reward_setting_key_check
+      CHECK (reward_setting_key IN ('golden_spoons_per_questionnaire', 'golden_spoons_per_short_questionnaire',
+                                    'golden_spoons_per_quarterly_questionnaire', 'golden_spoons_per_cantril'));
+    UPDATE questionnaire_definition SET reward_setting_key = 'golden_spoons_per_cantril', updated_at = clock_timestamp()
+     WHERE code = 'Cantril' AND reward_setting_key <> 'golden_spoons_per_cantril';
     ALTER TABLE questionnaire_definition ADD CONSTRAINT chk_locked_catalogue CHECK (
       NOT is_locked
       OR (code = 'PCQ-12'  AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire'
           AND item_count = 12 AND answer_min = 1 AND answer_max = 6 AND all_required AND scoring_method = 'pcq12')
-      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_questionnaire')
+      OR (code = 'Cantril' AND frequency = 'monthly'   AND reward_setting_key = 'golden_spoons_per_cantril')
       OR (code = 'IHS'     AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
           AND answer_min = 1 AND answer_max = 5 AND all_required AND scoring_method = 'ihs')
       OR (code = 'TPS-12'  AND frequency = 'quarterly' AND reward_setting_key = 'golden_spoons_per_quarterly_questionnaire'
@@ -1681,8 +1737,9 @@ INSERT INTO questionnaire_definition (
   -- v1.6.12 (Karin 24.10, O-7): PCQ-12 Luthans 1–6 scale, 12 items, all required; score = (mean − 1) / 5.0 × 100
   -- v1.6.16 (Karin 30.10): participation reward = agent_settings.golden_spoons_per_questionnaire (10)
   ('PCQ-12',  'PCQ-12', 'PCQ-12', 'monthly', 'participation', NULL, 'golden_spoons_per_questionnaire', 12, 1, 6, '{}', true, 0, 'pcq12', true),
+  -- v1.7.0 (Karin 16.11): Cantril monthly, participation reward = agent_settings.golden_spoons_per_cantril (2)
   ('Cantril', 'Cantril ladder — life satisfaction', 'סולם Cantril — שביעות רצון מהחיים',
-              'monthly', 'participation', NULL, 'golden_spoons_per_questionnaire', 1, 0, 10, '{}', true, 0, 'none', true),
+              'monthly', 'participation', NULL, 'golden_spoons_per_cantril', 1, 0, 10, '{}', true, 0, 'none', true),
   -- v1.6.11 (Karin 24.10, O-6): IHS score = (mean − 1) / 4 × 100 from 1–5 answers (score is NOT a reward input any more)
   ('IHS',     'IHS — Interdependent Happiness Scale', 'IHS — מדד האושר הבין-תלוי',
               'quarterly', 'participation', NULL, 'golden_spoons_per_quarterly_questionnaire', 9, 1, 5, '{}', true, 0, 'ihs', true),
@@ -2489,10 +2546,8 @@ CREATE POLICY cuckoo_select_target ON cuckoo_alert
     FOR SELECT TO authenticated
     USING (auth.uid() = target_user_id);
 
-DROP POLICY IF EXISTS shop_catalog_select ON shop_item_catalog;
-CREATE POLICY shop_catalog_select ON shop_item_catalog
-    FOR SELECT TO authenticated
-    USING (is_active = true);
+-- shop_catalog_select: defined after fn_my_company() (v1.7.0, J-211 — an organization's internal items are visible
+-- to its own employees only).
 
 DROP POLICY IF EXISTS tier_config_select ON turnover_tier_config;
 CREATE POLICY tier_config_select ON turnover_tier_config
@@ -2722,6 +2777,13 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION fn_my_company() FROM PUBLIC;
+
+-- v1.7.0 (Karin 16.11, J-211): the EverStore catalog — platform / external-supplier items to everyone signed in, an
+-- organization's internal benefit (company_id set) to that organization's employees only.
+DROP POLICY IF EXISTS shop_catalog_select ON shop_item_catalog;
+CREATE POLICY shop_catalog_select ON shop_item_catalog
+    FOR SELECT TO authenticated
+    USING (is_active = true AND (company_id IS NULL OR company_id = fn_my_company()));
 GRANT EXECUTE ON FUNCTION fn_my_company() TO authenticated;
 
 -- Role-tree row of the caller (NULL when unknown / offboarded).
@@ -4295,11 +4357,13 @@ INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, 
   (NULL, 'turnover_baseline_junior',    'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (junior) — לא הוגדר'),
   (NULL, 'turnover_baseline_mid',       'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (mid) — לא הוגדר'),
   (NULL, 'turnover_baseline_senior',    'numeric',  NULL, NULL, 'not_defined', false, 'v3 §5.5: baseline leavers per month (senior) — לא הוגדר'),
-  -- v1.6.18 (A-14, Karin 31.10): the three questionnaire amounts are adjustable per company (not locked):
+  -- v1.6.18 (A-14, Karin 31.10): the questionnaire amounts are adjustable per company (not locked):
   -- 1–20 per questionnaire, one value for the whole company, vp_hr only, WORM history, non-retroactive.
-  (NULL, 'golden_spoons_per_questionnaire',           'numeric', 10,  NULL, 'set',         false, 'Karin 30.10 / 31.10: monthly questionnaire incl. PCQ-12 and Cantril = 10 כפיות (participation only); A-14: adjustable per company 1–20, vp_hr only'),
-  (NULL, 'golden_spoons_per_short_questionnaire',     'numeric', 2,   NULL, 'set',         false, 'Karin 30.10: weekly / short questionnaire = 2 כפיות (participation only; Cantril is monthly — Karin 31.10); A-14: adjustable per company 1–20, vp_hr only'),
-  (NULL, 'golden_spoons_per_quarterly_questionnaire', 'numeric', 10,  NULL, 'set',         false, 'Karin 31.10: TPS-12 / IHS = 10 כפיות per participation, same as a monthly questionnaire; A-14: adjustable per company 1–20, vp_hr only'),
+  -- v1.7.0 (Karin 16.11): a change applies only from the NEXT period (month / quarter); Cantril has its own key (2).
+  (NULL, 'golden_spoons_per_questionnaire',           'numeric', 10,  NULL, 'set',         false, 'Karin 30.10: monthly questionnaire incl. PCQ-12 = 10 כפיות זהב (participation only); A-14: adjustable per company 1–20, vp_hr only, from the next month'),
+  (NULL, 'golden_spoons_per_cantril',                 'numeric', 2,   NULL, 'set',         false, 'Karin 16.11: Cantril (monthly) = 2 כפיות זהב (participation only); A-14: adjustable per company 1–20, vp_hr only, from the next month'),
+  (NULL, 'golden_spoons_per_short_questionnaire',     'numeric', 2,   NULL, 'set',         false, 'Karin 30.10: weekly / short questionnaire = 2 כפיות זהב (participation only; Cantril has its own key — Karin 16.11); A-14: adjustable per company 1–20, vp_hr only, from the next month'),
+  (NULL, 'golden_spoons_per_quarterly_questionnaire', 'numeric', 10,  NULL, 'set',         false, 'Karin 31.10 / 16.11: TPS-12 / IHS = 10 כפיות זהב per participation (no score ÷ 10); A-14: adjustable per company 1–20, vp_hr only, from the next quarter'),
   (NULL, 'golden_spoons_per_checkin',     'numeric', NULL, NULL, 'not_defined', false, 'v3 §6.1: midday check-in participation — לא הוגדר'),
   (NULL, 'golden_spoons_per_shift',       'numeric', 2.0,  NULL, 'set',         false, 'O-16 / Q11 (Karin 24.10): 2 per shift (morning shift-start check-in)'),
   (NULL, 'golden_spoons_per_onboarding',  'numeric', 10.0, NULL, 'set',         false, 'O-16 / Q11 (Karin 24.10): 10 at signup'),
@@ -4348,12 +4412,23 @@ CREATE TABLE IF NOT EXISTS golden_spoons_ledger (
     entry_id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id        uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     company_id     uuid REFERENCES companies(company_id) ON DELETE SET NULL,
-    event_type     text NOT NULL CHECK (event_type IN ('expired_after_exit')),
+    -- v1.7.0 (Karin 16.11, J-196): from day 31 the balance is DONATED ('donated_after_exit'); 'expired_after_exit'
+    -- stays for historic rows only.
+    event_type     text NOT NULL CHECK (event_type IN ('expired_after_exit', 'donated_after_exit')),
     amount         numeric(10, 1) NOT NULL CHECK (amount > 0),
     exit_deadline  date NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT clock_timestamp(),
     UNIQUE (user_id, event_type, exit_deadline)
 );
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'golden_spoons_ledger_event_type_check'
+                AND pg_get_constraintdef(oid) NOT LIKE '%donated_after_exit%') THEN
+    ALTER TABLE golden_spoons_ledger DROP CONSTRAINT golden_spoons_ledger_event_type_check;
+    ALTER TABLE golden_spoons_ledger ADD CONSTRAINT golden_spoons_ledger_event_type_check
+      CHECK (event_type IN ('expired_after_exit', 'donated_after_exit'));
+  END IF;
+END $$;
 DROP TRIGGER IF EXISTS trg_golden_spoons_ledger_worm ON golden_spoons_ledger;
 CREATE TRIGGER trg_golden_spoons_ledger_worm
     BEFORE UPDATE OR DELETE ON golden_spoons_ledger
@@ -4609,13 +4684,27 @@ CREATE TABLE IF NOT EXISTS questionnaire_reward_history (
     company_id      uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
     setting_key     text NOT NULL CHECK (setting_key IN ('golden_spoons_per_questionnaire',
                                                          'golden_spoons_per_short_questionnaire',
-                                                         'golden_spoons_per_quarterly_questionnaire')),
+                                                         'golden_spoons_per_quarterly_questionnaire',
+                                                         'golden_spoons_per_cantril')),
     value_before    numeric(10, 1),
     value_after     numeric(10, 1) NOT NULL CHECK (value_after BETWEEN 1 AND 20),
     scope_after     text NOT NULL CHECK (scope_after IN ('company', 'default')),
     effective_from  timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS idx_qrh_company_key ON questionnaire_reward_history (company_id, setting_key, effective_from DESC);
+-- v1.7.0 (Karin 16.11, A-14): effective_from is the START OF THE NEXT PERIOD (company-local month / quarter);
+-- recorded_at = when vp_hr made the change (two changes for the same next period: the later one wins).
+ALTER TABLE questionnaire_reward_history ADD COLUMN IF NOT EXISTS recorded_at timestamptz NOT NULL DEFAULT clock_timestamp();
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'questionnaire_reward_history_setting_key_check'
+                AND pg_get_constraintdef(oid) NOT LIKE '%golden_spoons_per_cantril%') THEN
+    ALTER TABLE questionnaire_reward_history DROP CONSTRAINT questionnaire_reward_history_setting_key_check;
+    ALTER TABLE questionnaire_reward_history ADD CONSTRAINT questionnaire_reward_history_setting_key_check
+      CHECK (setting_key IN ('golden_spoons_per_questionnaire', 'golden_spoons_per_short_questionnaire',
+                             'golden_spoons_per_quarterly_questionnaire', 'golden_spoons_per_cantril'));
+  END IF;
+END $$;
 ALTER TABLE questionnaire_reward_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE questionnaire_reward_history FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE questionnaire_reward_history FROM PUBLIC, anon, authenticated;
@@ -4680,6 +4769,9 @@ CREATE TABLE IF NOT EXISTS metric_verification_evidence (
     entered_at                timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS idx_mve_lookup ON metric_verification_evidence (company_id, metric_key, period_month, entered_at DESC);
+-- v1.7.0 (Karin 16.11, J-214): who entered the evidence (internal; never returned) — only to label
+-- "הוזן ואושר על ידי אותו אדם" when the same person also uploaded the auditor letter.
+ALTER TABLE metric_verification_evidence ADD COLUMN IF NOT EXISTS entered_by uuid;
 
 -- verification_dossier — Part A2: the auto-generated 'תיק אימות' of a metric and month, kept with every
 -- published board report. WORM.

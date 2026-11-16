@@ -1,7 +1,7 @@
-<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.6.21-mvp r5 (2026-11-04; r5 = J-140 reminder wording approved; r4 2026-11-01; r4 = J-137 A stale note + team_not_calculated reminder, J-138 approved: counts; r3 = J-129 approved text, J-132 small teams in the board report total ('אחר'): counts; r2 = J-135 closed: the suite is date-independent, real clock, no libfaketime; r1 = J-123 B, J-128 A, J-121 A, J-126 A; 2026-10-31: J-115 A, J-112 A, J-108 A, no-department reminder, upgrade from c3a57b6) — supersedes the v1.6.21 TESTING.md. How the v1.6.21-r5 results were produced. -->
-# How to run the CHR-ETRS code-pack tests (v1.6.21-mvp)
+<!-- CHR-ETRS MVP v1 · TESTING.md · Version: 1.7.0-mvp (2026-11-16; Karin 16.11, J-178 – J-219: new suites test_j_*, terms gate, upgrade check; previous 1.6.21-mvp r5 2026-11-04; r5 = J-140 reminder wording approved; r4 2026-11-01; r4 = J-137 A stale note + team_not_calculated reminder, J-138 approved: counts; r3 = J-129 approved text, J-132 small teams in the board report total ('אחר'): counts; r2 = J-135 closed: the suite is date-independent, real clock, no libfaketime; r1 = J-123 B, J-128 A, J-121 A, J-126 A; 2026-10-31: J-115 A, J-112 A, J-108 A, no-department reminder, upgrade from c3a57b6) — supersedes the v1.6.21 TESTING.md. How the v1.6.21-r5 results were produced. -->
+# How to run the CHR-ETRS code-pack tests (v1.7.0-mvp)
 
-These are the exact steps used for the v1.6.21-r5 run on 2026-11-04 (real clock, no libfaketime), re-run on 2026-11-04 for
+These are the exact steps used for the v1.7.0 run on 2026-11-16 (branch `db/j178-j219-research-roles` on top of 4f04c0e, real clock), first written for the v1.6.21-r5 run on 2026-11-04 (real clock, no libfaketime), re-run on 2026-11-04 for
 branch `db/authz-sensitive-rpcs` (J-146 A, then the sensitive-RPC authorization) on top of main 1ea87b7.
 
 > **v1.6.21-r2 (J-135 closed):** the suite no longer depends on the date or the hour. It runs on the **real clock**; no
@@ -64,25 +64,37 @@ python3 -m venv /tmp/venv-oas
 ```bash
 cd db                                   # the folder holding schema.sql, rpc.sql, openapi.yaml, tests/
 ./tests/run_tests.sh 2>&1 | tee /tmp/run_tests.log; echo "exit ${PIPESTATUS[0]}"
-grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (db/authz-sensitive-rpcs, J-163 no ledger system path: 1477 — 3 system-ledger checks replaced, total unchanged; sensitive-RPC authorization: 1477; J-146 A on db/authz-sensitive-rpcs: 1415; main 1ea87b7 incl. test_assign_authz.sql: 1389 — the r5 figure 1361 below was the count before test_assign_authz.sql (28) was added; v1.6.21-r5: 1361; v1.6.21-r4: 1357; v1.6.21-r3: 1346; v1.6.21-r2: 1336; v1.6.21-r1: 1335; v1.6.21: 1318; v1.6.20-r2: 1285)
+grep -c "WARNING:  PASS" /tmp/run_tests.log            # SQL checks passed (v1.7.0 on db/j178-j219-research-roles: 1693 = 1501 existing suites + 192 new test_j_* checks; db/authz-sensitive-rpcs, J-163 no ledger system path: 1477 — 3 system-ledger checks replaced, total unchanged; sensitive-RPC authorization: 1477; J-146 A on db/authz-sensitive-rpcs: 1415; main 1ea87b7 incl. test_assign_authz.sql: 1389 — the r5 figure 1361 below was the count before test_assign_authz.sql (28) was added; v1.6.21-r5: 1361; v1.6.21-r4: 1357; v1.6.21-r3: 1346; v1.6.21-r2: 1336; v1.6.21-r1: 1335; v1.6.21: 1318; v1.6.20-r2: 1285)
 grep -c "WARNING:  FAIL" /tmp/run_tests.log            # must be 0 (a FAIL also stops the run with exit ≠ 0)
 grep "MIGRATION TESTS" /tmp/run_tests.log              # super: 114 passed, 0 failed · nosuper: 108 passed, 0 failed
+grep "UPGRADE\|TERMS GATE" /tmp/run_tests.log            # v1.7.0: upgrade 7 passed, 0 failed · terms gate 7 passed, 0 failed
 /tmp/venv-oas/bin/openapi-spec-validator openapi.yaml   # → openapi.yaml: OK
 ```
 
 What `run_tests.sh` does, in order (each on a fresh database):
 
-1. `ref_country_calendar.sql` → `schema.sql` → `rpc.sql`, then the same three again (idempotency) →
-   `tests/test_v1_5.sql` (816 checks, unchanged in number by J-146 A — 4 manager-assign Circuit Breaker checks of section 5 now expect `assignment_unavailable` — and by J-147 / J-150 — the ledger checks run as the company's cfo, the turnover-tier check expects `access_denied`; 816 in v1.6.21-r5: +1 J-141 job / report rerun adds no reminder, per (team, month, vp_hr) = 1, total = active vp_hr; +2 J-139 live 'אחר' = report (D), no row / no note in both (F); +1 J-140 exact approved reminder text, no digit / id / pseudonym; 812 in v1.6.21-r4: +11 J-137 stale teams / note (X = 1, X = 0, row null) / vp_hr team_not_calculated reminder (created, not for calculated or smaller teams, idempotent, name only, vp_hr only); J-138 closed (approved, no new check); 801 in v1.6.21-r3: +10 J-132 small teams in the board report total / 'אחר' / remainder rule / report = board-member figures, J-129 exact text and J-115 remainder 4 updated in place; 791 in v1.6.21-r2: +1 J-135 cb11's day after the midday checks; 790 in v1.6.21-r1: +8 J-123 company-level alert, +3 J-121 'אחר' / placeholder, −1 replaced J-112 manager check; 780 in v1.6.21; +13 J-115 company totals / placeholder / EBITDA and J-112 company-level Cuckoo; 767 in v1.6.20-r2).
-2. Fresh DB → pack → `tests/test_agents_v1_6_16.sql` (agents; 299 checks).
-3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 246 checks in v1.6.21-r4 too (J-102 catalog allowlist + fn_team_latest_earlier_row, which reads stored team rows only); 246 in v1.6.21-r1: +4 J-126 automatic close, +3 J-128 count never with a group metric; 239 in v1.6.21; +20 J-108 immediate notice and the two decisions, the no-department reminder; 219 in v1.6.20-r2).
+1. `ref_country_calendar.sql` → `schema.sql` → `rpc.sql` → `modules/all.sql` (v1.7.0), then the same again (idempotency) →
+   `tests/test_v1_5.sql` (819 checks in v1.7.0: J-211 — external supplier items now load only through `db/config` → `fn_sync_supplier_offers`; vp_hr adds only internal benefits of her own organization; 816 before, unchanged in number by J-146 A — 4 manager-assign Circuit Breaker checks of section 5 now expect `assignment_unavailable` — and by J-147 / J-150 — the ledger checks run as the company's cfo, the turnover-tier check expects `access_denied`; 816 in v1.6.21-r5: +1 J-141 job / report rerun adds no reminder, per (team, month, vp_hr) = 1, total = active vp_hr; +2 J-139 live 'אחר' = report (D), no row / no note in both (F); +1 J-140 exact approved reminder text, no digit / id / pseudonym; 812 in v1.6.21-r4: +11 J-137 stale teams / note (X = 1, X = 0, row null) / vp_hr team_not_calculated reminder (created, not for calculated or smaller teams, idempotent, name only, vp_hr only); J-138 closed (approved, no new check); 801 in v1.6.21-r3: +10 J-132 small teams in the board report total / 'אחר' / remainder rule / report = board-member figures, J-129 exact text and J-115 remainder 4 updated in place; 791 in v1.6.21-r2: +1 J-135 cb11's day after the midday checks; 790 in v1.6.21-r1: +8 J-123 company-level alert, +3 J-121 'אחר' / placeholder, −1 replaced J-112 manager check; 780 in v1.6.21; +13 J-115 company totals / placeholder / EBITDA and J-112 company-level Cuckoo; 767 in v1.6.20-r2).
+2. Fresh DB → pack → `tests/test_agents_v1_6_16.sql` (agents; 306 checks in v1.7.0: A-14 changes apply only from the next period, one amount per company (§3b); J-196 day-31 donation instead of reset; 299 before).
+3. Fresh DB → pack → `tests/test_board_v1_6_19.sql` (board report; filename kept; 260 checks in v1.7.0: J-214 — cfo audit fields alone stay at level ≤ 2, level 3 / 4 needs an external auditor letter uploaded by vp_hr (§4b); 246 checks in v1.6.21-r4 too (J-102 catalog allowlist + fn_team_latest_earlier_row, which reads stored team rows only); 246 in v1.6.21-r1: +4 J-126 automatic close, +3 J-128 count never with a group metric; 239 in v1.6.21; +20 J-108 immediate notice and the two decisions, the no-department reminder; 219 in v1.6.20-r2).
 3a. Fresh DB → pack → `tests/test_assign_authz.sql` (rpc_assign_task authorization; 54 checks with J-146 A: +26 — direct manager: 6 refusal reasons give 1 identical neutral answer, data / visible rows unchanged, exact text; self keeps the exact reason; J-153 = A: 26 stranger answers identical `access_denied` at 12 / 5 / 3 כפיות; helpers internal; 28 with J-143).
 3b. Fresh DB → pack → `tests/test_sensitive_authz.sql` (sensitive-RPC authorization, J-147 – J-150; 62 checks: J-148 system recognition 4; reset spoons 16; value asset 16; ledger 21 (J-163: service_role refused / server session access_denied / data unchanged, no service_role grant); identical answers / no digit / 37 refusals 3; structure 2).
+3c. v1.7.0 (Karin 16.11): each on a fresh DB with `tests/j_helpers.sql` — `test_j_spoons.sql` (20: questionnaire
+   amounts, Cantril = 2, A-14 next period; ends by re-applying schema.sql), `test_j_research.sql` (48: researchers / DPA
+   from config only, research export rules and log, method team outbox, J-190 archive), `test_j_roles.sql` (37: the 10
+   app roles, capabilities, works council, safety officer, J-203 auditor window and log), `test_j_kiosk.sql` (22: kiosk,
+   service role only; the badge secret is a test-only placeholder GUC, J-230), `test_j_everstore.sql` (24: J-211, config-only
+   suppliers, supplier notice), `test_j_leaver.sql` (21: leaver choice / default, J-196 donation, shred waits, J-223),
+   `test_j_whats_changed.sql` (20: J-205 / J-218). Then `db/config` must be empty, `tools/sync_config.py` loads it as
+   4 × 0 rows, and `tests/test_j_terms.sh` runs (whole-repo terminology gate, see §7).
 4. `MIG_MODE=super ./tests/test_migration.sh` — v1.4 → v1.6.21 migration as superuser (event-trigger DDL guard +
    timezone preflight): dry run, apply, counts, catalog = fresh, idempotence, rollback.
 5. `MIG_MODE=nosuper ./tests/test_migration.sh` — the same as a **non-superuser** owner: the script itself creates
    `chr_app_owner` (`LOGIN CREATEDB CREATEROLE BYPASSRLS NOSUPERUSER`) through the admin (`PGUSER=postgres`)
    connection and uses the O-53 fallback. No manual role setup is needed.
+5a. v1.7.0: `./tests/test_upgrade_v1_7_0.sh` — the v1.6.21 pack of commit 4f04c0e (from git) + a little data →
+   `migrations/migrate_v1_6_21_to_v1_7_0.sql`: dry run changes nothing → apply → catalog = fresh v1.7.0 → a second
+   apply changes nothing → rows kept, Cantril re-keyed to 2, catalog rows 'platform' (7 checks).
 6. A-10 check: every `r = 0.37` in openapi.yaml / README.md / ADR_GAPS.md sits inside the full binding text.
 7. The salary-literal grep (the forbidden literal must have 0 hits).
 
@@ -178,6 +190,11 @@ grep -rn 'מס החסך' $INC --exclude=TESTING.md . | wc -l                    
 grep -rnP '(?<![\p{Hebrew}])כפות(?![\p{Hebrew}])' $INC --exclude=TESTING.md . | wc -l                                    # the word "כפות" on its own
 grep -rn 'צבן' $INC --exclude=TESTING.md . | wc -l                                                                        # the name is spelled צבאן
 ```
+
+v1.7.0 (Karin 16.11): the same terms are checked over the **whole repository** (every git-tracked file, not only `db/`;
+`DECISION_2026-10-20_week_start.md` excluded and not touched) by `tests/test_j_terms.sh`, which `run_tests.sh` runs. It adds
+the golden-spoons rule: an amount "N כפיות" without "מוזהבות" / "זהב" on the same line as an EverStore price, balance or
+donation — including server messages in SQL string literals — fails the gate (J-227). Run it alone: `./tests/test_j_terms.sh`.
 
 To keep a full log (as for v1.6.21-r4): `mkdir -p /workspace/test-logs && ./tests/run_tests.sh 2>&1 | tee /workspace/test-logs/v1.6.21-r5_run_tests_$(git rev-parse --short HEAD).log`.
 

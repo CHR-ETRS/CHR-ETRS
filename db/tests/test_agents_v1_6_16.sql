@@ -204,9 +204,9 @@ SELECT t_assert('settings: open values stay "לא הוגדר" (company_timezone,
 SELECT t_assert('v1.6.17 A-5: TPS-12 / IHS participation = agent_settings golden_spoons_per_quarterly_questionnaire 10, set and adjustable (not locked)',
   (SELECT value_numeric = 10 AND value_status = 'set' AND NOT is_locked FROM agent_settings
     WHERE company_id IS NULL AND setting_key = 'golden_spoons_per_quarterly_questionnaire'));
-SELECT t_assert('v1.6.17 J-3: Cantril is keyed to the monthly setting (10), TPS-12 / IHS to the quarterly setting',
+SELECT t_assert('v1.7.0 (Karin 16.11): Cantril stays monthly with its OWN key golden_spoons_per_cantril (2); PCQ-12 monthly (10); TPS-12 / IHS quarterly (10)',
   (SELECT string_agg(code || '=' || reward_setting_key, ',' ORDER BY code) FROM questionnaire_definition WHERE is_locked)
-  = 'Cantril=golden_spoons_per_questionnaire,IHS=golden_spoons_per_quarterly_questionnaire,PCQ-12=golden_spoons_per_questionnaire,TPS-12=golden_spoons_per_quarterly_questionnaire');
+  = 'Cantril=golden_spoons_per_cantril,IHS=golden_spoons_per_quarterly_questionnaire,PCQ-12=golden_spoons_per_questionnaire,TPS-12=golden_spoons_per_quarterly_questionnaire');
 SELECT t_assert('settings: agent_settings closed to clients (RLS forced, no grant)',
   NOT has_table_privilege('authenticated', 'agent_settings', 'SELECT')
   AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid = 'agent_settings'::regclass));
@@ -258,12 +258,12 @@ SELECT t_assert('A1: the 422 sentence is the HINT ("CHR Coins shelf is deferred 
 SELECT t_as(t_u('empB1'));
 SET ROLE authenticated;
 SELECT t_assert('v3-T12: PCQ-12 lowest answers → 10 Golden Spoons', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('PCQ-12', '{1,1,1,1,1,1,1,1,1,1,1,1}')));
-SELECT t_assert('v3-T12 / v1.6.17 J-3: Cantril (monthly) answer 0 → 10 Golden Spoons', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('Cantril', '{0}')));
+SELECT t_assert('v3-T12 / v1.7.0: Cantril (monthly) answer 0 → 2 Golden Spoons', (SELECT reward_golden_spoons = 2 FROM rpc_submit_questionnaire('Cantril', '{0}')));
 RESET ROLE;
 SELECT t_as(t_u('empB2'));
 SET ROLE authenticated;
 SELECT t_assert('v3-T12: PCQ-12 highest answers → the same 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('PCQ-12', '{6,6,6,6,6,6,6,6,6,6,6,6}')));
-SELECT t_assert('v3-T12 / v1.6.17 J-3: Cantril answer 10 → the same 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('Cantril', '{10}')));
+SELECT t_assert('v3-T12 / v1.7.0: Cantril answer 10 → the same 2', (SELECT reward_golden_spoons = 2 FROM rpc_submit_questionnaire('Cantril', '{10}')));
 RESET ROLE;
 SELECT t_assert('v3-T12: different answers, different scores, same reward (2 PCQ-12 + 2 Cantril submissions)',
   (SELECT count(DISTINCT pcq12_score) = 2 AND count(DISTINCT reward_golden_spoons) = 1
@@ -273,7 +273,9 @@ SELECT t_assert('v3-T12: different answers, different scores, same reward (2 PCQ
 SELECT t_assert('v3-T12: no RPC computes Golden Spoons from a score (fn_reward_score_div10 gone; fn_questionnaire_reward reads agent_settings, never a score)',
   to_regprocedure('fn_reward_score_div10(numeric)') IS NULL
   AND pg_get_functiondef('fn_questionnaire_reward(questionnaire_definition, uuid)'::regprocedure) !~* 'score'
-  AND pg_get_functiondef('fn_questionnaire_reward(questionnaire_definition, uuid)'::regprocedure) ~ 'fn_agent_setting_num'
+  AND pg_get_functiondef('fn_questionnaire_reward(questionnaire_definition, uuid)'::regprocedure) ~ 'fn_questionnaire_reward_at'
+  AND pg_get_functiondef('fn_questionnaire_reward_at(text, uuid, timestamptz)'::regprocedure) ~ 'fn_agent_setting_num'
+  AND pg_get_functiondef('fn_questionnaire_reward_at(text, uuid, timestamptz)'::regprocedure) !~* 'score'
   AND NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                    WHERE n.nspname = 'public' AND p.prosrc ~* 'reward[a-z_]*\s*:?=\s*[a-z_.]*score'));
 SELECT t_as(t_u('d1'));
@@ -303,8 +305,10 @@ SELECT t_assert('v1.6.17: same-answers check — TPS-12 / IHS pay the same amoun
 SELECT t_assert('v3-T12: questionnaire_definition rewards are participation-only (no per-questionnaire amount)',
   NOT EXISTS (SELECT 1 FROM questionnaire_definition WHERE reward_type <> 'participation' OR reward_amount IS NOT NULL));
 
--- ============ 3b. v1.6.18 A-14 (Karin 31.10) · questionnaire Golden Spoons adjustable per company ============
--- A weekly (short) questionnaire so all three settings can be seen (vp_hr defines it; the amount comes from settings).
+-- ============ 3b. A-14 (Karin 31.10) · questionnaire Golden Spoons adjustable per company ============
+-- v1.7.0 (Karin 16.11): a change applies ONLY from the NEXT period (month; quarter for TPS-12 / IHS) — never mid-period,
+-- never retroactive; logged (who / when / from → to); one amount per company, no team / department amount.
+-- A weekly (short) questionnaire so all four settings can be seen (vp_hr defines it; the amount comes from settings).
 SELECT t_as(t_u('hrF'));
 SET ROLE authenticated;
 SELECT code FROM rpc_upsert_questionnaire_definition('WEEK-F', 'Weekly pulse F', 'דופק שבועי F', 'weekly', NULL, 3, 1, 5);
@@ -312,14 +316,15 @@ RESET ROLE;
 -- 4. Employees see the current value before filling out (computed field golden_spoons_reward on /questionnaire_definition).
 SELECT t_as(t_u('f1'));
 SET ROLE authenticated;
-SELECT t_assert('A-14 (4): an employee sees the current amount before filling out — defaults PCQ-12 10, Cantril 10, weekly 2, TPS-12 10, IHS 10',
+SELECT t_assert('A-14 (4): an employee sees the current amount before filling out — defaults PCQ-12 10, Cantril 2, weekly 2, TPS-12 10, IHS 10',
   (SELECT string_agg(q.code || '=' || trim_scale(golden_spoons_reward(q))::text, ',' ORDER BY q.code) FROM questionnaire_definition q
     WHERE q.code IN ('PCQ-12', 'Cantril', 'WEEK-F', 'TPS-12', 'IHS'))
-  = 'Cantril=10,IHS=10,PCQ-12=10,TPS-12=10,WEEK-F=2');
+  = 'Cantril=2,IHS=10,PCQ-12=10,TPS-12=10,WEEK-F=2');
 SELECT t_assert('A-14: f1 fills PCQ-12 before any change → 10 (snapshot: key golden_spoons_per_questionnaire, effective_from NULL = pack default)',
   (SELECT reward_golden_spoons = 10 AND reward_setting_key = 'golden_spoons_per_questionnaire' AND reward_effective_from IS NULL
      FROM rpc_submit_questionnaire('PCQ-12', '{2,2,2,2,2,2,2,2,2,2,2,2}')));
 SELECT t_assert('A-14: f1 fills the weekly questionnaire before any change → 2', (SELECT reward_golden_spoons = 2 FROM rpc_submit_questionnaire('WEEK-F', '{3,3,3}')));
+SELECT t_assert('v1.7.0 A-14: f1 fills TPS-12 this quarter before the change → 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('TPS-12', '{2,2,2,2,2,2,2,2,2,2,2,2}')));
 RESET ROLE;
 -- 3. Only vp_hr can change it.
 SELECT t_as(t_u('cfoF'));
@@ -328,6 +333,7 @@ SELECT t_assert('A-14 (3): cfo still reads the settings', (SELECT count(*) >= 29
 SELECT t_expect_http('A-14 (3): cfo → 403 on the monthly amount', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_questionnaire', 12)$$, 'insufficient_privilege', 403);
 SELECT t_expect_http('A-14 (3): cfo → 403 on the short amount', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_short_questionnaire', 3)$$, 'insufficient_privilege', 403);
 SELECT t_expect_http('A-14 (3): cfo → 403 on the quarterly amount', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_quarterly_questionnaire', 15)$$, 'insufficient_privilege', 403);
+SELECT t_expect_http('v1.7.0 A-14 (3): cfo → 403 on the Cantril amount', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_cantril', 3)$$, 'insufficient_privilege', 403);
 RESET ROLE;
 SELECT t_as(t_u('f1'));
 SET ROLE authenticated;
@@ -347,79 +353,103 @@ SELECT t_expect_http('A-14 (2): 0 → 422', $$SELECT * FROM rpc_put_agent_settin
 SELECT t_expect_http('A-14 (2): 0.9 → 422', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_quarterly_questionnaire', 0.9)$$, 'questionnaire_reward_out_of_range', 422);
 SELECT t_expect_http('A-14 (2): −5 → 422', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_quarterly_questionnaire', -5)$$, 'questionnaire_reward_out_of_range', 422);
 SELECT t_expect_http('A-14 (2): 20.5 → 422', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_questionnaire', 20.5)$$, 'questionnaire_reward_out_of_range', 422);
+SELECT t_expect_http('v1.7.0 A-14 (2): Cantril 21 → 422', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_cantril', 21)$$, 'questionnaire_reward_out_of_range', 422);
 SELECT t_expect_http('A-14: more than one decimal (2.55) → 400 invalid_setting_value', $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_short_questionnaire', 2.55)$$, 'invalid_setting_value', 400);
+-- v1.7.0: one amount per company — there is no per-team / per-department amount (no key, no parameter, no column)
+SELECT t_expect_http('v1.7.0 A-14: a per-team amount cannot be saved (team key → 400 unknown_setting)',
+  $$SELECT * FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_questionnaire:TEAMF1', 5)$$, 'unknown_setting', 400);
 RESET ROLE;
+SELECT t_assert('v1.7.0 A-14: a per-team amount cannot be saved — no team / department parameter on rpc_put_agent_setting and no such column in agent_settings / questionnaire_reward_history',
+  pg_get_function_identity_arguments('rpc_put_agent_setting(uuid, text, numeric, text)'::regprocedure) !~* '(team|department|group)'
+  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name IN ('agent_settings', 'questionnaire_reward_history')
+                     AND column_name ~* '(team|department|group|role)'));
 SELECT t_assert('A-14 (2): the refused values left no override and no history row',
   NOT EXISTS (SELECT 1 FROM agent_settings WHERE company_id = t_u('cF'))
   AND NOT EXISTS (SELECT 1 FROM questionnaire_reward_history WHERE company_id = t_u('cF')));
 SELECT t_as(t_u('hrF'));
 SET ROLE authenticated;
-SELECT t_assert('A-14 (2): the boundaries are accepted — 1 and 20', (SELECT value_numeric = 1 AND scope = 'company' FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_short_questionnaire', 1)));
-SELECT t_assert('A-14 (2): …20', (SELECT value_numeric = 20 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_quarterly_questionnaire', 20)));
-SELECT t_assert('A-14 (3): vp_hr sets monthly 12', (SELECT value_numeric = 12 AND scope = 'company' FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_questionnaire', 12)));
-SELECT t_assert('A-14 (3): vp_hr sets short 3', (SELECT value_numeric = 3 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_short_questionnaire', 3)));
-SELECT t_assert('A-14 (3): vp_hr sets quarterly 15', (SELECT value_numeric = 15 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_quarterly_questionnaire', 15)));
+SELECT t_assert('A-14 (2) / v1.7.0: the boundary 1 is accepted — the amount NOW stays 2 and the display shows the next-period amount',
+  (SELECT value_numeric = 2 AND scope = 'default' AND display_he LIKE '%מהתקופה הבאה: 1 %'
+     FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_short_questionnaire', 1)));
+SELECT t_assert('A-14 (2): …20 (quarterly: the amount now stays 10)', (SELECT value_numeric = 10 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_quarterly_questionnaire', 20)));
+SELECT t_assert('A-14 (3): vp_hr sets monthly 12 (now still 10)', (SELECT value_numeric = 10 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_questionnaire', 12)));
+SELECT t_assert('A-14 (3): vp_hr sets short 3', (SELECT value_numeric = 2 AND display_he LIKE '%מהתקופה הבאה: 3 %' FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_short_questionnaire', 3)));
+SELECT t_assert('A-14 (3): vp_hr sets quarterly 15', (SELECT value_numeric = 10 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_quarterly_questionnaire', 15)));
+SELECT t_assert('v1.7.0 A-14 (3): vp_hr sets Cantril 4 separately (now still 2)', (SELECT value_numeric = 2 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_cantril', 4)));
 RESET ROLE;
--- 3. WORM audit + history, effective from now, non-retroactive.
-SELECT t_assert('A-14 (3): every change is in the WORM history with value before / after and effective_from (5 rows: short 2→1→3, quarterly 10→20→15, monthly 10→12)',
-  (SELECT string_agg(setting_key || ':' || trim_scale(value_before)::text || '>' || trim_scale(value_after)::text, ',' ORDER BY effective_from)
+-- 3. WORM audit + history, effective from the NEXT period, non-retroactive.
+SELECT t_assert('A-14 (3): every change is in the WORM history with value before / after (6 rows: short 2→1→3, quarterly 10→20→15, monthly 10→12, Cantril 2→4)',
+  (SELECT string_agg(setting_key || ':' || trim_scale(value_before)::text || '>' || trim_scale(value_after)::text, ',' ORDER BY recorded_at)
      FROM questionnaire_reward_history WHERE company_id = t_u('cF'))
-  = 'golden_spoons_per_short_questionnaire:2>1,golden_spoons_per_quarterly_questionnaire:10>20,golden_spoons_per_questionnaire:10>12,golden_spoons_per_short_questionnaire:1>3,golden_spoons_per_quarterly_questionnaire:20>15');
-SELECT t_assert('A-14 (3): …and every change is in access_audit_log (WORM) by the vp_hr, with before / after / effective_from',
-  (SELECT count(*) = 5 AND bool_and(viewer_id = t_u('hrF') AND scope ? 'value_before' AND scope ? 'value_after' AND scope ? 'effective_from')
+  = 'golden_spoons_per_short_questionnaire:2>1,golden_spoons_per_quarterly_questionnaire:10>20,golden_spoons_per_questionnaire:10>12,golden_spoons_per_short_questionnaire:1>3,golden_spoons_per_quarterly_questionnaire:20>15,golden_spoons_per_cantril:2>4');
+SELECT t_assert('v1.7.0 A-14: effective_from = the start of the NEXT company-local month (monthly / short / Cantril) or quarter (TPS-12 / IHS) — never now',
+  (SELECT bool_and(effective_from = (date_trunc(CASE WHEN setting_key = 'golden_spoons_per_quarterly_questionnaire' THEN 'quarter' ELSE 'month' END,
+                                                clock_timestamp() AT TIME ZONE 'Asia/Jerusalem')
+                                     + CASE WHEN setting_key = 'golden_spoons_per_quarterly_questionnaire' THEN interval '3 months' ELSE interval '1 month' END)
+                                    AT TIME ZONE 'Asia/Jerusalem'
+                   AND effective_from > clock_timestamp() AND recorded_at <= clock_timestamp())
+     FROM questionnaire_reward_history WHERE company_id = t_u('cF')));
+SELECT t_assert('A-14 (3): …and every change is in access_audit_log (WORM) by the vp_hr (who), with created_at (when), before / after / effective_from',
+  (SELECT count(*) = 6 AND bool_and(viewer_id = t_u('hrF') AND created_at IS NOT NULL AND scope ? 'value_before' AND scope ? 'value_after' AND scope ? 'effective_from')
      FROM access_audit_log WHERE action = 'questionnaire_reward_setting_put' AND company_id = t_u('cF')));
+SELECT t_assert('v1.7.0 A-14: no immediate override row is written for a questionnaire amount',
+  NOT EXISTS (SELECT 1 FROM agent_settings WHERE company_id = t_u('cF') AND fn_is_questionnaire_reward_key(setting_key)));
 SELECT t_expect_err('A-14 (3): the history is WORM (UPDATE refused)', $$UPDATE questionnaire_reward_history SET value_after = 5$$, 'ledger_immutable');
 SELECT t_expect_err('A-14 (3): the history is WORM (DELETE refused)', $$DELETE FROM questionnaire_reward_history$$, 'ledger_immutable');
-SELECT t_assert('A-14 (3): nothing retroactive — f1''s PCQ-12 (10) and weekly (2) submissions and her wallet are unchanged',
+SELECT t_assert('A-14 (3): nothing retroactive — f1''s PCQ-12 (10), TPS-12 (10) and weekly (2) submissions and her wallet are unchanged',
   (SELECT string_agg(questionnaire_code || '=' || trim_scale(reward_golden_spoons)::text, ',' ORDER BY questionnaire_code)
-     FROM questionnaire_submission WHERE user_id = t_u('f1')) = 'PCQ-12=10,WEEK-F=2'
-  AND (SELECT golden_spoons = 12 FROM avatar_state WHERE user_id = t_u('f1')));
+     FROM questionnaire_submission WHERE user_id = t_u('f1')) = 'PCQ-12=10,TPS-12=10,WEEK-F=2'
+  AND (SELECT golden_spoons = 22 FROM avatar_state WHERE user_id = t_u('f1')));
 SELECT t_as(t_u('f2'));
 SET ROLE authenticated;
-SELECT t_assert('A-14 (4): f2 sees the new amounts before filling out — PCQ-12 12, Cantril 12, weekly 3, TPS-12 15, IHS 15',
+SELECT t_assert('v1.7.0 A-14 (4): mid-period f2 still sees the CURRENT amounts — PCQ-12 10, Cantril 2, weekly 2, TPS-12 10, IHS 10',
   (SELECT string_agg(q.code || '=' || trim_scale(golden_spoons_reward(q))::text, ',' ORDER BY q.code) FROM questionnaire_definition q
     WHERE q.code IN ('PCQ-12', 'Cantril', 'WEEK-F', 'TPS-12', 'IHS'))
-  = 'Cantril=12,IHS=15,PCQ-12=12,TPS-12=15,WEEK-F=3');
-SELECT t_assert('A-14: from now on — f2 (other team, other org role) PCQ-12 → 12',
-  (SELECT reward_golden_spoons = 12 AND reward_setting_key = 'golden_spoons_per_questionnaire'
-     FROM rpc_submit_questionnaire('PCQ-12', '{6,6,6,6,6,6,6,6,6,6,6,6}')));
-SELECT t_assert('A-14: f2 Cantril → 12', (SELECT reward_golden_spoons = 12 FROM rpc_submit_questionnaire('Cantril', '{9}')));
-SELECT t_assert('A-14: f2 weekly → 3', (SELECT reward_golden_spoons = 3 FROM rpc_submit_questionnaire('WEEK-F', '{5,5,5}')));
-SELECT t_assert('A-14: f2 TPS-12 → 15', (SELECT reward_golden_spoons = 15 FROM rpc_submit_questionnaire('TPS-12', '{5,5,5,5,5,5,5,5,5,5,5,5}')));
-SELECT t_assert('A-14: f2 IHS → 15', (SELECT reward_golden_spoons = 15 FROM rpc_submit_questionnaire('IHS', '{5,5,5,5,5,5,5,5,5}')));
+  = 'Cantril=2,IHS=10,PCQ-12=10,TPS-12=10,WEEK-F=2');
+SELECT t_assert('v1.7.0 A-14: a change does not apply mid-period — f2 (other team, other org role) PCQ-12 → still 10',
+  (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('PCQ-12', '{6,6,6,6,6,6,6,6,6,6,6,6}')));
+SELECT t_assert('v1.7.0 A-14: f2 Cantril → still 2', (SELECT reward_golden_spoons = 2 FROM rpc_submit_questionnaire('Cantril', '{9}')));
+SELECT t_assert('v1.7.0 A-14: f2 weekly → still 2', (SELECT reward_golden_spoons = 2 FROM rpc_submit_questionnaire('WEEK-F', '{5,5,5}')));
+SELECT t_assert('v1.7.0 A-14: a mid-quarter change does not affect this quarter — f2 TPS-12 → still 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('TPS-12', '{5,5,5,5,5,5,5,5,5,5,5,5}')));
+SELECT t_assert('v1.7.0 A-14: f2 IHS → still 10', (SELECT reward_golden_spoons = 10 FROM rpc_submit_questionnaire('IHS', '{5,5,5,5,5,5,5,5,5}')));
 RESET ROLE;
-SELECT t_as(t_u('f1'));
+SELECT t_assert('v1.7.0 A-14: the mid-quarter change did not touch the questionnaire f1 already filled this quarter (TPS-12 still 10)',
+  (SELECT reward_golden_spoons = 10 FROM questionnaire_submission WHERE user_id = t_u('f1') AND questionnaire_code = 'TPS-12'));
+SELECT t_assert('v1.7.0 A-14: from the next period the new amounts apply (monthly 12, short 3, quarterly 15, Cantril 4); one second before, the old ones',
+  (SELECT bool_and(fn_questionnaire_reward_at(k, t_u('cF'), fn_next_reward_period_start(k, t_u('cF'), clock_timestamp())) = v
+                   AND fn_questionnaire_reward_at(k, t_u('cF'), fn_next_reward_period_start(k, t_u('cF'), clock_timestamp()) - interval '1 second') = o)
+     FROM (VALUES ('golden_spoons_per_questionnaire', 12, 10), ('golden_spoons_per_short_questionnaire', 3, 2),
+                  ('golden_spoons_per_quarterly_questionnaire', 15, 10), ('golden_spoons_per_cantril', 4, 2)) x(k, v, o)));
+-- A change made in an EARLIER period (its next period has started): simulated by a history row whose effective_from has
+-- passed (WORM insert, as the system) in a separate company G — submissions now pay it and snapshot it.
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
+VALUES (t_u('cG'), 'Agents G', 'IL', 0, 4, 'Asia/Jerusalem');
+SELECT t_mk(t_u('cG'), 'g1', 'TEAMG') IS NOT NULL AS g1_ok;
+INSERT INTO questionnaire_reward_history (company_id, setting_key, value_before, value_after, scope_after, effective_from)
+VALUES (t_u('cG'), 'golden_spoons_per_cantril', 2, 5, 'company', date_trunc('month', clock_timestamp()) - interval '1 month');
+SELECT t_as(t_u('g1'));
 SET ROLE authenticated;
-SELECT t_assert('A-14 (1): f1 (other team, other role, lowest answers) gets the very same amounts — Cantril 12',
-  (SELECT reward_golden_spoons = 12 FROM rpc_submit_questionnaire('Cantril', '{0}')));
-SELECT t_assert('A-14 (1): f1 TPS-12 → 15', (SELECT reward_golden_spoons = 15 FROM rpc_submit_questionnaire('TPS-12', '{1,1,1,1,1,1,1,1,1,1,1,1}')));
-SELECT t_assert('A-14 (1): f1 IHS → 15', (SELECT reward_golden_spoons = 15 FROM rpc_submit_questionnaire('IHS', '{1,1,1,1,1,1,1,1,1}')));
+SELECT reward_golden_spoons = 5 AS g1_cantril_submitted FROM rpc_submit_questionnaire('Cantril', '{4}');
 RESET ROLE;
-SELECT t_assert('A-14 (3): provable — f2''s PCQ-12 snapshot effective_from = the monthly change in the history, and it is later than f1''s 10-spoon submission',
-  (SELECT s.reward_effective_from = (SELECT max(h.effective_from) FROM questionnaire_reward_history h
-                                      WHERE h.company_id = t_u('cF') AND h.setting_key = 'golden_spoons_per_questionnaire')
-          AND s.reward_effective_from > (SELECT o.submitted_at FROM questionnaire_submission o WHERE o.user_id = t_u('f1') AND o.questionnaire_code = 'PCQ-12')
-          AND s.submitted_at >= s.reward_effective_from
-     FROM questionnaire_submission s WHERE s.user_id = t_u('f2') AND s.questionnaire_code = 'PCQ-12'));
-SELECT t_assert('A-14 (1): one value per company — after the change every F submission of a setting pays the same amount whatever the answers, team or org role',
-  (SELECT bool_and(n = 1) FROM (SELECT count(DISTINCT s.reward_golden_spoons) n FROM questionnaire_submission s JOIN users u USING (user_id)
-                                 WHERE u.company_id = t_u('cF') AND s.reward_effective_from IS NOT NULL
-                                 GROUP BY s.reward_setting_key) x)
-  AND (SELECT count(DISTINCT u.department) = 2 AND count(DISTINCT u.org_role_code) = 2 FROM questionnaire_submission s JOIN users u USING (user_id)
-        WHERE u.company_id = t_u('cF') AND s.reward_effective_from IS NOT NULL));
+SELECT t_assert('v1.7.0 A-14: once its period has started a change applies — g1 Cantril → 5, snapshot effective_from = the history row',
+  (SELECT reward_golden_spoons = 5 AND reward_setting_key = 'golden_spoons_per_cantril'
+          AND reward_effective_from = (SELECT effective_from FROM questionnaire_reward_history WHERE company_id = t_u('cG'))
+     FROM questionnaire_submission WHERE user_id = t_u('g1') AND questionnaire_code = 'Cantril'));
 SELECT t_assert('A-14 (1): the amount depends only on the definition and the company — fn_questionnaire_reward(definition, company) and the settings key is (company, setting) only',
   pg_get_function_identity_arguments('fn_questionnaire_reward(questionnaire_definition, uuid)'::regprocedure) = 'p_def questionnaire_definition, p_company uuid'
   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'agent_settings' AND column_name ~* '(team|department|role|user|answer)'));
-SELECT t_assert('A-14: other companies keep the defaults (company D PCQ-12 = 10)', fn_questionnaire_reward((SELECT q FROM questionnaire_definition q WHERE code = 'PCQ-12'), t_u('cD')) = 10);
+SELECT t_assert('A-14: other companies keep the defaults (company D PCQ-12 = 10, Cantril = 2)',
+  fn_questionnaire_reward((SELECT q FROM questionnaire_definition q WHERE code = 'PCQ-12'), t_u('cD')) = 10
+  AND fn_questionnaire_reward((SELECT q FROM questionnaire_definition q WHERE code = 'Cantril'), t_u('cD')) = 2);
 SELECT t_as(t_u('hrF'));
 SET ROLE authenticated;
-SELECT t_assert('A-14 (3): vp_hr resets the monthly amount to the default (10) — logged as scope default',
-  (SELECT value_numeric = 10 AND scope = 'default' FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_questionnaire')));
+SELECT t_assert('A-14 (3): vp_hr resets the monthly amount to the default (10) — scheduled for the next period, logged as scope default',
+  (SELECT value_numeric = 10 FROM rpc_put_agent_setting(t_u('cF'), 'golden_spoons_per_questionnaire')));
 RESET ROLE;
-SELECT t_assert('A-14 (3): …the reset is a history row (12 → 10, default) and earlier submissions still hold 12',
+SELECT t_assert('A-14 (3): …the reset is a history row (12 → 10, default) and earlier submissions keep their amount',
   (SELECT value_before = 12 AND value_after = 10 AND scope_after = 'default' FROM questionnaire_reward_history
-    WHERE company_id = t_u('cF') ORDER BY effective_from DESC LIMIT 1)
-  AND (SELECT reward_golden_spoons = 12 FROM questionnaire_submission WHERE user_id = t_u('f2') AND questionnaire_code = 'PCQ-12'));
+    WHERE company_id = t_u('cF') ORDER BY recorded_at DESC LIMIT 1)
+  AND (SELECT reward_golden_spoons = 10 FROM questionnaire_submission WHERE user_id = t_u('f2') AND questionnaire_code = 'PCQ-12'));
 SELECT t_assert('A-14 privacy: questionnaire_reward_history has no person column and is closed (RLS forced, no client grant)',
   NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'questionnaire_reward_history' AND column_name ~* '(person|user|employee|pseudonym|changed_by)')
   AND NOT has_table_privilege('authenticated', 'questionnaire_reward_history', 'SELECT')
@@ -434,7 +464,7 @@ SELECT t_as(t_u('cfoB'));
 SET ROLE authenticated;
 INSERT INTO t_outputs SELECT 'liability_not_defined', rpc_get_open_golden_spoons_liability(t_u('cB'));
 SELECT t_assert('v3-T6 + v1.6.19 A-3: cfo sees open Golden Spoons; fewer than 10 purchases → no ILS estimate, "אין עדיין מספיק מימושים לאומדן"',
-  (SELECT (j->>'open_golden_spoons')::numeric = 40 + 50 + 40 + 30 + 30 AND j->'ils_estimate' = 'null'::jsonb
+  (SELECT (j->>'open_golden_spoons')::numeric = 32 + 42 + 40 + 30 + 30 AND j->'ils_estimate' = 'null'::jsonb   -- v1.7.0: Cantril 2 (was 10)
           AND j->>'ils_status' = 'insufficient' AND j->>'display_he' = 'אין עדיין מספיק מימושים לאומדן'
           AND j->>'liability_method' = 'avg_redeemed'
      FROM (SELECT rpc_get_open_golden_spoons_liability(t_u('cB')) j) x));
@@ -465,17 +495,24 @@ SELECT t_assert('v3-T7: day 30 (2026-10-01 23:30 local) still inside the window;
   fn_in_exit_redemption_window(t_u('leaverB'), '2026-10-01 23:30+03')
   AND rpc_expire_departed_golden_spoons('2026-10-01 23:30+03') = 0);
 SELECT t_assert('v3-T7: …balance kept on day 30 (40)', (SELECT golden_spoons = 40 FROM avatar_state WHERE user_id = t_u('leaverB')));
-SELECT t_assert('v3-T7: day 31 (2026-10-02 00:30 local) → 1 balance reset', rpc_expire_departed_golden_spoons('2026-10-02 00:30+03') = 1);
-SELECT t_assert('v3-T7: balance 0 and a WORM ledger row expired_after_exit (40, deadline 2026-10-01)',
+-- v1.7.0 (Karin 16.11, J-196): on day 31 the balance is DONATED (not reset) — without a nonprofit nothing happens
+SELECT t_assert('v1.7.0 J-196: day 31 with no nonprofit chosen and no company default → nothing donated, balance kept (40)',
+  rpc_expire_departed_golden_spoons('2026-10-02 00:30+03') = 0
+  AND (SELECT golden_spoons = 40 FROM avatar_state WHERE user_id = t_u('leaverB')));
+INSERT INTO nonprofit (company_id, name_he, is_company_default) VALUES (t_u('cB'), 'עמותת ברירת מחדל B', true);
+SELECT t_assert('v3-T7 / v1.7.0 J-196: day 31 (2026-10-02 00:30 local) → 1 balance donated to the company default nonprofit', rpc_expire_departed_golden_spoons('2026-10-02 00:30+03') = 1);
+SELECT t_assert('v1.7.0 J-196: balance 0 and a WORM ledger row donated_after_exit (40, deadline 2026-10-01) + the monthly aggregate (no person)',
   (SELECT golden_spoons = 0 FROM avatar_state WHERE user_id = t_u('leaverB'))
   AND (SELECT count(*) = 1 AND sum(amount) = 40 AND min(exit_deadline) = DATE '2026-10-01'
-         FROM golden_spoons_ledger WHERE user_id = t_u('leaverB') AND event_type = 'expired_after_exit'));
+         FROM golden_spoons_ledger WHERE user_id = t_u('leaverB') AND event_type = 'donated_after_exit')
+  AND NOT EXISTS (SELECT 1 FROM golden_spoons_ledger WHERE user_id = t_u('leaverB') AND event_type = 'expired_after_exit')
+  AND (SELECT golden_spoons = 40 AND month = DATE '2026-10-01' FROM nonprofit_donation_month WHERE company_id = t_u('cB')));
 SELECT t_assert('v3-T7: re-run expires nothing (idempotent)', rpc_expire_departed_golden_spoons('2026-10-03 09:00+03') = 0);
 SELECT t_expect_err('v3-T7: golden_spoons_ledger is WORM', $$UPDATE golden_spoons_ledger SET amount = 1$$, 'ledger_immutable');
 SELECT t_as(t_u('cfoB'));
 SET ROLE authenticated;
-SELECT t_assert('v3-T7: the expired balance left the open liability (190 − 40 = 150)',
-  (SELECT (rpc_get_open_golden_spoons_liability(t_u('cB'))->>'open_golden_spoons')::numeric = 150));
+SELECT t_assert('v3-T7: the donated balance left the open liability (174 − 40 = 134)',
+  (SELECT (rpc_get_open_golden_spoons_liability(t_u('cB'))->>'open_golden_spoons')::numeric = 134));
 SELECT t_expect_err('v3-T7: the expiry job is service-only (no EXECUTE for clients → 42501)', $$SELECT rpc_expire_departed_golden_spoons()$$, '42501');
 RESET ROLE;
 -- 30-day window for purchases (decision 4): depB left 5 days ago, depOld 40 days ago.

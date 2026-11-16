@@ -60,7 +60,7 @@ if [ "$MODE" = nosuper ]; then
 fi
 
 recreate "$FRESH"
-psql -X -U "$APP" -d "$FRESH" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql > /dev/null
+psql -X -U "$APP" -d "$FRESH" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql -f modules/all.sql > /dev/null
 psql -X -U "$ADMIN" -d "$FRESH" -qAt -f tests/catalog_snapshot.sql > "$W/fresh.cat"
 recreate "$DB"
 psql -X -U "$APP" -d "$DB" -v ON_ERROR_STOP=1 -q -f tests/fixtures/v1_4_schema.sql -f tests/fixtures/v1_4_rpc.sql -f tests/fixtures/v1_4_data.sql > /dev/null

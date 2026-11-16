@@ -262,9 +262,10 @@ SELECT t_expect_err('direct insert team_aggregate with 4 contributors → 403 (t
 SELECT t_expect_err('direct insert shadow_balance with 9 contributors → 403 (trigger)',
   $$INSERT INTO shadow_balance_aggregate (org_id, department, contributor_count) VALUES ('00000000-0000-0000-0000-0000000000c1', 'X', 9)$$, 'aggregation_privacy_threshold');
 SELECT t_expect_err('threshold config locked (regular cannot become 10)', $$UPDATE privacy_threshold_config SET min_n = 10 WHERE scope = 'regular'$$, '23514');
-SELECT t_assert('thresholds: regular 5, project 5, cuckoo/shadow/emergency 10, board 20',
+SELECT t_assert('thresholds: regular 5, project 5, cuckoo/shadow/emergency 10, board 20, research 20 (v1.7.0, Karin 16.11)',
   (SELECT string_agg(scope || '=' || min_n, ',' ORDER BY scope) FROM privacy_threshold_config)
-  = 'board=20,cuckoo=10,emergency=10,project=5,regular=5,shadow_balance=10');
+  = 'board=20,cuckoo=10,emergency=10,project=5,regular=5,research=20,shadow_balance=10');
+SELECT t_expect_err('v1.7.0: research threshold locked at 20', $$UPDATE privacy_threshold_config SET min_n = 10 WHERE scope = 'research'$$, '23514');
 SELECT t_expect_err('board threshold locked at 20', $$UPDATE privacy_threshold_config SET min_n = 10 WHERE scope = 'board'$$, '23514');
 
 -- ============ 4. Cuckoo ============
@@ -352,9 +353,9 @@ SELECT t_as(t_emp('D9', 1));
 SET ROLE authenticated;
 SELECT t_assert('rpc_log_go_home idempotent at 3', (SELECT entry_text = 'יציאה מוקדמת מאושרת' FROM rpc_log_go_home()));
 -- CB does not lock questionnaires: submit Cantril at 3 spoons
-SELECT t_assert('questionnaire allowed at 3 spoons (CB does not lock) — Cantril participation 10.0 (v1.6.17: Cantril is monthly)',
-  (SELECT reward_golden_spoons = 10.0 AND reward_status = 'set' FROM rpc_submit_questionnaire('Cantril', '{7}')));
-SELECT t_assert('golden spoons balance = 10.0 (one decimal kept; v1.6.17 Cantril monthly)', (SELECT golden_spoons = 10.0 FROM avatar_state));
+SELECT t_assert('questionnaire allowed at 3 spoons (CB does not lock) — Cantril participation 2.0 (v1.7.0, Karin 16.11: Cantril monthly, own key = 2)',
+  (SELECT reward_golden_spoons = 2.0 AND reward_status = 'set' FROM rpc_submit_questionnaire('Cantril', '{7}')));
+SELECT t_assert('golden spoons balance = 2.0 (one decimal kept; v1.7.0 Cantril 2)', (SELECT golden_spoons = 2.0 FROM avatar_state));
 RESET ROLE;
 SELECT t_as(t_emp('D9', 2));
 SET ROLE authenticated;
@@ -374,10 +375,10 @@ SELECT t_assert('TPS reversed items 1,3,5,11 (1s there, 5s elsewhere) → 100',
 SELECT t_assert('TPS all 5 → (44−12)/48×100 = 66.67', fn_tps12_score('{5,5,5,5,5,5,5,5,5,5,5,5}', '{1,3,5,11}') = 66.67);
 SELECT t_assert('TPS 11 answers → NULL', fn_tps12_score('{5,5,5,5,5,5,5,5,5,5,5}', '{1,3,5,11}') IS NULL);
 SELECT t_assert('TPS bands', fn_tps_band(51.9) = 'low' AND fn_tps_band(52) = 'medium' AND fn_tps_band(60) = 'medium' AND fn_tps_band(60.1) = 'good');
-SELECT t_assert('v1.6.17: seeds PCQ-12/Cantril/IHS/TPS-12 — participation rewards keyed to agent_settings (Cantril monthly)',
+SELECT t_assert('v1.7.0: seeds PCQ-12/Cantril/IHS/TPS-12 — participation rewards keyed to agent_settings (Cantril monthly, own key golden_spoons_per_cantril)',
   (SELECT string_agg(code || ':' || frequency || ':' || reward_type || ':' || reward_setting_key || ':' || COALESCE(reward_amount::text, '-'), ',' ORDER BY code)
      FROM questionnaire_definition)
-  = 'Cantril:monthly:participation:golden_spoons_per_questionnaire:-,IHS:quarterly:participation:golden_spoons_per_quarterly_questionnaire:-,'
+  = 'Cantril:monthly:participation:golden_spoons_per_cantril:-,IHS:quarterly:participation:golden_spoons_per_quarterly_questionnaire:-,'
     'PCQ-12:monthly:participation:golden_spoons_per_questionnaire:-,TPS-12:quarterly:participation:golden_spoons_per_quarterly_questionnaire:-');
 SELECT t_expect_err('locked catalogue cannot drift (PCQ 12)', $$UPDATE questionnaire_definition SET reward_amount = 12 WHERE code = 'PCQ-12'$$, '23514');
 
@@ -597,7 +598,7 @@ SELECT t_assert('new hire: no team_joined_at default (O-49) — the wait starts 
 SELECT t_as('00000000-0000-0000-0000-0000000d0029');
 SET ROLE authenticated;
 SELECT t_expect_err('new hire at 29 days → TPS not eligible', $$SELECT rpc_submit_questionnaire('TPS-12', '{3,3,3,3,3,3,3,3,3,3,3,3}')$$, 'questionnaire_not_eligible');
-SELECT t_assert('new hire at 29 days may still answer Cantril (v1.6.17: monthly 10.0)', (SELECT reward_golden_spoons = 10.0 FROM rpc_submit_questionnaire('Cantril', '{5}')));
+SELECT t_assert('new hire at 29 days may still answer Cantril (v1.7.0: monthly 2.0)', (SELECT reward_golden_spoons = 2.0 FROM rpc_submit_questionnaire('Cantril', '{5}')));
 RESET ROLE;
 SELECT t_as('00000000-0000-0000-0000-0000000d0030');
 SET ROLE authenticated;
@@ -3520,21 +3521,27 @@ RESET ROLE;
 
 SELECT t_as('00000000-0000-0000-0000-00000000bbbb');   -- CHRO (vp_hr)
 SET ROLE authenticated;
+-- v1.7.0 (Karin 16.11, J-211): vp_hr adds ONLY an internal benefit of her own organization (provider = the organization)
 SELECT item_id IS NOT NULL AS item_time_ok
-  FROM rpc_everstore_upsert_item('voucher_refresh_day', 'Refresh Day Voucher', 'שובר יום התרעננות', 'time_benefit', 35.0, 'premium', false, 'Internal HR');
-SELECT item_id IS NOT NULL AS item_health_ok
-  FROM rpc_everstore_upsert_item('spa_massage', 'Somatic Massage Session', 'טיפול עיסוי סומטי', 'health_wellbeing', 45.0, 'premium', false, 'WellSpa Ltd');
-SELECT item_id IS NOT NULL AS item_learn_ok
-  FROM rpc_everstore_upsert_item('course_book', 'Learning Book Grant', 'מענק ספר למידה', 'learning', 15.5, 'custom', false, 'AcadPress');
-SELECT item_id IS NOT NULL AS item_don_ok
-  FROM rpc_everstore_upsert_item('charity_trees', 'Plant 5 Trees Donation', 'תרומת נטיעת 5 עצים', 'donation', 5.0, 'basic', false, 'GreenEarth');
-SELECT item_id IS NOT NULL AS item_exp_ok
-  FROM rpc_everstore_upsert_item('concert_pass', 'Cultural Experience Pass', 'שובר חוויה תרבותית', 'experience', 60.0, 'premium', false, 'CultureHub');
-SELECT item_id IS NOT NULL AS item_gc_ok
-  FROM rpc_everstore_upsert_item('coffee_card', 'Coffee & Pastry Card', 'כרטיס קפה ומאפה', 'gift_card', 7.5, 'custom', false, 'CafeNet');
-SELECT item_id IS NOT NULL AS item_merch_ok
-  FROM rpc_everstore_upsert_item('hoodie_chr', 'CHR Cozy Hoodie', 'קפוצ׳ון CHR', 'merchandise', 25.0, 'advanced', false, 'CHR Studio');
+  FROM rpc_everstore_upsert_item('voucher_refresh_day', 'Refresh Day Voucher', 'שובר יום התרעננות', 'time_benefit', 35.0, 'premium', false, NULL);
+SELECT t_expect_err('v1.7.0 J-211: vp_hr cannot add an item with an external supplier (WellSpa Ltd) → 403 supplier_item_config_only',
+  $$SELECT rpc_everstore_upsert_item('spa_massage', 'Somatic Massage Session', 'טיפול עיסוי סומטי', 'health_wellbeing', 45.0, 'premium', false, 'WellSpa Ltd')$$,
+  'supplier_item_config_only');
 RESET ROLE;
+SELECT t_assert('v1.7.0 J-211: the internal item is stored as provider_kind organization with her company and the organization as provider',
+  (SELECT provider_kind = 'organization' AND company_id = (SELECT company_id FROM users WHERE user_id = '00000000-0000-0000-0000-00000000bbbb')
+          AND provider = (SELECT company_name FROM companies c JOIN users u ON u.company_id = c.company_id
+                           WHERE u.user_id = '00000000-0000-0000-0000-00000000bbbb')
+     FROM shop_item_catalog WHERE item_id = 'voucher_refresh_day'));
+-- v1.7.0 (J-211): external offers enter only through db/config → fn_sync_supplier_offers (system call)
+SELECT fn_sync_supplier_offers($j${"suppliers": [
+  {"supplier_key": "wellspa", "name": "WellSpa Ltd", "offers": [{"item_id": "spa_massage", "display_name": "Somatic Massage Session", "name_he": "טיפול עיסוי סומטי", "category": "health_wellbeing", "price_golden_spoons": 45.0, "tier": "premium"}]},
+  {"supplier_key": "acadpress", "name": "AcadPress", "offers": [{"item_id": "course_book", "display_name": "Learning Book Grant", "name_he": "מענק ספר למידה", "category": "learning", "price_golden_spoons": 15.5, "tier": "custom"}]},
+  {"supplier_key": "greenearth", "name": "GreenEarth", "offers": [{"item_id": "charity_trees", "display_name": "Plant 5 Trees Donation", "name_he": "תרומת נטיעת 5 עצים", "category": "donation", "price_golden_spoons": 5.0, "tier": "basic"}]},
+  {"supplier_key": "culturehub", "name": "CultureHub", "offers": [{"item_id": "concert_pass", "display_name": "Cultural Experience Pass", "name_he": "שובר חוויה תרבותית", "category": "experience", "price_golden_spoons": 60.0, "tier": "premium"}]},
+  {"supplier_key": "cafenet", "name": "CafeNet", "offers": [{"item_id": "coffee_card", "display_name": "Coffee & Pastry Card", "name_he": "כרטיס קפה ומאפה", "category": "gift_card", "price_golden_spoons": 7.5, "tier": "custom"}]},
+  {"supplier_key": "chrstudio", "name": "CHR Studio", "offers": [{"item_id": "hoodie_chr", "display_name": "CHR Cozy Hoodie", "name_he": "קפוצ׳ון CHR", "category": "merchandise", "price_golden_spoons": 25.0, "tier": "advanced"}]}
+]}$j$::jsonb) = 6 AS supplier_offers_synced;
 
 SELECT t_assert('v1.6.13: all 8 categories exist in shop_item_catalog with tangible items (cosmetic_only = false), providers, and arbitrary positive prices (5.0..60.0)',
   (SELECT count(DISTINCT category) = 8 FROM shop_item_catalog WHERE is_active)
