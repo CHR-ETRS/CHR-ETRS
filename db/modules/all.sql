@@ -5,6 +5,7 @@
 \ir 30_j_research.sql
 \ir 40_j_auditor.sql
 \ir 50_j_kiosk_badge.sql
+\ir 55_j_kiosk_session.sql
 \ir 60_j_everstore_suppliers.sql
 \ir 70_j_leaver_nonprofit.sql
 \ir 90_j_whats_changed.sql

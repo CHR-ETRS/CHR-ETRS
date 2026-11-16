@@ -123,7 +123,8 @@ CREATE TABLE IF NOT EXISTS j_outbox (
     outbox_id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     company_id        uuid REFERENCES companies(company_id) ON DELETE SET NULL,
     kind              text NOT NULL CHECK (kind IN ('method_comment', 'leaver_donation_reminder',
-                                                    'supplier_order', 'supplier_monthly_report')),
+                                                    'supplier_order', 'supplier_monthly_report',
+                                                    'default_nonprofit_reminder')),
     recipient_address text NOT NULL,              -- from db/config or the employee's own address; never invented
     subject_he        text NOT NULL,
     payload           jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -131,6 +132,17 @@ CREATE TABLE IF NOT EXISTS j_outbox (
     created_at        timestamptz NOT NULL DEFAULT clock_timestamp(),
     sent_at           timestamptz
 );
+-- v1.7.0 fixes (Karin 16.11, J-241): the vp_hr "set a default nonprofit" reminder kind (re-apply safe).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'j_outbox_kind_check'
+                AND pg_get_constraintdef(oid) NOT LIKE '%default_nonprofit_reminder%') THEN
+    ALTER TABLE j_outbox DROP CONSTRAINT j_outbox_kind_check;
+    ALTER TABLE j_outbox ADD CONSTRAINT j_outbox_kind_check
+      CHECK (kind IN ('method_comment', 'leaver_donation_reminder', 'supplier_order', 'supplier_monthly_report',
+                      'default_nonprofit_reminder'));
+  END IF;
+END $$;
 ALTER TABLE j_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE j_outbox FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE j_outbox FROM PUBLIC, anon, authenticated;

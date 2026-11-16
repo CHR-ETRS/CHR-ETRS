@@ -6,7 +6,7 @@
 # tests/test_sensitive_authz.sql (J-147 – J-150: rpc_daily_reset_spoons / rpc_upsert_employee_value_asset / rpc_ledger_append),
 # v1.7.0 (Karin 16.11, J-178 – J-219): tests/test_j_spoons.sql, test_j_research.sql, test_j_roles.sql, test_j_kiosk.sql,
 # test_j_everstore.sql, test_j_leaver.sql, test_j_whats_changed.sql (each on a fresh DB, shared tests/j_helpers.sql) and the
-# whole-repo terminology gate tests/test_j_terms.sh, the v1.6.21 → v1.7.0 upgrade check tests/test_upgrade_v1_7_0.sh, and the v1.4 → v1.7.0 migration tests (tests/test_migration.sh)
+# whole-repo terminology gate tests/test_j_terms.sh, the go-live preflight check tests/test_preflight.sh (J-243), the v1.6.21 → v1.7.0 upgrade check tests/test_upgrade_v1_7_0.sh, and the v1.4 → v1.7.0 migration tests (tests/test_migration.sh)
 # twice: as superuser (event-trigger guard + timezone preflight) and as a non-superuser owner (O-53 fallback). Real clock (no
 # libfaketime). Usage: PGHOST=/tmp PGPORT=54317 PGUSER=postgres ./tests/run_tests.sh
 set -euo pipefail
@@ -57,6 +57,8 @@ SYNC_OUT=$(python3 tools/sync_config.py --db "${DB}_j_spoons")
 if [ "$(echo "$SYNC_OUT" | cut -d'|' -f2 | sort -u)" = "0" ]; then echo "PASS tools/sync_config.py loads the empty config (4 × 0 rows)"; else echo "FAIL sync_config: $SYNC_OUT"; exit 1; fi
 # v1.7.0 terminology gate over the whole repository
 ./tests/test_j_terms.sh
+# v1.7.0 fixes (J-243): the go-live preflight must FAIL on the empty repository config (and pass on a filled copy)
+./tests/test_preflight.sh
 # v1.4 → v1.7.0 migration: dry run, apply, counts, catalog = fresh, idempotence, rollback — in both modes
 MIG_MODE=super ./tests/test_migration.sh
 MIG_MODE=nosuper ./tests/test_migration.sh

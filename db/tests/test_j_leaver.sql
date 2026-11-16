@@ -60,15 +60,28 @@ SELECT t_assert('J-196: the subject uses the golden-spoons wording', (SELECT boo
 
 -- ---------- J-196 day 31 ----------
 CREATE TEMP TABLE t_don AS SELECT rpc_expire_departed_golden_spoons(clock_timestamp()) AS n;
-SELECT t_assert('J-196: day 31 — nochoice (40 days, default nonprofit) is donated; lb (company without any nonprofit) is NOT; chooser is still in her window',
-  (SELECT n = 1 FROM t_don)
+SELECT t_assert('J-196 / J-241: day 31 — nochoice (40 days, default nonprofit) is donated; lb (no choice, company B without a default) is zeroed; chooser is still in her window',
+  (SELECT n = 2 FROM t_don)
   AND (SELECT golden_spoons = 0 FROM avatar_state WHERE user_id = t_u('nochoice'))
-  AND (SELECT golden_spoons = 15 FROM avatar_state WHERE user_id = t_u('lb'))
+  AND (SELECT golden_spoons = 0 FROM avatar_state WHERE user_id = t_u('lb'))
   AND (SELECT golden_spoons = 12.5 FROM avatar_state WHERE user_id = t_u('chooser')));
 SELECT t_assert('J-196: the donation is recorded (WORM ledger donated_after_exit) and in the month''s aggregate per nonprofit — never a reset row',
-  (SELECT count(*) = 1 AND sum(amount) = 20 FROM golden_spoons_ledger WHERE event_type = 'donated_after_exit')
+  (SELECT count(*) = 1 AND sum(amount) = 20 FROM golden_spoons_ledger WHERE event_type = 'donated_after_exit' AND note_he IS NULL)
   AND NOT EXISTS (SELECT 1 FROM golden_spoons_ledger WHERE event_type = 'expired_after_exit')
   AND (SELECT golden_spoons = 20 FROM nonprofit_donation_month m JOIN nonprofit n USING (nonprofit_id) WHERE n.name_he = 'עמותת ברירת המחדל'));
+SELECT t_assert('J-241: the zeroing is recorded — ledger zeroed_no_nonprofit (15, "לא נתרם — אין עמותה"), nothing in B''s donation aggregate',
+  (SELECT count(*) = 1 AND sum(amount) = 15 AND min(note_he) = 'לא נתרם — אין עמותה'
+     FROM golden_spoons_ledger WHERE user_id = t_u('lb') AND event_type = 'zeroed_no_nonprofit')
+  AND NOT EXISTS (SELECT 1 FROM nonprofit_donation_month WHERE company_id = t_u('B')));
+SELECT t_assert('J-241: vp_hr of company B gets ONE "set a default nonprofit" reminder (outbox) — no leaver, no amount, no id in it',
+  (SELECT count(*) = 1 AND min(recipient_address) = 'hrB@j.test' AND min(subject_he) = 'יש להגדיר עמותת ברירת מחדל'
+     FROM j_outbox WHERE kind = 'default_nonprofit_reminder')
+  AND (SELECT (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(payload) k) = ARRAY['action_he', 'reason_he', 'settings_link']
+              AND payload->>'reason_he' = 'לא נתרם — אין עמותה' AND payload->>'settings_link' = 'לא הוגדר'
+              AND t_free_of(payload, t_all_user_ids())
+         FROM j_outbox WHERE kind = 'default_nonprofit_reminder')
+  AND NOT EXISTS (SELECT 1 FROM j_outbox WHERE kind = 'default_nonprofit_reminder' AND company_id = t_u('A')));
+SELECT t_err('J-241: the zeroing record is WORM', $$UPDATE golden_spoons_ledger SET note_he = NULL WHERE event_type = 'zeroed_no_nonprofit'$$, 'ledger_immutable');
 -- the chooser's day 31 (job run with p_now 26 days ahead)
 CREATE TEMP TABLE t_don2 AS SELECT rpc_expire_departed_golden_spoons(clock_timestamp() + interval '27 days') AS n;
 SELECT t_assert('J-196: the chooser''s balance goes to HER nonprofit (not the default)',
@@ -82,8 +95,11 @@ SELECT t_err('J-196: the monthly aggregate is never deleted', $$DELETE FROM nonp
 -- ---------- shred waits for the donation ----------
 UPDATE users SET employment_ended_at = clock_timestamp() - interval '45 days' WHERE user_id = t_u('stay');
 SELECT rpc_run_scheduled_crypto_shred() AS shredded;
-SELECT t_assert('J-196 order: a leaver whose balance was not donated (lb, no nonprofit; stay, not yet day-31-processed) is NOT shredded',
-  NOT EXISTS (SELECT 1 FROM pseudonym_key WHERE user_id IN (t_u('lb'), t_u('stay')) AND shredded_at IS NOT NULL));
+SELECT t_assert('J-196 order: a leaver whose balance was not settled yet (stay, not yet day-31-processed) is NOT shredded',
+  NOT EXISTS (SELECT 1 FROM pseudonym_key WHERE user_id = t_u('stay') AND shredded_at IS NOT NULL));
+SELECT t_assert('J-241: the leaver in a company without a nonprofit (lb) is shredded as usual after the day-31 zeroing',
+  EXISTS (SELECT 1 FROM pseudonym_key WHERE user_id = t_u('lb'))
+  AND NOT EXISTS (SELECT 1 FROM pseudonym_key WHERE user_id = t_u('lb') AND shredded_at IS NULL));
 SELECT t_assert('J-196 order: a leaver whose balance was donated (nochoice) is shredded by the same job',
   NOT EXISTS (SELECT 1 FROM pseudonym_key WHERE user_id = t_u('nochoice') AND shredded_at IS NULL));
 

@@ -5857,7 +5857,7 @@ paths:
       tags:
       - kiosk
       summary: "J-208 / J-219: badge + PIN login — service role only (Edge Function)"
-      description: "v1.7.0 (Karin 16.11). Success → {ok: true, login_ticket} (one-time; only its sha256 is stored; exchange + TTL = the Edge Function PR, TTL \"לא הוגדר\"). Wrong PIN → {ok: false, code: invalid_credentials} and after the 3rd {message_he: \"נשארו 2 ניסיונות\"}, after the 4th {message_he: \"נשאר ניסיון 1\"}; the 5th locks → {code: badge_locked} until vp_hr releases. Never raises. Service role only (no EXECUTE for anon / authenticated)."
+      description: "v1.7.0 (Karin 16.11). Success → {ok: true, login_ticket} (one-time; only its sha256 is stored; valid 60 seconds and once only — redeemed with rpc_kiosk_redeem_ticket, J-242). Wrong PIN → {ok: false, code: invalid_credentials} and after the 3rd {message_he: \"נשארו 2 ניסיונות\"}, after the 4th {message_he: \"נשאר ניסיון 1\"}; the 5th locks → {code: badge_locked} until vp_hr releases. Never raises. Service role only (no EXECUTE for anon / authenticated)."
       requestBody:
         required: true
         content:
@@ -5875,6 +5875,54 @@ paths:
                 p_badge_number:
                   type: string
                 p_pin:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /rpc/rpc_kiosk_redeem_ticket:
+    post:
+      tags:
+      - kiosk
+      summary: "J-219 / J-242: redeem the one-time login ticket — service role only (Edge Function)"
+      description: "v1.7.0 fixes (Karin 16.11). The ticket from rpc_kiosk_login is valid 60 seconds after it was issued and is used once only (the first call consumes it whatever the outcome). Success → {ok: true, session_token, expires_at} (the session ends 10 minutes after it started; only the token's sha256 is stored). Refused → {ok: false, code: ticket_used | ticket_expired | invalid_ticket}. Never returns a user id. Service role only (no EXECUTE for PUBLIC / anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_ticket
+              properties:
+                p_ticket:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+  /rpc/rpc_kiosk_validate_session:
+    post:
+      tags:
+      - kiosk
+      summary: "J-200 / J-242: is a kiosk session still valid — service role only (Edge Function)"
+      description: "v1.7.0 fixes (Karin 16.11). Valid → {ok: true, expires_at, seconds_left}. A session older than 10 minutes is ended by the server and refused → {ok: false, code: session_expired}; afterwards {code: session_ended}; unknown token → {code: invalid_session}. The J-200 idle logout (180 s + 30 s warning) stays client-side. Never returns a user id. Service role only (no EXECUTE for PUBLIC / anon / authenticated)."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_session_token
+              properties:
+                p_session_token:
                   type: string
       responses:
         '200':

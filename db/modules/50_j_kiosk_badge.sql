@@ -4,8 +4,9 @@
 --   * the FIRST PIN needs a one-time activation code issued by vp_hr; a PIN reset also goes through vp_hr;
 --   * 5 wrong attempts → locked until vp_hr releases it; after the 3rd wrong attempt "נשארו 2 ניסיונות",
 --     after the 4th "נשאר ניסיון 1";
---   * a successful login returns a ONE-TIME login ticket; exchanging it for a session is the Edge Function (separate
---     PR). The kiosk RPCs are system-only (service role, called by that Edge Function) — never anon.
+--   * a successful login returns a ONE-TIME login ticket (60 s, once — redeemed by rpc_kiosk_redeem_ticket in
+--     55_j_kiosk_session.sql, J-242); the Edge Function itself is a separate PR. The kiosk RPCs are system-only (service
+--     role, called by that Edge Function) — never anon.
 --   * J-200 (3 minutes idle + a 30-second warning) is enforced client-side; the DB only holds the contract.
 -- =============================================================================
 

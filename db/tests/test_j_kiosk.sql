@@ -93,4 +93,61 @@ SELECT t_err('J-208: no badge secret configured → 422 secret_not_configured',
 SELECT t_assert('kiosk tables are closed to clients',
   NOT has_table_privilege('authenticated', 'kiosk_badge', 'SELECT') AND NOT has_table_privilege('anon', 'kiosk_login_ticket', 'SELECT'));
 
+-- ---------- J-242 (Karin 16.11): ticket redeem (60 s, once) + server session limit (10 minutes) ----------
+-- Real clock: old tickets / sessions are backdated rows, never a fake clock.
+SELECT t_assert('J-242: set the PIN again with the vp_hr reset code (setup)',
+  t_svc(format($$rpc_kiosk_set_pin('%s', 'B-1001', '%s', '2468')$$, t_u('K'), (SELECT j->>'activation_code' FROM t_k WHERE label = 'act2'))) = '{"ok": true}'::jsonb);
+INSERT INTO t_k SELECT 'tk', t_svc(format($$rpc_kiosk_login('%s', 'B-1001', '2468')$$, t_u('K')));
+INSERT INTO t_k SELECT 'red1', t_svc(format($$rpc_kiosk_redeem_ticket('%s')$$, (SELECT j->>'login_ticket' FROM t_k WHERE label = 'tk')));
+SELECT t_assert('J-242 happy path: a fresh ticket → a session token + expiry 10 minutes after the start; no user id in the answer',
+  (SELECT j->>'ok' = 'true' AND j->>'session_token' ~ '^[0-9a-f]{64}$' AND t_free_of(j, t_all_user_ids()) FROM t_k WHERE label = 'red1')
+  AND (SELECT (s.started_at + interval '10 minutes') = ((SELECT j->>'expires_at' FROM t_k WHERE label = 'red1')::timestamptz)
+         FROM kiosk_session s WHERE s.session_hash = encode(digest((SELECT j->>'session_token' FROM t_k WHERE label = 'red1'), 'sha256'), 'hex'))
+  AND NOT EXISTS (SELECT 1 FROM kiosk_session WHERE session_hash = (SELECT j->>'session_token' FROM t_k WHERE label = 'red1')));
+INSERT INTO t_k SELECT 'val1', t_svc(format($$rpc_kiosk_validate_session('%s')$$, (SELECT j->>'session_token' FROM t_k WHERE label = 'red1')));
+SELECT t_assert('J-242 happy path: the new session is valid (ok, expires_at, seconds_left 1…600); no user id',
+  (SELECT j->>'ok' = 'true' AND (j->>'seconds_left')::int BETWEEN 1 AND 600 AND t_free_of(j, t_all_user_ids()) FROM t_k WHERE label = 'val1'));
+INSERT INTO t_k SELECT 'red2', t_svc(format($$rpc_kiosk_redeem_ticket('%s')$$, (SELECT j->>'login_ticket' FROM t_k WHERE label = 'tk')));
+SELECT t_assert('J-242: an already redeemed ticket is refused the second time (ticket_used) and opens no session',
+  (SELECT j = '{"ok": false, "code": "ticket_used"}'::jsonb FROM t_k WHERE label = 'red2')
+  AND (SELECT count(*) = 1 FROM kiosk_session));
+INSERT INTO t_k SELECT 'tk61', t_svc(format($$rpc_kiosk_login('%s', 'B-1001', '2468')$$, t_u('K')));
+UPDATE kiosk_login_ticket SET issued_at = clock_timestamp() - interval '61 seconds'
+ WHERE ticket_hash = encode(digest((SELECT j->>'login_ticket' FROM t_k WHERE label = 'tk61'), 'sha256'), 'hex');
+INSERT INTO t_k SELECT 'red61', t_svc(format($$rpc_kiosk_redeem_ticket('%s')$$, (SELECT j->>'login_ticket' FROM t_k WHERE label = 'tk61')));
+SELECT t_assert('J-242: a 61-second-old ticket is refused (ticket_expired), consumed, and opens no session',
+  (SELECT j = '{"ok": false, "code": "ticket_expired"}'::jsonb FROM t_k WHERE label = 'red61')
+  AND (SELECT used_at IS NOT NULL FROM kiosk_login_ticket
+        WHERE ticket_hash = encode(digest((SELECT j->>'login_ticket' FROM t_k WHERE label = 'tk61'), 'sha256'), 'hex'))
+  AND (SELECT count(*) = 1 FROM kiosk_session));
+INSERT INTO t_k SELECT 'tk59', t_svc(format($$rpc_kiosk_login('%s', 'B-1001', '2468')$$, t_u('K')));
+UPDATE kiosk_login_ticket SET issued_at = clock_timestamp() - interval '59 seconds'
+ WHERE ticket_hash = encode(digest((SELECT j->>'login_ticket' FROM t_k WHERE label = 'tk59'), 'sha256'), 'hex');
+SELECT t_assert('J-242: a 59-second-old ticket is still redeemed',
+  t_svc(format($$rpc_kiosk_redeem_ticket('%s')$$, (SELECT j->>'login_ticket' FROM t_k WHERE label = 'tk59')))->>'ok' = 'true');
+SELECT t_assert('J-242: an unknown ticket → invalid_ticket',
+  t_svc($$rpc_kiosk_redeem_ticket('nope')$$) = '{"ok": false, "code": "invalid_ticket"}'::jsonb);
+UPDATE kiosk_session SET started_at = clock_timestamp() - interval '10 minutes 1 second'
+ WHERE session_hash = encode(digest((SELECT j->>'session_token' FROM t_k WHERE label = 'red1'), 'sha256'), 'hex');
+INSERT INTO t_k SELECT 'val_old', t_svc(format($$rpc_kiosk_validate_session('%s')$$, (SELECT j->>'session_token' FROM t_k WHERE label = 'red1')));
+SELECT t_assert('J-242: a session older than 10 minutes is refused (session_expired) and the server ends it (max_age)',
+  (SELECT j = '{"ok": false, "code": "session_expired"}'::jsonb FROM t_k WHERE label = 'val_old')
+  AND (SELECT ended_at IS NOT NULL AND end_reason = 'max_age' FROM kiosk_session
+        WHERE session_hash = encode(digest((SELECT j->>'session_token' FROM t_k WHERE label = 'red1'), 'sha256'), 'hex')));
+SELECT t_assert('J-242: an ended session stays refused (session_ended); an unknown token → invalid_session',
+  t_svc(format($$rpc_kiosk_validate_session('%s')$$, (SELECT j->>'session_token' FROM t_k WHERE label = 'red1'))) = '{"ok": false, "code": "session_ended"}'::jsonb
+  AND t_svc($$rpc_kiosk_validate_session('nope')$$) = '{"ok": false, "code": "invalid_session"}'::jsonb);
+SELECT t_assert('J-242: redeem / validate are service role ONLY (no EXECUTE for PUBLIC, anon, authenticated)',
+  has_function_privilege('service_role', 'rpc_kiosk_redeem_ticket(text)', 'EXECUTE')
+  AND has_function_privilege('service_role', 'rpc_kiosk_validate_session(text)', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'rpc_kiosk_redeem_ticket(text)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'rpc_kiosk_redeem_ticket(text)', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'rpc_kiosk_validate_session(text)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'rpc_kiosk_validate_session(text)', 'EXECUTE')
+  AND NOT EXISTS (SELECT 1 FROM pg_proc p, aclexplode(p.proacl) a
+                   WHERE p.proname IN ('rpc_kiosk_redeem_ticket', 'rpc_kiosk_validate_session') AND a.grantee = 0));
+SELECT t_assert('J-242: kiosk_session is closed to clients and stores only the token hash (no token column)',
+  NOT has_table_privilege('authenticated', 'kiosk_session', 'SELECT') AND NOT has_table_privilege('anon', 'kiosk_session', 'SELECT')
+  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'kiosk_session' AND column_name = 'session_token'));
+
 SELECT 'ALL J KIOSK TESTS PASSED' AS result;

@@ -6158,8 +6158,9 @@ BEGIN
     -- v1.7.0 (Karin 16.11, J-196): the remaining balance is DONATED, not reset: (1) balance + nonprofit (her choice
     -- or the company default J-197), (2) the donation is recorded (ledger 'donated_after_exit' + the monthly
     -- aggregate), (3) only then the balance is zeroed — the crypto-shred waits for this (rpc_run_scheduled_crypto_shred).
-    -- No nonprofit chosen and no company default → nothing is donated or zeroed (pending, J-223).
-    IF fn_j196_donate_departed(r.user_id, r.company_id, r.golden_spoons, r.deadline, v_now) THEN
+    -- v1.7.0 fixes (Karin 16.11, J-241, replaces J-223): no nonprofit chosen and no company default → the balance is
+    -- zeroed with a record 'לא נתרם — אין עמותה', vp_hr is reminded to set a default, and the shred goes on as usual.
+    IF fn_j196_settle_departed(r.user_id, r.company_id, r.golden_spoons, r.deadline, v_now) THEN
       UPDATE avatar_state SET golden_spoons = 0, updated_at = clock_timestamp() WHERE user_id = r.user_id;
       v_n := v_n + 1;
     END IF;

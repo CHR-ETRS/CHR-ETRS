@@ -495,10 +495,8 @@ SELECT t_assert('v3-T7: day 30 (2026-10-01 23:30 local) still inside the window;
   fn_in_exit_redemption_window(t_u('leaverB'), '2026-10-01 23:30+03')
   AND rpc_expire_departed_golden_spoons('2026-10-01 23:30+03') = 0);
 SELECT t_assert('v3-T7: …balance kept on day 30 (40)', (SELECT golden_spoons = 40 FROM avatar_state WHERE user_id = t_u('leaverB')));
--- v1.7.0 (Karin 16.11, J-196): on day 31 the balance is DONATED (not reset) — without a nonprofit nothing happens
-SELECT t_assert('v1.7.0 J-196: day 31 with no nonprofit chosen and no company default → nothing donated, balance kept (40)',
-  rpc_expire_departed_golden_spoons('2026-10-02 00:30+03') = 0
-  AND (SELECT golden_spoons = 40 FROM avatar_state WHERE user_id = t_u('leaverB')));
+-- v1.7.0 (Karin 16.11, J-196): on day 31 the balance is DONATED (not reset). The no-nonprofit case (J-241: zeroed with
+-- 'לא נתרם — אין עמותה' + a vp_hr reminder) is tested in tests/test_j_leaver.sql.
 INSERT INTO nonprofit (company_id, name_he, is_company_default) VALUES (t_u('cB'), 'עמותת ברירת מחדל B', true);
 SELECT t_assert('v3-T7 / v1.7.0 J-196: day 31 (2026-10-02 00:30 local) → 1 balance donated to the company default nonprofit', rpc_expire_departed_golden_spoons('2026-10-02 00:30+03') = 1);
 SELECT t_assert('v1.7.0 J-196: balance 0 and a WORM ledger row donated_after_exit (40, deadline 2026-10-01) + the monthly aggregate (no person)',

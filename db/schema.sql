@@ -4413,20 +4413,23 @@ CREATE TABLE IF NOT EXISTS golden_spoons_ledger (
     user_id        uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     company_id     uuid REFERENCES companies(company_id) ON DELETE SET NULL,
     -- v1.7.0 (Karin 16.11, J-196): from day 31 the balance is DONATED ('donated_after_exit'); 'expired_after_exit'
-    -- stays for historic rows only.
-    event_type     text NOT NULL CHECK (event_type IN ('expired_after_exit', 'donated_after_exit')),
+    -- stays for historic rows only. v1.7.0 fixes (Karin 16.11, J-241): no nonprofit at all → the balance is zeroed
+    -- ('zeroed_no_nonprofit', note_he 'לא נתרם — אין עמותה').
+    event_type     text NOT NULL CHECK (event_type IN ('expired_after_exit', 'donated_after_exit', 'zeroed_no_nonprofit')),
     amount         numeric(10, 1) NOT NULL CHECK (amount > 0),
     exit_deadline  date NOT NULL,
     created_at     timestamptz NOT NULL DEFAULT clock_timestamp(),
+    note_he        text,
     UNIQUE (user_id, event_type, exit_deadline)
 );
+ALTER TABLE golden_spoons_ledger ADD COLUMN IF NOT EXISTS note_he text;
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'golden_spoons_ledger_event_type_check'
-                AND pg_get_constraintdef(oid) NOT LIKE '%donated_after_exit%') THEN
+                AND pg_get_constraintdef(oid) NOT LIKE '%zeroed_no_nonprofit%') THEN
     ALTER TABLE golden_spoons_ledger DROP CONSTRAINT golden_spoons_ledger_event_type_check;
     ALTER TABLE golden_spoons_ledger ADD CONSTRAINT golden_spoons_ledger_event_type_check
-      CHECK (event_type IN ('expired_after_exit', 'donated_after_exit'));
+      CHECK (event_type IN ('expired_after_exit', 'donated_after_exit', 'zeroed_no_nonprofit'));
   END IF;
 END $$;
 DROP TRIGGER IF EXISTS trg_golden_spoons_ledger_worm ON golden_spoons_ledger;
