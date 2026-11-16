@@ -106,10 +106,20 @@ SELECT jsonb_typeof(t_json_as('hrA', format($$rpc_provision_external_auditor('%s
 SELECT t_assert('J-203: the auditor account: app_role external_auditor, no employee profile, company A',
   (SELECT app_role = 'external_auditor' AND NOT has_employee_profile AND company_id = t_u('A') FROM users WHERE user_id = t_u('aud')));
 CREATE TEMP TABLE t_log AS SELECT * FROM jsonb_array_elements(t_json_as('aud', $$(SELECT jsonb_agg(to_jsonb(x)) FROM rpc_auditor_change_log() x)$$)) AS t(e);
-SELECT t_assert('J-203: the change log = time, role, action AND the acting user id (Karin''s explicit exception) — nothing else',
+SELECT t_assert('J-203 / J-254: the auditor''s change log = time, role, action ONLY (no user id, name or e-mail field)',
   (SELECT count(*) >= 4 FROM t_log)
-  AND (SELECT bool_and((SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(e) k) = ARRAY['action', 'actor_role', 'actor_user_id', 'changed_at']) FROM t_log)
-  AND EXISTS (SELECT 1 FROM t_log WHERE e->>'action' = 'capability_grant' AND e->>'actor_role' = 'vp_hr' AND (e->>'actor_user_id')::uuid = t_u('hrA')));
+  AND (SELECT bool_and((SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(e) k) = ARRAY['action', 'actor_role', 'changed_at']) FROM t_log)
+  AND EXISTS (SELECT 1 FROM t_log WHERE e->>'action' = 'capability_grant' AND e->>'actor_role' = 'vp_hr'));
+SELECT t_assert('J-254: no user id, name or e-mail VALUE anywhere in the auditor''s change log',
+  (SELECT bool_and(t_free_of(e, t_all_user_ids())) FROM t_log)
+  AND NOT EXISTS (SELECT 1 FROM t_log l, users u WHERE l.e::text LIKE '%' || u.full_name || '%' OR l.e::text LIKE '%' || u.email || '%')
+  AND NOT EXISTS (SELECT 1 FROM t_log WHERE e::text ~ '@'));
+SELECT t_assert('J-254: the internal WORM log still stores the actor id of the same change (accountability) — the auditor just never sees it',
+  EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'capability_grant' AND company_id = t_u('A') AND viewer_id = t_u('hrA'))
+  AND NOT has_table_privilege('authenticated', 'access_audit_log', 'SELECT'));
+SELECT t_assert('J-254: the RPC result columns are exactly changed_at, actor_role, action',
+  (SELECT pg_get_function_result(p.oid) FROM pg_proc p WHERE p.proname = 'rpc_auditor_change_log')
+    = 'TABLE(changed_at timestamp with time zone, actor_role text, action text)');
 SELECT t_assert('J-203: the change log never carries the subject / scope of a row (no employee who received a capability)',
   NOT EXISTS (SELECT 1 FROM t_log WHERE e::text ~ (t_u('wc')::text || '|' || t_u('it')::text)));
 SELECT t_assert('J-203: the auditor reads the verification levels of a month inside her range',

@@ -137,6 +137,46 @@ SELECT t_assert('J-242: a session older than 10 minutes is refused (session_expi
 SELECT t_assert('J-242: an ended session stays refused (session_ended); an unknown token → invalid_session',
   t_svc(format($$rpc_kiosk_validate_session('%s')$$, (SELECT j->>'session_token' FROM t_k WHERE label = 'red1'))) = '{"ok": false, "code": "session_ended"}'::jsonb
   AND t_svc($$rpc_kiosk_validate_session('nope')$$) = '{"ok": false, "code": "invalid_session"}'::jsonb);
+-- ---------- J-247 (Karin 16.11): expired tickets never count toward the 5-attempt badge lock ----------
+INSERT INTO t_k SELECT 'x' || i, t_svc(format($$rpc_kiosk_login('%s', 'B-1001', '0000')$$, t_u('K'))) FROM generate_series(1, 4) i;
+CREATE TEMP TABLE t_before AS SELECT b.failed_attempts, (SELECT count(*) FROM kiosk_badge_event) AS events FROM kiosk_badge b WHERE b.user_id = t_u('worker');
+INSERT INTO kiosk_login_ticket (ticket_hash, user_id, issued_at)
+SELECT encode(digest('expired-' || i, 'sha256'), 'hex'), t_u('worker'), clock_timestamp() - interval '5 minutes' FROM generate_series(1, 5) i;
+CREATE TEMP TABLE t_exp AS SELECT i, t_svc(format($$rpc_kiosk_redeem_ticket('expired-%s')$$, i)) AS j FROM generate_series(1, 5) i;
+SELECT t_assert('J-247: 5 expired tickets in a row (after 4 wrong PINs) → each refused ticket_expired and burned, but the badge is NOT locked — attempts stay 4, no badge event',
+  (SELECT bool_and(j = '{"ok": false, "code": "ticket_expired"}'::jsonb) AND count(*) = 5 FROM t_exp)
+  AND (SELECT count(*) = 5 FROM kiosk_login_ticket WHERE ticket_hash IN (SELECT encode(digest('expired-' || i, 'sha256'), 'hex') FROM generate_series(1, 5) i) AND used_at IS NOT NULL)
+  AND (SELECT b.failed_attempts = 4 AND b.locked_at IS NULL FROM kiosk_badge b WHERE b.user_id = t_u('worker'))
+  AND (SELECT failed_attempts = 4 FROM t_before)
+  AND (SELECT count(*) FROM kiosk_badge_event) = (SELECT events FROM t_before));
+SELECT t_assert('J-247: the right PIN still logs in after the 5 expired tickets (not locked)',
+  t_svc(format($$rpc_kiosk_login('%s', 'B-1001', '2468')$$, t_u('K')))->>'ok' = 'true');
+
+-- ---------- J-248 (Karin 16.11): exactly 60 s / exactly 10 minutes are valid — server clock (now()) only ----------
+-- Backdate + call in ONE transaction (one statement), so now() is the same instant for both → the age is exact.
+-- Insert a ticket aged exactly p_age on the server clock and redeem it in the same transaction.
+CREATE OR REPLACE FUNCTION t_redeem_at_age(p_ticket text, p_age interval) RETURNS jsonb LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO kiosk_login_ticket (ticket_hash, user_id, issued_at) VALUES (encode(digest(p_ticket, 'sha256'), 'hex'), t_u('worker'), now() - p_age);
+  RETURN t_svc(format('rpc_kiosk_redeem_ticket(%L)', p_ticket));
+END $$;
+-- Insert a session aged exactly p_age on the server clock and validate it in the same transaction.
+CREATE OR REPLACE FUNCTION t_validate_at_age(p_token text, p_age interval) RETURNS jsonb LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO kiosk_session (session_hash, user_id, started_at) VALUES (encode(digest(p_token, 'sha256'), 'hex'), t_u('worker'), now() - p_age);
+  RETURN t_svc(format('rpc_kiosk_validate_session(%L)', p_token));
+END $$;
+SELECT t_assert('J-248: a ticket aged EXACTLY 60 seconds (server clock) is redeemed',
+  t_redeem_at_age('age-60', interval '60 seconds')->>'ok' = 'true');
+SELECT t_assert('J-248: a ticket aged 60.001 seconds is refused (ticket_expired)',
+  t_redeem_at_age('age-60001', interval '60.001 seconds') = '{"ok": false, "code": "ticket_expired"}'::jsonb);
+SELECT t_assert('J-248: a session aged EXACTLY 10 minutes (server clock) is valid (seconds_left 0)',
+  (SELECT j->>'ok' = 'true' AND (j->>'seconds_left')::int = 0 FROM (SELECT t_validate_at_age('sess-600', interval '10 minutes') j) x));
+SELECT t_assert('J-248: a session aged 10 minutes + 1 ms is refused (session_expired)',
+  t_validate_at_age('sess-600001', interval '10 minutes 0.001 seconds') = '{"ok": false, "code": "session_expired"}'::jsonb);
+SELECT t_assert('J-248: no kiosk RPC takes a time from the device (redeem / validate take only the text code; login / set-PIN have no time parameter)',
+  NOT EXISTS (SELECT 1 FROM pg_proc p WHERE p.proname IN ('rpc_kiosk_redeem_ticket', 'rpc_kiosk_validate_session', 'rpc_kiosk_login', 'rpc_kiosk_set_pin')
+                 AND EXISTS (SELECT 1 FROM unnest(p.proargtypes::oid[]) t WHERE t IN ('timestamptz'::regtype, 'timestamp'::regtype, 'date'::regtype, 'interval'::regtype, 'bigint'::regtype))));
 SELECT t_assert('J-242: redeem / validate are service role ONLY (no EXECUTE for PUBLIC, anon, authenticated)',
   has_function_privilege('service_role', 'rpc_kiosk_redeem_ticket(text)', 'EXECUTE')
   AND has_function_privilege('service_role', 'rpc_kiosk_validate_session(text)', 'EXECUTE')

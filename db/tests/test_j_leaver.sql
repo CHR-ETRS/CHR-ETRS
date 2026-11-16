@@ -5,7 +5,7 @@
 -- =============================================================================
 \ir j_helpers.sql
 
-SELECT t_company('A') IS NOT NULL AS a, t_company('B') IS NOT NULL AS b;
+SELECT t_company('A') IS NOT NULL AS a, t_company('B') IS NOT NULL AS b, t_company('C') IS NOT NULL AS c, t_company('D') IS NOT NULL AS d;
 DO $$
 BEGIN
   PERFORM t_mk('hrA', 'A', 'vp_hr', 'vp', 'Mgmt'); PERFORM t_mk('cfoA', 'A', 'cfo', 'vp', 'Mgmt'); PERFORM t_mk('hrB', 'B', 'vp_hr', 'vp', 'Mgmt');
@@ -16,12 +16,16 @@ BEGIN
   PERFORM t_mk('week', 'A');         -- day 30 is 7 days from today
   PERFORM t_mk('zero', 'A');         -- leaves today with balance 0
   PERFORM t_mk('lb', 'B');           -- company B, 40 days ago, B has no nonprofit at all
+  -- J-250 fallback: company C has no vp_hr (only a cfo); company D has neither (only a vp_hr without e-mail + a leaver)
+  PERFORM t_mk('cfoC', 'C', 'cfo', 'vp', 'Mgmt'); PERFORM t_mk('lc', 'C');
+  PERFORM t_mk('hrD', 'D', 'vp_hr', 'vp', 'Mgmt'); PERFORM t_mk('ld', 'D');
+  UPDATE users SET email = '' WHERE user_id = t_u('hrD');
   INSERT INTO avatar_state (user_id, golden_spoons)
-  SELECT t_u(k), v FROM (VALUES ('chooser', 12.5), ('nochoice', 20), ('today', 7), ('week', 9), ('zero', 0), ('lb', 15), ('stay', 50)) x(k, v)
+  SELECT t_u(k), v FROM (VALUES ('chooser', 12.5), ('nochoice', 20), ('today', 7), ('week', 9), ('zero', 0), ('lb', 15), ('lc', 11), ('ld', 13), ('stay', 50)) x(k, v)
   ON CONFLICT (user_id) DO UPDATE SET golden_spoons = EXCLUDED.golden_spoons;
 END $$;
 UPDATE users SET employment_ended_at = clock_timestamp() - interval '5 days' WHERE user_id = t_u('chooser');
-UPDATE users SET employment_ended_at = clock_timestamp() - interval '40 days' WHERE user_id IN (t_u('nochoice'), t_u('lb'));
+UPDATE users SET employment_ended_at = clock_timestamp() - interval '40 days' WHERE user_id IN (t_u('nochoice'), t_u('lb'), t_u('lc'), t_u('ld'));
 UPDATE users SET employment_ended_at = clock_timestamp() WHERE user_id IN (t_u('today'), t_u('zero'));
 UPDATE users SET employment_ended_at = clock_timestamp() - interval '23 days' WHERE user_id = t_u('week');
 
@@ -61,7 +65,7 @@ SELECT t_assert('J-196: the subject uses the golden-spoons wording', (SELECT boo
 -- ---------- J-196 day 31 ----------
 CREATE TEMP TABLE t_don AS SELECT rpc_expire_departed_golden_spoons(clock_timestamp()) AS n;
 SELECT t_assert('J-196 / J-241: day 31 — nochoice (40 days, default nonprofit) is donated; lb (no choice, company B without a default) is zeroed; chooser is still in her window',
-  (SELECT n = 2 FROM t_don)
+  (SELECT n = 4 FROM t_don)
   AND (SELECT golden_spoons = 0 FROM avatar_state WHERE user_id = t_u('nochoice'))
   AND (SELECT golden_spoons = 0 FROM avatar_state WHERE user_id = t_u('lb'))
   AND (SELECT golden_spoons = 12.5 FROM avatar_state WHERE user_id = t_u('chooser')));
@@ -73,14 +77,35 @@ SELECT t_assert('J-241: the zeroing is recorded — ledger zeroed_no_nonprofit (
   (SELECT count(*) = 1 AND sum(amount) = 15 AND min(note_he) = 'לא נתרם — אין עמותה'
      FROM golden_spoons_ledger WHERE user_id = t_u('lb') AND event_type = 'zeroed_no_nonprofit')
   AND NOT EXISTS (SELECT 1 FROM nonprofit_donation_month WHERE company_id = t_u('B')));
-SELECT t_assert('J-241: vp_hr of company B gets ONE "set a default nonprofit" reminder (outbox) — no leaver, no amount, no id in it',
+SELECT t_assert('J-241 / J-249: vp_hr of company B gets ONE reminder — title and body exactly Karin''s, link "לא הוגדר"; no leaver, no amount, no id',
   (SELECT count(*) = 1 AND min(recipient_address) = 'hrB@j.test' AND min(subject_he) = 'יש להגדיר עמותת ברירת מחדל'
-     FROM j_outbox WHERE kind = 'default_nonprofit_reminder')
-  AND (SELECT (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(payload) k) = ARRAY['action_he', 'reason_he', 'settings_link']
-              AND payload->>'reason_he' = 'לא נתרם — אין עמותה' AND payload->>'settings_link' = 'לא הוגדר'
-              AND t_free_of(payload, t_all_user_ids())
-         FROM j_outbox WHERE kind = 'default_nonprofit_reminder')
-  AND NOT EXISTS (SELECT 1 FROM j_outbox WHERE kind = 'default_nonprofit_reminder' AND company_id = t_u('A')));
+     FROM j_outbox WHERE kind = 'default_nonprofit_reminder' AND company_id = t_u('B'))
+  AND (SELECT payload = jsonb_build_object('title_he', 'יש להגדיר עמותת ברירת מחדל',
+                          'body_he', 'בלי עמותת ברירת מחדל, הכפיות המוזהבות של עובדים שעוזבים ולא בחרו עמותה מתאפסות ולא נתרמות.',
+                          'link', 'לא הוגדר')
+              AND t_free_of(payload, t_all_user_ids()) AND hold_reason IS NULL
+         FROM j_outbox WHERE kind = 'default_nonprofit_reminder' AND company_id = t_u('B'))
+  AND NOT EXISTS (SELECT 1 FROM j_outbox WHERE kind IN ('default_nonprofit_reminder', 'operator_no_vp_hr') AND company_id = t_u('A')));
+SELECT t_assert('J-250 level 2: company C has no active vp_hr with an e-mail → the active cfo gets the same reminder (and no operator message)',
+  (SELECT count(*) = 1 AND min(recipient_address) = 'cfoC@j.test' AND min(subject_he) = 'יש להגדיר עמותת ברירת מחדל'
+          AND bool_and(payload->>'body_he' = 'בלי עמותת ברירת מחדל, הכפיות המוזהבות של עובדים שעוזבים ולא בחרו עמותה מתאפסות ולא נתרמות.')
+     FROM j_outbox WHERE kind = 'default_nonprofit_reminder' AND company_id = t_u('C'))
+  AND NOT EXISTS (SELECT 1 FROM j_outbox WHERE kind = 'operator_no_vp_hr' AND company_id = t_u('C')));
+SELECT t_assert('J-250 level 3 / J-251: company D (vp_hr without e-mail, no cfo) → ONE operator message "בחברה Company D אין vp_hr פעילה"; no operator address configured → HELD (recipient "לא הוגדר")',
+  (SELECT count(*) = 1 AND min(subject_he) = 'בחברה Company D אין vp_hr פעילה' AND min(recipient_address) = 'לא הוגדר'
+          AND bool_and(hold_reason = 'recipient_not_configured')
+     FROM j_outbox WHERE kind = 'operator_no_vp_hr' AND company_id = t_u('D'))
+  AND NOT EXISTS (SELECT 1 FROM j_outbox WHERE kind = 'default_nonprofit_reminder' AND company_id = t_u('D')));
+SELECT t_assert('J-250: the operator payload carries NO employee data — only the message (no id, name, e-mail, count, date or balance)',
+  (SELECT bool_and(payload = '{"message_he": "בחברה Company D אין vp_hr פעילה"}'::jsonb AND t_free_of(payload, t_all_user_ids())
+                   AND payload::text !~ '(Person |@|[0-9])')
+     FROM j_outbox WHERE kind = 'operator_no_vp_hr'));
+CREATE TEMP TABLE t_op AS SELECT fn_sync_platform_operator('{"recipients": ["test-only-operator@example.invalid"]}') AS n;
+SELECT t_assert('J-251: loading the operator config releases the held message to the configured (test-only) address; the held row is kept, marked released',
+  (SELECT n = 1 FROM t_op)
+  AND (SELECT count(*) = 1 FROM j_outbox WHERE kind = 'operator_no_vp_hr' AND recipient_address = 'test-only-operator@example.invalid'
+                                           AND hold_reason IS NULL AND subject_he = 'בחברה Company D אין vp_hr פעילה')
+  AND (SELECT count(*) = 1 FROM j_outbox WHERE kind = 'operator_no_vp_hr' AND hold_reason = 'released'));
 SELECT t_err('J-241: the zeroing record is WORM', $$UPDATE golden_spoons_ledger SET note_he = NULL WHERE event_type = 'zeroed_no_nonprofit'$$, 'ledger_immutable');
 -- the chooser's day 31 (job run with p_now 26 days ahead)
 CREATE TEMP TABLE t_don2 AS SELECT rpc_expire_departed_golden_spoons(clock_timestamp() + interval '27 days') AS n;

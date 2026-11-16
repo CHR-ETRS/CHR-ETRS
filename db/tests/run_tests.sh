@@ -54,7 +54,7 @@ print('PASS config files start empty' if not bad else 'FAIL config not empty: ' 
 sys.exit(1 if bad else 0)
 PY2
 SYNC_OUT=$(python3 tools/sync_config.py --db "${DB}_j_spoons")
-if [ "$(echo "$SYNC_OUT" | cut -d'|' -f2 | sort -u)" = "0" ]; then echo "PASS tools/sync_config.py loads the empty config (4 × 0 rows)"; else echo "FAIL sync_config: $SYNC_OUT"; exit 1; fi
+if [ "$(echo "$SYNC_OUT" | cut -d'|' -f2 | sort -u)" = "0" ]; then echo "PASS tools/sync_config.py loads the empty config (5 × 0 rows)"; else echo "FAIL sync_config: $SYNC_OUT"; exit 1; fi
 # v1.7.0 terminology gate over the whole repository
 ./tests/test_j_terms.sh
 # v1.7.0 fixes (J-243): the go-live preflight must FAIL on the empty repository config (and pass on a filled copy)

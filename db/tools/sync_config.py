@@ -18,6 +18,7 @@ FILES = [
     ("everstore_supplier_offers.json", "fn_sync_supplier_offers"),
     ("method_team.json", "fn_sync_method_team"),
     ("company_service_end.json", "fn_sync_company_service_end"),
+    ("platform_operator.json", "fn_sync_platform_operator"),  # J-251
 ]
 
 

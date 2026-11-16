@@ -5,6 +5,10 @@
 --   * the server ends a kiosk_session 10 minutes after it started (the client J-200 idle logout stays client-side);
 --   * both RPCs are for the future Edge Function: service role ONLY (no EXECUTE for PUBLIC / anon / authenticated).
 -- Only sha256 hashes of the ticket and of the session token are stored. Nothing is deleted.
+-- v1.7.0 fixes 2 (Karin 16.11 21:04–21:07): J-247 an expired ticket is burned but never counts as a failed attempt
+-- toward the 5-attempt badge lock (these functions never touch kiosk_badge); J-248 ages are measured ONLY by the
+-- server clock — now() of the call's transaction; exactly 60 s / exactly 10 minutes are still valid; no function here
+-- takes a time from the device.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS kiosk_session (
@@ -41,7 +45,7 @@ SET search_path = pg_catalog, public, extensions
 AS $$ SELECT encode(digest(COALESCE(p_token, ''), 'sha256'), 'hex') $$;
 
 -- Why a ticket cannot be redeemed now: 'invalid_ticket' (unknown), 'ticket_used', 'ticket_expired'
--- (older than 60 seconds); NULL = redeemable.
+-- (older than 60 seconds; exactly 60 s is still valid, J-248); NULL = redeemable. p_now = the server clock only.
 CREATE OR REPLACE FUNCTION fn_kiosk_ticket_refusal_code(t kiosk_login_ticket, p_now timestamptz)
 RETURNS text
 LANGUAGE sql
@@ -53,7 +57,7 @@ AS $$
 $$;
 
 -- Why a session is not valid now: 'invalid_session' (unknown), 'session_ended', 'session_expired'
--- (older than 10 minutes); NULL = valid.
+-- (older than 10 minutes; exactly 10 minutes is still valid, J-248); NULL = valid. p_now = the server clock only.
 CREATE OR REPLACE FUNCTION fn_kiosk_session_refusal_code(s kiosk_session, p_now timestamptz)
 RETURNS text
 LANGUAGE sql
@@ -73,7 +77,7 @@ SET search_path = pg_catalog, public, extensions
 AS $$
 DECLARE
   v_token text := encode(gen_random_bytes(32), 'hex');
-  v_start timestamptz := clock_timestamp();
+  v_start timestamptz := now();                    -- J-248: server clock (the call's transaction time)
 BEGIN
   INSERT INTO kiosk_session (session_hash, user_id, started_at) VALUES (fn_kiosk_token_hash(v_token), p_user, v_start);
   RETURN jsonb_build_object('ok', true, 'session_token', v_token,
@@ -96,9 +100,10 @@ DECLARE
 BEGIN
   PERFORM fn_j_assert_system();
   SELECT * INTO t FROM kiosk_login_ticket WHERE ticket_hash = fn_kiosk_token_hash(p_ticket) FOR UPDATE;
-  v_code := fn_kiosk_ticket_refusal_code(t, clock_timestamp());
+  v_code := fn_kiosk_ticket_refusal_code(t, now());   -- J-248: server clock only
+  -- J-242 / J-247: the first call burns the ticket (even when expired); kiosk_badge.failed_attempts is NOT touched.
   IF t.ticket_hash IS NOT NULL AND t.used_at IS NULL THEN
-    UPDATE kiosk_login_ticket SET used_at = clock_timestamp() WHERE ticket_hash = t.ticket_hash;
+    UPDATE kiosk_login_ticket SET used_at = now() WHERE ticket_hash = t.ticket_hash;
   END IF;
   IF v_code IS NOT NULL THEN
     RETURN fn_kiosk_refusal(NULL, v_code);
@@ -118,7 +123,7 @@ SET search_path = pg_catalog, public
 AS $$
 DECLARE
   s      kiosk_session;
-  v_now  timestamptz := clock_timestamp();
+  v_now  timestamptz := now();                     -- J-248: server clock (the call's transaction time)
   v_code text;
 BEGIN
   PERFORM fn_j_assert_system();

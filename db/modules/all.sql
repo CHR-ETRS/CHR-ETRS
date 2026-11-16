@@ -1,6 +1,7 @@
 -- CHR-ETRS v1.7.0 · modules/all.sql — loads the J-178 … J-219 modules in order, after schema.sql + rpc.sql.
 -- Every module is idempotent (re-apply safe).
 \ir 10_j_common.sql
+\ir 15_j_platform_operator.sql
 \ir 20_j_capabilities.sql
 \ir 30_j_research.sql
 \ir 40_j_auditor.sql

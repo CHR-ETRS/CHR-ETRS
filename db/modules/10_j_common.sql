@@ -124,32 +124,39 @@ CREATE TABLE IF NOT EXISTS j_outbox (
     company_id        uuid REFERENCES companies(company_id) ON DELETE SET NULL,
     kind              text NOT NULL CHECK (kind IN ('method_comment', 'leaver_donation_reminder',
                                                     'supplier_order', 'supplier_monthly_report',
-                                                    'default_nonprofit_reminder')),
+                                                    'default_nonprofit_reminder', 'operator_no_vp_hr')),
     recipient_address text NOT NULL,              -- from db/config or the employee's own address; never invented
     subject_he        text NOT NULL,
     payload           jsonb NOT NULL DEFAULT '{}'::jsonb,
     dedup_key         text UNIQUE,                -- idempotent enqueue (reminders, monthly reports)
     created_at        timestamptz NOT NULL DEFAULT clock_timestamp(),
-    sent_at           timestamptz
+    sent_at           timestamptz,
+    -- J-251: 'recipient_not_configured' = held (recipient 'לא הוגדר'); the sender sends only rows with hold_reason NULL.
+    hold_reason       text CHECK (hold_reason IN ('recipient_not_configured', 'released'))
 );
--- v1.7.0 fixes (Karin 16.11, J-241): the vp_hr "set a default nonprofit" reminder kind (re-apply safe).
+ALTER TABLE j_outbox ADD COLUMN IF NOT EXISTS hold_reason text CHECK (hold_reason IN ('recipient_not_configured', 'released'));
+-- v1.7.0 fixes (Karin 16.11, J-241 / J-250): reminder kinds — vp_hr / cfo "set a default nonprofit" and the
+-- CHR-ETRS operator "no active vp_hr" (re-apply safe).
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'j_outbox_kind_check'
-                AND pg_get_constraintdef(oid) NOT LIKE '%default_nonprofit_reminder%') THEN
+                AND pg_get_constraintdef(oid) NOT LIKE '%operator_no_vp_hr%') THEN
     ALTER TABLE j_outbox DROP CONSTRAINT j_outbox_kind_check;
     ALTER TABLE j_outbox ADD CONSTRAINT j_outbox_kind_check
       CHECK (kind IN ('method_comment', 'leaver_donation_reminder', 'supplier_order', 'supplier_monthly_report',
-                      'default_nonprofit_reminder'));
+                      'default_nonprofit_reminder', 'operator_no_vp_hr'));
   END IF;
 END $$;
 ALTER TABLE j_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE j_outbox FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE j_outbox FROM PUBLIC, anon, authenticated;
 
+-- J-251: the 6-argument form (before p_hold) is replaced by the 7-argument one (avoids an ambiguous overload).
+DROP FUNCTION IF EXISTS fn_j_outbox_put(uuid, text, text, text, jsonb, text);
 -- Queue one message (system helper). Returns false when the dedup key was already queued.
+-- p_hold (J-251) = 'recipient_not_configured' queues a HELD row (no address known yet; never sent until released).
 CREATE OR REPLACE FUNCTION fn_j_outbox_put(p_company uuid, p_kind text, p_to text, p_subject text, p_payload jsonb,
-                                           p_dedup text DEFAULT NULL)
+                                           p_dedup text DEFAULT NULL, p_hold text DEFAULT NULL)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -158,14 +165,14 @@ AS $$
 DECLARE
   v_id uuid;
 BEGIN
-  INSERT INTO j_outbox (company_id, kind, recipient_address, subject_he, payload, dedup_key)
-  VALUES (p_company, p_kind, p_to, p_subject, COALESCE(p_payload, '{}'::jsonb), p_dedup)
+  INSERT INTO j_outbox (company_id, kind, recipient_address, subject_he, payload, dedup_key, hold_reason)
+  VALUES (p_company, p_kind, p_to, p_subject, COALESCE(p_payload, '{}'::jsonb), p_dedup, p_hold)
   ON CONFLICT (dedup_key) DO NOTHING
   RETURNING outbox_id INTO v_id;
   RETURN v_id IS NOT NULL;
 END;
 $$;
-REVOKE ALL ON FUNCTION fn_j_outbox_put(uuid, text, text, text, jsonb, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION fn_j_outbox_put(uuid, text, text, text, jsonb, text, text) FROM PUBLIC, anon, authenticated;
 
 -- The sender (outside the DB, service role) marks a message as sent. Only sent_at changes.
 CREATE OR REPLACE FUNCTION rpc_outbox_mark_sent(p_outbox_id uuid)
@@ -184,10 +191,20 @@ GRANT EXECUTE ON FUNCTION rpc_outbox_mark_sent(uuid) TO service_role;
 
 -- ---------- J-191: recipient addresses (db/config/method_team.json; starts EMPTY) ----------
 CREATE TABLE IF NOT EXISTS j_config_recipient (
-    kind     text NOT NULL CHECK (kind IN ('method_team')),
+    kind     text NOT NULL CHECK (kind IN ('method_team', 'platform_operator')),
     address  text NOT NULL CHECK (address ~ '^[^@\s]+@[^@\s]+$'),
     PRIMARY KEY (kind, address)
 );
+-- v1.7.0 fixes (J-251): the CHR-ETRS operator address kind (db/config/platform_operator.json; re-apply safe).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'j_config_recipient_kind_check'
+                AND pg_get_constraintdef(oid) NOT LIKE '%platform_operator%') THEN
+    ALTER TABLE j_config_recipient DROP CONSTRAINT j_config_recipient_kind_check;
+    ALTER TABLE j_config_recipient ADD CONSTRAINT j_config_recipient_kind_check
+      CHECK (kind IN ('method_team', 'platform_operator'));
+  END IF;
+END $$;
 ALTER TABLE j_config_recipient ENABLE ROW LEVEL SECURITY;
 ALTER TABLE j_config_recipient FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE j_config_recipient FROM PUBLIC, anon, authenticated;

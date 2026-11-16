@@ -5574,8 +5574,8 @@ paths:
     post:
       tags:
       - roles
-      summary: "J-203: the auditor's change log — time, role, action AND the acting user id"
-      description: "v1.7.0 (Karin 16.11). Karin's explicit exception (16.11): actor_user_id is returned in THIS output only. Rows = audit rows of her company inside her data months whose action is a change (_put / _set / _sync / grant / revoke / provision / upload / cancel / decide, J-229). Never the subject or scope of a row. Only inside the access window."
+      summary: "J-203: the auditor's change log — time, role, action only"
+      description: "v1.7.0 fixes 2 (Karin 16.11, J-254 — replaces the earlier actor_user_id exception / J-246). Each row = {changed_at, actor_role, action} only: no name, no e-mail, no user id. The internal WORM access_audit_log keeps the actor id (accountability, J-214 same-person label); the auditor never sees it. Rows = audit rows of her company inside her data months whose action is a change (_put / _set / _sync / grant / revoke / provision / upload / cancel / decide, J-229). Never the subject or scope of a row. Only inside the access window."
       requestBody:
         required: false
         content:
@@ -5591,6 +5591,19 @@ paths:
                 type: array
                 items:
                   type: object
+                  additionalProperties: false
+                  required:
+                  - changed_at
+                  - actor_role
+                  - action
+                  properties:
+                    changed_at:
+                      type: string
+                      format: date-time
+                    actor_role:
+                      type: string
+                    action:
+                      type: string
         '403':
           description: "403 access_denied (outside the window / not an auditor)"
           content:
@@ -5888,7 +5901,7 @@ paths:
       tags:
       - kiosk
       summary: "J-219 / J-242: redeem the one-time login ticket — service role only (Edge Function)"
-      description: "v1.7.0 fixes (Karin 16.11). The ticket from rpc_kiosk_login is valid 60 seconds after it was issued and is used once only (the first call consumes it whatever the outcome). Success → {ok: true, session_token, expires_at} (the session ends 10 minutes after it started; only the token's sha256 is stored). Refused → {ok: false, code: ticket_used | ticket_expired | invalid_ticket}. Never returns a user id. Service role only (no EXECUTE for PUBLIC / anon / authenticated)."
+      description: "v1.7.0 fixes (Karin 16.11). The ticket from rpc_kiosk_login is valid 60 seconds after it was issued — exactly 60 s still valid, measured only by the server clock (J-248) — and is used once only (the first call burns it whatever the outcome). An expired ticket never counts as a failed attempt toward the 5-attempt badge lock (J-247). No time parameter is accepted from the device. Success → {ok: true, session_token, expires_at} (the session ends 10 minutes after it started; only the token's sha256 is stored). Refused → {ok: false, code: ticket_used | ticket_expired | invalid_ticket}. Never returns a user id. Service role only (no EXECUTE for PUBLIC / anon / authenticated)."
       requestBody:
         required: true
         content:
@@ -5912,7 +5925,7 @@ paths:
       tags:
       - kiosk
       summary: "J-200 / J-242: is a kiosk session still valid — service role only (Edge Function)"
-      description: "v1.7.0 fixes (Karin 16.11). Valid → {ok: true, expires_at, seconds_left}. A session older than 10 minutes is ended by the server and refused → {ok: false, code: session_expired}; afterwards {code: session_ended}; unknown token → {code: invalid_session}. The J-200 idle logout (180 s + 30 s warning) stays client-side. Never returns a user id. Service role only (no EXECUTE for PUBLIC / anon / authenticated)."
+      description: "v1.7.0 fixes (Karin 16.11). Valid → {ok: true, expires_at, seconds_left}. Ages by the server clock only (J-248); exactly 10 minutes is still valid. A session older than 10 minutes is ended by the server and refused → {ok: false, code: session_expired}; afterwards {code: session_ended}; unknown token → {code: invalid_session}. The J-200 idle logout (180 s + 30 s warning) stays client-side. Never returns a user id. Service role only (no EXECUTE for PUBLIC / anon / authenticated)."
       requestBody:
         required: true
         content:

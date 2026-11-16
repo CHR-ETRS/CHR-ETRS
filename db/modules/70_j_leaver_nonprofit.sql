@@ -5,6 +5,8 @@
 --   (3) only then the balance is zeroed and the personal data may be shredded (rpc_run_scheduled_crypto_shred waits).
 -- v1.7.0 fixes (Karin 16.11, J-241, replaces J-223): no choice and no company default → the balance is zeroed with a
 -- record 'לא נתרם — אין עמותה', vp_hr gets a "set a default nonprofit" reminder (outbox) and the shred goes on.
+-- v1.7.0 fixes 2 (Karin 16.11 21:04–21:07, J-249 / J-250): exact title + body; no active vp_hr with an e-mail → cfo;
+-- none → the CHR-ETRS operator ("בחברה X אין vp_hr פעילה", no employee data).
 -- Reminders on the leaving day and one week before day 30 (balance, deadline, nonprofit, change link) → outbox.
 -- The company transfers ONE monthly aggregate per nonprofit — no names, no leaving dates.
 -- Legal donor for receipts: TODO לא הוגדר (accountant). ILS value of a golden spoon: לא הוגדר.
@@ -178,28 +180,66 @@ LANGUAGE sql
 IMMUTABLE
 AS $$ SELECT 'לא נתרם — אין עמותה'::text $$;
 
--- J-241: queue the "set a default nonprofit" reminder to every active vp_hr of the company (existing outbox, one per
--- vp_hr per company day — several leavers on one day → one reminder). The payload names no leaver and no amount.
--- Returns the number queued now (0 when the company has no active vp_hr — reported as a gap, J-241).
-CREATE OR REPLACE FUNCTION fn_j196_remind_vp_hr_default(p_company uuid, p_now timestamptz)
+-- J-249 (Karin 16.11): the reminder title, exactly.
+CREATE OR REPLACE FUNCTION fn_j196_default_reminder_title_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'יש להגדיר עמותת ברירת מחדל'::text $$;
+
+-- J-249 (Karin 16.11): the reminder body, exactly.
+CREATE OR REPLACE FUNCTION fn_j196_default_reminder_body_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'בלי עמותת ברירת מחדל, הכפיות המוזהבות של עובדים שעוזבים ולא בחרו עמותה מתאפסות ולא נתרמות.'::text $$;
+
+-- J-249: the reminder payload — title, body, link ('לא הוגדר'); no leaver, no amount, no id.
+CREATE OR REPLACE FUNCTION fn_j196_default_reminder_payload()
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$ SELECT jsonb_build_object('title_he', fn_j196_default_reminder_title_he(),
+                                'body_he', fn_j196_default_reminder_body_he(), 'link', fn_j_not_defined_he()) $$;
+
+-- J-250: who gets the reminder — 'vp_hr' (an active vp_hr with an e-mail), else 'cfo' (an active cfo with an e-mail),
+-- else 'operator' (the CHR-ETRS operator).
+CREATE OR REPLACE FUNCTION fn_j196_reminder_level(p_company uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT CASE WHEN EXISTS (SELECT 1 FROM fn_j_company_role_addresses(p_company, 'vp_hr')) THEN 'vp_hr'
+              WHEN EXISTS (SELECT 1 FROM fn_j_company_role_addresses(p_company, 'cfo')) THEN 'cfo'
+              ELSE 'operator' END
+$$;
+
+-- J-241 / J-250: queue the "set a default nonprofit" reminder (existing outbox) to every active vp_hr of the company
+-- with an e-mail; none → every active cfo with an e-mail; none → the CHR-ETRS operator gets only
+-- "בחברה X אין vp_hr פעילה" (fn_j_notify_operator_no_vp_hr). One per recipient per company day.
+-- Returns the number queued now.
+CREATE OR REPLACE FUNCTION fn_j196_remind_default_nonprofit(p_company uuid, p_now timestamptz)
 RETURNS int
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  r   record;
-  v_n int := 0;
+  v_level text := fn_j196_reminder_level(p_company);
+  a       text;
+  v_n     int := 0;
 BEGIN
-  FOR r IN SELECT u.user_id, u.email FROM users u
-            WHERE u.company_id = p_company AND u.app_role = 'vp_hr' AND u.employment_ended_at IS NULL
-              AND NULLIF(btrim(u.email), '') IS NOT NULL
-  LOOP
-    IF fn_j_outbox_put(p_company, 'default_nonprofit_reminder', r.email, 'יש להגדיר עמותת ברירת מחדל',
-                       jsonb_build_object('reason_he', fn_j196_no_nonprofit_note_he(),
-                                          'action_he', 'יש להגדיר עמותת ברירת מחדל לחברה',
-                                          'settings_link', fn_j_not_defined_he()),
-                       'default_nonprofit:' || p_company || ':' || r.user_id || ':'
+  IF v_level = 'operator' THEN
+    RETURN fn_j_notify_operator_no_vp_hr(p_company, p_now);
+  END IF;
+  FOR a IN SELECT fn_j_company_role_addresses(p_company, v_level) LOOP
+    IF fn_j_outbox_put(p_company, 'default_nonprofit_reminder', a, fn_j196_default_reminder_title_he(),
+                       fn_j196_default_reminder_payload(),
+                       'default_nonprofit:' || p_company || ':' || v_level || ':' || a || ':'
                          || fn_j_company_today(p_company, p_now)) THEN
       v_n := v_n + 1;
     END IF;
@@ -207,9 +247,11 @@ BEGIN
   RETURN v_n;
 END;
 $$;
+-- J-250: the earlier vp_hr-only form is replaced by fn_j196_remind_default_nonprofit.
+DROP FUNCTION IF EXISTS fn_j196_remind_vp_hr_default(uuid, timestamptz);
 
 -- J-241: no nonprofit for this leaver → record the zeroing in golden_spoons_ledger ('zeroed_no_nonprofit',
--- note 'לא נתרם — אין עמותה'; nothing goes to the monthly donation aggregate) and remind vp_hr. Returns true.
+-- note 'לא נתרם — אין עמותה'; nothing goes to the monthly donation aggregate) and remind (J-250 chain). Returns true.
 CREATE OR REPLACE FUNCTION fn_j196_zero_no_nonprofit(p_user uuid, p_company uuid, p_amount numeric, p_deadline date,
                                                      p_now timestamptz)
 RETURNS boolean
@@ -221,7 +263,7 @@ BEGIN
   INSERT INTO golden_spoons_ledger (user_id, company_id, event_type, amount, exit_deadline, note_he)
   VALUES (p_user, p_company, 'zeroed_no_nonprofit', p_amount, p_deadline, fn_j196_no_nonprofit_note_he())
   ON CONFLICT (user_id, event_type, exit_deadline) DO NOTHING;
-  PERFORM fn_j196_remind_vp_hr_default(p_company, p_now);
+  PERFORM fn_j196_remind_default_nonprofit(p_company, p_now);
   RETURN true;
 END;
 $$;
@@ -318,7 +360,8 @@ GRANT EXECUTE ON FUNCTION rpc_put_nonprofit(text, boolean), rpc_list_nonprofits(
   rpc_get_nonprofit_monthly_transfer(uuid, date) TO authenticated;
 REVOKE ALL ON FUNCTION rpc_queue_leaver_reminders(timestamptz), fn_j196_donate_departed(uuid, uuid, numeric, date, timestamptz),
   fn_leaver_nonprofit(uuid, uuid), fn_leaver_reminder_payload(uuid) FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION fn_j196_remind_vp_hr_default(uuid, timestamptz),
+REVOKE ALL ON FUNCTION fn_j196_remind_default_nonprofit(uuid, timestamptz), fn_j196_reminder_level(uuid),
+  fn_j196_default_reminder_payload(),
   fn_j196_zero_no_nonprofit(uuid, uuid, numeric, date, timestamptz),
   fn_j196_settle_departed(uuid, uuid, numeric, date, timestamptz) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION rpc_queue_leaver_reminders(timestamptz) TO service_role;

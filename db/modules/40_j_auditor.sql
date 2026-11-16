@@ -2,8 +2,8 @@
 -- CHR-ETRS v1.7.0 · modules/40_j_auditor.sql — external auditor J-203 + auditor letters J-214 (Karin 16.11)
 --   * vp_hr opens the account (rpc_provision_external_auditor) and sets TWO things: an access window and a range of
 --     data months; outside the window every auditor RPC → 403; read only.
---   * the auditor's change log shows time, role, action AND the acting user id — Karin's explicit exception
---     (J-203), in this output only;
+--   * the auditor's change log shows time, role and action ONLY (v1.7.0 fixes 2, J-254 — replaces the earlier
+--     acting-user-id exception / J-246); the internal WORM access_audit_log keeps the actor id, never shown to her;
 --   * J-214: level 3 / 4 only with a letter vp_hr uploaded (uploader + time logged; the stored file is immutable
 --     and its sha256 kept); limited → 3, reasonable → 4; valid only for its own period; cancelling = a 'בוטל'
 --     mark (never a delete) → the level returns to 2 with a note in the board report.
@@ -155,10 +155,20 @@ END;
 $$;
 
 -- J-203 change log for the auditor: changes (settings, verification, letters, capabilities, accounts) of her company
--- inside her data months. Columns: time, role, action AND the acting user id — Karin's explicit exception to the
--- "no ids in outputs" rule, in this output only. Never the scope / subject of a row.
+-- inside her data months. v1.7.0 fixes 2 (Karin 16.11, J-254, replaces J-246 and the earlier id exception): columns =
+-- time, role, action ONLY — no name, no e-mail, no user id. The internal WORM access_audit_log still stores the actor id
+-- (accountability, J-214 same-person label); the auditor never sees it. Never the scope / subject of a row.
+-- (The earlier 4-column form is dropped first: a function's result columns cannot be changed in place.)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rpc_auditor_change_log' AND pronargs = 0
+                AND pg_get_function_result(oid) LIKE '%actor_user_id%') THEN
+    DROP FUNCTION rpc_auditor_change_log();
+  END IF;
+END $$;
+-- J-203 / J-254: the auditor's change log rows — time, role, action only (see above).
 CREATE OR REPLACE FUNCTION rpc_auditor_change_log()
-RETURNS TABLE (changed_at timestamptz, actor_role text, action text, actor_user_id uuid)
+RETURNS TABLE (changed_at timestamptz, actor_role text, action text)
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
@@ -169,7 +179,7 @@ DECLARE
 BEGIN
   PERFORM fn_j_audit('auditor_change_log_view', a.company_id, '{}'::jsonb);
   RETURN QUERY
-  SELECT l.created_at, COALESCE(u.app_role, 'system'), l.action, l.viewer_id
+  SELECT l.created_at, COALESCE(u.app_role, 'system')::text, l.action
     FROM access_audit_log l LEFT JOIN users u ON u.user_id = l.viewer_id
    WHERE l.company_id = a.company_id
      AND l.action ~ '(_put|_set|_sync|grant|revoke|provision|upload|cancel|decide)'
