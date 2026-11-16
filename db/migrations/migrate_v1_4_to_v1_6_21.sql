@@ -294,6 +294,8 @@ SELECT pg_temp.mig_add('project.legacy_set_non_core', (SELECT n FROM mig_before 
 \ir ../ref_country_calendar.sql
 \ir ../schema.sql
 \ir ../rpc.sql
+-- v1.7.0 (Karin 16.11, J-178 … J-219): the modules, idempotent
+\ir ../modules/all.sql
 
 -- ---------------------------------------------------------------------------
 -- 3. POST: user fields that need 1.6.x functions; constraints the skipped CREATE TABLE carried.
@@ -333,11 +335,13 @@ BEGIN
     ALTER TABLE users ADD CONSTRAINT chk_users_not_self_manager
       CHECK (reports_to IS DISTINCT FROM user_id AND dotted_line_to IS DISTINCT FROM user_id);
   END IF;
-  -- v1.6.16: the list gains 'cfo' (agents: finance viewer) — same order as schema.sql
-  IF pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'users_app_role_check')) NOT LIKE '%''cfo''%' THEN
+  -- v1.6.16: the list gains 'cfo' (agents: finance viewer); v1.7.0 (Karin 16.11): + researcher, external_auditor —
+  -- same order as schema.sql
+  IF pg_get_constraintdef((SELECT oid FROM pg_constraint WHERE conname = 'users_app_role_check')) NOT LIKE '%''external_auditor''%' THEN
     ALTER TABLE users DROP CONSTRAINT users_app_role_check;
     ALTER TABLE users ADD CONSTRAINT users_app_role_check CHECK (app_role IN ('employee', 'manager', 'vp_hr', 'legal_ethics',
-                                                                              'board_chair', 'board_member', 'owner_shareholder', 'cfo'));
+                                                                              'board_chair', 'board_member', 'owner_shareholder', 'cfo',
+                                                                              'researcher', 'external_auditor'));
   END IF;
 END $$;
 

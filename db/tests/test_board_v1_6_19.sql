@@ -434,10 +434,12 @@ SELECT t_assert('A1: an industry comparison never raises the level (still 1)',
   (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, false, 'none', NULL, false, true)->>'tier')::int = 1);
 SELECT t_assert('A1: one control (confidentiality procedure) → 2',
   (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, true)->>'tier')::int = 2);
-SELECT t_assert('A1: limited external audit to an identified standard applying to the metric → 3',
-  (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, false, 'limited', 'ISAE 3000', true)->>'tier')::int = 3);
-SELECT t_assert('A1: full external audit (same) → 4',
-  (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, false, 'full', 'ISAE 3000', true)->>'tier')::int = 4);
+-- v1.7.0 (Karin 16.11, J-214): audit fields entered by the cfo alone never lift the level above 2 — 3 / 4 need a
+-- letter uploaded by vp_hr (tests below, section 4b).
+SELECT t_assert('v1.7.0 J-214: cfo alone cannot reach 3 — limited audit to an identified standard, no letter → 1 (no control)',
+  (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, false, 'limited', 'ISAE 3000', true)->>'tier')::int = 1);
+SELECT t_assert('v1.7.0 J-214: cfo alone cannot reach 4 — full audit + a control, no letter → 2',
+  (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, true, 'full', 'ISAE 3000', true)->>'tier')::int = 2);
 SELECT t_assert('A1: a full audit without an identified standard, or not applying to the metric itself → not 3 / 4 (1)',
   (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, false, 'full', NULL, true)->>'tier')::int = 1
   AND (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m FROM t_m), NULL, true, true, true, false, false, 'full', 'ISAE 3000', false)->>'tier')::int = 1);
@@ -453,12 +455,77 @@ SELECT t_assert('A1: the label is Karin''s text (טיוטה)',
 INSERT INTO metric_verification_evidence (company_id, metric_key, period_month, questionnaire_identified, population_identified,
                                           timing_identified, scoring_identified, audit_scope, audit_standard, audit_applies_to_metric)
 VALUES (t_u('cG'), 'tps12_company', fn_month_shift((SELECT m FROM t_m), -3), true, true, true, true, 'full', 'ISAE 3000', true);
-SELECT t_assert('B2: full audit, no change → 4 in that month', fn_verification_level(t_u('cG'), 'tps12_company', fn_month_shift((SELECT m FROM t_m), -3)) = 4);
+-- v1.7.0 (J-214): the level 4 of that month comes from a reasonable-assurance letter uploaded by vp_hr (system insert here)
+INSERT INTO auditor_letter (company_id, metric_key, period_from, period_to, assurance, storage_path, sha256, uploaded_by)
+VALUES (t_u('cG'), 'tps12_company', fn_month_shift((SELECT m FROM t_m), -3), fn_month_shift((SELECT m FROM t_m), -3), 'reasonable',
+        'letters/test-b2.pdf', repeat('a', 64), t_u('hrG'));
+SELECT t_assert('B2: reasonable-assurance letter, no change → 4 in that month', fn_verification_level(t_u('cG'), 'tps12_company', fn_month_shift((SELECT m FROM t_m), -3)) = 4);
 INSERT INTO measurement_change_log (company_id, questionnaire_code, change_kind, changed_at)
 VALUES (t_u('cG'), 'TPS-12', 'timing', fn_agent_day_start(t_u('cG'), fn_month_shift((SELECT m FROM t_m), -3)) + interval '3 days');
 SELECT t_assert('B2: a logged company change of timing in that month caps it at 1, even with a full audit',
   fn_verification_level(t_u('cG'), 'tps12_company', fn_month_shift((SELECT m FROM t_m), -3)) = 1
   AND NOT fn_separate_body_control(t_u('cG'), 'tps12_company', fn_month_shift((SELECT m FROM t_m), -3)));
+-- ============ 4b. v1.7.0 (Karin 16.11, J-214) · external auditor letters (a past month m−6, isolated) ============
+CREATE TEMP TABLE t_m6 AS SELECT fn_month_shift((SELECT m FROM t_m), -6) AS m6;
+GRANT SELECT ON t_m6 TO authenticated;
+SELECT t_as(t_u('cfoG'));
+SET ROLE authenticated;
+SELECT t_assert('J-214: cfo enters evidence with a control and full audit fields → 2 (no letter yet)',
+  (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m6 FROM t_m6), NULL, true, true, true, false, true, 'full', 'ISAE 3000', true)->>'tier')::int = 2);
+SELECT t_expect_http('J-214: cfo cannot upload an auditor letter (vp_hr only) → 403',
+  $$SELECT rpc_upload_auditor_letter(t_u('cG'), 'absences', (SELECT m6 FROM t_m6), (SELECT m6 FROM t_m6), 'limited', 'letters/cfo.pdf', repeat('b', 64))$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('hrG'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-214: a letter without a valid sha256 → 400',
+  $$SELECT rpc_upload_auditor_letter(t_u('cG'), 'absences', (SELECT m6 FROM t_m6), (SELECT m6 FROM t_m6), 'limited', 'letters/x.pdf', 'abc')$$, 'invalid_auditor_letter', 400);
+SELECT rpc_upload_auditor_letter(t_u('cG'), 'absences', (SELECT m6 FROM t_m6), (SELECT m6 FROM t_m6), 'limited', 'letters/lim.pdf', repeat('c', 64))->>'status' AS lim_uploaded;
+RESET ROLE;
+SELECT t_assert('J-214: a limited letter → 3 (never 4); status בתוקף; cfo entered, vp_hr uploaded → no same-person label',
+  fn_verification_level(t_u('cG'), 'absences', (SELECT m6 FROM t_m6)) = 3
+  AND (SELECT j->>'letter_status' = 'בתוקף' AND NOT j ? 'same_person_label_he'
+         FROM (SELECT fn_verification_json(t_u('cG'), 'absences', (SELECT m6 FROM t_m6)) j) x));
+SELECT t_assert('J-214: the uploader and the time are logged (letter row + audit), the file is kept by path + sha256',
+  (SELECT uploaded_by = t_u('hrG') AND uploaded_at IS NOT NULL AND sha256 = repeat('c', 64) FROM auditor_letter WHERE storage_path = 'letters/lim.pdf')
+  AND EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'auditor_letter_upload' AND viewer_id = t_u('hrG')));
+SELECT t_expect_err('J-214: the letter is WORM (UPDATE refused)', $$UPDATE auditor_letter SET assurance = 'reasonable'$$, 'ledger_immutable');
+SELECT t_expect_err('J-214: the letter is WORM (DELETE refused)', $$DELETE FROM auditor_letter$$, 'ledger_immutable');
+SELECT t_assert('J-214: a letter is valid only for its own period — the m−6 letter does not touch m−5 (the next month / quarter)',
+  fn_j214_letter_level(t_u('cG'), 'absences', fn_month_shift((SELECT m6 FROM t_m6), 1)) IS NULL
+  AND fn_j214_letter_level(t_u('cG'), 'absences', fn_month_shift((SELECT m6 FROM t_m6), 3)) IS NULL);
+SELECT t_as(t_u('hrG'));
+SET ROLE authenticated;
+SELECT t_assert('J-214: vp_hr enters the evidence herself and uploads a reasonable letter → 4 with the label "הוזן ואושר על ידי אותו אדם"',
+  (rpc_put_metric_verification_evidence(t_u('cG'), 'absences', (SELECT m6 FROM t_m6), NULL, true, true, true, false, true, 'full', 'ISAE 3000', true)->>'tier')::int = 3
+  AND (rpc_upload_auditor_letter(t_u('cG'), 'absences', (SELECT m6 FROM t_m6), (SELECT m6 FROM t_m6), 'reasonable', 'letters/rea.pdf', repeat('d', 64))->>'status') = 'בתוקף');
+RESET ROLE;
+SELECT t_assert('J-214: …level 4, same-person label shown',
+  fn_verification_level(t_u('cG'), 'absences', (SELECT m6 FROM t_m6)) = 4
+  AND (SELECT j->>'same_person_label_he' = 'הוזן ואושר על ידי אותו אדם' FROM (SELECT fn_verification_json(t_u('cG'), 'absences', (SELECT m6 FROM t_m6)) j) x));
+CREATE TEMP TABLE t_let AS SELECT letter_id, storage_path FROM auditor_letter WHERE company_id = t_u('cG');
+GRANT SELECT ON t_let TO authenticated;
+SELECT t_as(t_u('cfoG'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-214: cfo cannot cancel a letter → 403',
+  $$SELECT rpc_cancel_auditor_letter((SELECT letter_id FROM t_let WHERE storage_path = 'letters/rea.pdf'))$$, 'insufficient_privilege', 403);
+RESET ROLE;
+SELECT t_as(t_u('hrG'));
+SET ROLE authenticated;
+SELECT rpc_cancel_auditor_letter((SELECT letter_id FROM t_let WHERE storage_path = 'letters/rea.pdf'))->>'status' AS rea_cancelled;
+RESET ROLE;
+SELECT t_assert('J-214: cancelling the reasonable letter (a "בוטל" mark) → the still-valid limited letter gives 3',
+  fn_verification_level(t_u('cG'), 'absences', (SELECT m6 FROM t_m6)) = 3);
+SELECT t_as(t_u('hrG'));
+SET ROLE authenticated;
+SELECT rpc_cancel_auditor_letter((SELECT letter_id FROM t_let WHERE storage_path = 'letters/lim.pdf'))->>'status' AS lim_cancelled;
+RESET ROLE;
+SELECT t_assert('J-214: all letters of the period cancelled → back to 2, letter_status "בוטל" and a note for the board report; nothing deleted',
+  fn_verification_level(t_u('cG'), 'absences', (SELECT m6 FROM t_m6)) = 2
+  AND (SELECT j->>'letter_status' = 'בוטל' AND j->>'board_note_he' LIKE '%בוטל%' AND (j->>'tier')::int = 2
+         FROM (SELECT fn_verification_json(t_u('cG'), 'absences', (SELECT m6 FROM t_m6)) j) x)
+  AND (SELECT count(*) = 2 FROM auditor_letter WHERE company_id = t_u('cG') AND metric_key = 'absences')
+  AND (SELECT count(*) = 2 FROM auditor_letter_cancel));
+SELECT t_expect_err('J-214: a cancellation is WORM too', $$DELETE FROM auditor_letter_cancel$$, 'ledger_immutable');
 -- B2: changes made by vp_hr to an unlocked questionnaire are logged
 SELECT t_as(t_u('hrG'));
 SET ROLE authenticated;
