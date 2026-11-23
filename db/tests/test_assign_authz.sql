@@ -924,15 +924,15 @@ SELECT t_assert('J-278 B / J-156 A: the needs_review day is in the manager list 
   AND (SELECT count(*) = 1 FROM t_rv, jsonb_array_elements(j) e
         WHERE label = 'mgr before' AND e->>'display_pseudonym' = (SELECT display_pseudonym FROM users WHERE user_id = t_u('emp_nr'))
           AND e->>'availability_he' = 'לא זמינה' AND e->>'coordination_status' = 'pending_coordination'));
-SELECT t_assert('J-278 B / J-288 B / J-293: vp_hr lists the rows to review (exactly the emp_nr day: kind null, needs_review) and the whole company (every AuthzCo row incl. cancelled); company rows = the single reader''s 6 keys + user_id + full_name (J-293 exception); the single reader has no person field',
+SELECT t_assert('J-278 B / J-288 B / J-293: vp_hr lists the rows to review (exactly the emp_nr day: kind null, needs_review) and the whole company (every AuthzCo row incl. cancelled); company rows = the single reader''s 7 keys (J-296 B: + reviewable) + user_id + full_name (J-293 exception); the single reader has no person field',
   (SELECT jsonb_array_length(j) = 1 AND j->0->'absence_kind' = 'null'::jsonb AND j->0->>'kind_review_status' = 'needs_review'
      FROM t_rv WHERE label = 'review list')
   AND (SELECT jsonb_array_length(j) = (SELECT count(*) FROM hr_absence_entry WHERE company_id = '00000000-0000-0000-0000-0000000a5c01')
      FROM t_rv WHERE label = 'company list')
   AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys((SELECT j->0 FROM t_rv WHERE label = 'company list')) k)
-      = ARRAY['absence_date', 'absence_kind', 'cancelled', 'coordination_status', 'entry_id', 'full_name', 'kind_review_status', 'user_id']
+      = ARRAY['absence_date', 'absence_kind', 'cancelled', 'coordination_status', 'entry_id', 'full_name', 'kind_review_status', 'reviewable', 'user_id']
   AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys((SELECT j->0 FROM t_rv WHERE label = 'single list')) k)
-      = ARRAY['absence_date', 'absence_kind', 'cancelled', 'coordination_status', 'entry_id', 'kind_review_status']
+      = ARRAY['absence_date', 'absence_kind', 'cancelled', 'coordination_status', 'entry_id', 'kind_review_status', 'reviewable']
   AND NOT EXISTS (SELECT 1 FROM t_rv WHERE label = 'single list' AND j::text ~* '(user_id|person|pseudonym|full_name|email)'));
 SELECT t_assert('J-292 (replaced the J-288 B read audit): the company reads and the single read wrote NO audit row',
   NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_read'));
@@ -983,12 +983,14 @@ RESET ROLE;
 SELECT t_assert('J-289: once vp_hr sets it to sick, the day counts (S1 HR sick days 5; team total max(2, 5) + 1 + 1 = 7)',
   fn_hr_sick_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m)) = 5
   AND fn_team_absence_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m)) = 7);
-SELECT t_assert('J-284 A: no export, CHRO, dossier, report or board function returns or reads the kind or the HR table',
+SELECT t_assert('J-284 A / J-295 C: no export, CHRO, dossier, report, board or offboarding function returns or reads the kind (the offboarding pending list reads the table but never the kind)',
   NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                WHERE n.nspname = 'public' AND p.proname ~* '(export|chro|dossier|report|csv|board|offboard)'
+                 AND p.proname <> 'fn_hr_offboarding_pending'   -- J-295 C: reads the table, never the kind (checked below)
                  AND (p.prosrc ~* '(absence_kind|hr_absence_entry|fn_hr_absence_rows|rpc_hr_absence)'
                       OR pg_get_function_result(p.oid) LIKE '%absence_kind%'))
-  AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rpc_chro_named_view'));
+  AND EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rpc_chro_named_view')
+  AND (SELECT prosrc NOT LIKE '%absence_kind%' FROM pg_proc WHERE proname = 'fn_hr_offboarding_pending'));
 SELECT t_assert('J-288 B / J-278 B: the shared row reader and the audit-scope builder are internal (no client grant)',
   NOT has_function_privilege('authenticated', 'fn_hr_absence_rows(uuid, uuid, boolean)', 'EXECUTE')
   AND NOT has_function_privilege('authenticated', 'fn_hr_absence_audit_scope(hr_absence_entry)', 'EXECUTE')
@@ -1088,3 +1090,92 @@ SELECT t_assert('J-156 A / J-267 C: the manager list is still uniform — every 
           AND bool_and(j->>'availability_he' = 'לא זמינה' AND NOT (j::text ~* '(sick|other|kind|user_id|full_name)'))
      FROM t_mgr14)
   AND NOT EXISTS (SELECT 1 FROM t_mgr14 WHERE j->>'display_pseudonym' = (SELECT display_pseudonym FROM users WHERE user_id = t_u('emp_lv'))));
+
+-- ============ 15. J-295 C / J-296 B / J-297 B (Karin 23.11) · offboarding pending list, reviewable, future end date ============
+-- J-297 B boundary: employed while now < employment_ended_at; AT the end instant she has left (strict).
+SELECT t_assert('J-297 B boundary: no end → employed; end in the future → employed; end == now → LEFT (strict <); end in the past → left',
+  fn_hr_employed_at(NULL, now()) AND fn_hr_employed_at(now() + interval '1 second', now())
+  AND NOT fn_hr_employed_at(now(), now()) AND NOT fn_hr_employed_at(now() - interval '1 second', now()));
+-- Fixtures (team Gov, no manager): emp_fu leaves in 3 days, emp_pa left a second ago; each has one needs_review day.
+SELECT count(t_mk(k, 'Gov', 'employee', 'employee')) = 2 AS j297_ok FROM unnest(ARRAY['emp_fu', 'emp_pa']) k;
+INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind, kind_review_status)
+SELECT t_u(k), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 50, NULL, 'needs_review' FROM unnest(ARRAY['emp_fu', 'emp_pa']) k;
+UPDATE users SET employment_ended_at = clock_timestamp() + interval '3 days' WHERE user_id = t_u('emp_fu');
+UPDATE users SET employment_ended_at = clock_timestamp() - interval '1 second' WHERE user_id = t_u('emp_pa');
+CREATE TEMP TABLE t_j297 (label text, j jsonb);
+GRANT SELECT, INSERT ON t_j297 TO authenticated;
+-- Test helper: the entry id of a fixture's day 50 days ago, read as the superuser (no client table read since J-291 B).
+CREATE OR REPLACE FUNCTION t_entry_of(p_key text) RETURNS uuid LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT entry_id FROM hr_absence_entry WHERE user_id = t_u(p_key) AND absence_date = CURRENT_DATE - 50 $$;   -- superuser read (J-291 B)
+GRANT EXECUTE ON FUNCTION t_entry_of(text) TO authenticated;
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_j297 SELECT 'company', jsonb_agg(to_jsonb(r)) FROM rpc_hr_absence_list_company('00000000-0000-0000-0000-0000000a5c01') r;
+INSERT INTO t_j297 SELECT 'fu put', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_fu'), t_today('emp_fu') + 1, 'sick');
+INSERT INTO t_j297 SELECT 'fu cancel', rpc_hr_absence_cancel('00000000-0000-0000-0000-0000000a5c01', t_u('emp_fu'), t_today('emp_fu') + 1);
+INSERT INTO t_j297 SELECT 'fu set', rpc_hr_absence_set_kind('00000000-0000-0000-0000-0000000a5c01', t_entry_of('emp_fu'), 'other');
+INSERT INTO t_j297 SELECT 'fu read', jsonb_agg(to_jsonb(r)) FROM rpc_hr_absence_list('00000000-0000-0000-0000-0000000a5c01', t_u('emp_fu')) r;
+INSERT INTO t_j297 SELECT 'pa put', t_err_sig(format('SELECT rpc_hr_absence_put(%L, %L, %L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_u('emp_pa'), t_today('emp_fu') + 1, 'sick'));
+INSERT INTO t_j297 SELECT 'pa cancel', t_err_sig(format('SELECT rpc_hr_absence_cancel(%L, %L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_u('emp_pa'), CURRENT_DATE - 50));
+INSERT INTO t_j297 SELECT 'pa set', t_err_sig(format('SELECT rpc_hr_absence_set_kind(%L, %L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_entry_of('emp_pa'), 'sick'));
+RESET ROLE;
+SELECT t_assert('J-296 B: reviewable per company-list row = what the guard would accept — the leaver rows (emp_lv, emp_pa) false; emp_fu (future end) and every active employee true',
+  (SELECT bool_and((e->>'reviewable')::boolean = ((e->>'user_id')::uuid NOT IN (t_u('emp_lv'), t_u('emp_pa'))))
+          AND bool_or(NOT (e->>'reviewable')::boolean) AND count(*) FILTER (WHERE (e->>'user_id')::uuid = t_u('emp_fu')) = 1
+     FROM t_j297, jsonb_array_elements(j) e WHERE label = 'company')
+  AND (SELECT bool_and((e->>'reviewable')::boolean = fn_hr_kind_settable('00000000-0000-0000-0000-0000000a5c01', (e->>'entry_id')::uuid))
+         FROM t_j297, jsonb_array_elements(j) e WHERE label = 'company'));
+SELECT t_assert('J-297 B: an employee whose end date is in the FUTURE is still active — vp_hr puts, cancels and sets the kind (reviewed); the single reader works and shows reviewable true',
+  (SELECT j->>'status' = 'saved' FROM t_j297 WHERE label = 'fu put')
+  AND (SELECT j->>'status' = 'cancelled' FROM t_j297 WHERE label = 'fu cancel')
+  AND (SELECT j->>'status' = 'reviewed' FROM t_j297 WHERE label = 'fu set')
+  AND (SELECT absence_kind = 'other' AND kind_review_status = 'reviewed' FROM hr_absence_entry WHERE entry_id = t_entry_of('emp_fu'))
+  AND (SELECT count(*) = 2 AND bool_and((e->>'reviewable')::boolean) FROM t_j297, jsonb_array_elements(j) e WHERE label = 'fu read'));
+SELECT t_assert('J-297 B: an employee whose end date has PASSED is refused — put, cancel and set kind all → 403 access_denied; her row stays needs_review',
+  (SELECT bool_and(j->>'message' = 'access_denied') FROM t_j297 WHERE label IN ('pa put', 'pa cancel', 'pa set'))
+  AND (SELECT count(*) = 3 FROM t_j297 WHERE label IN ('pa put', 'pa cancel', 'pa set'))
+  AND (SELECT kind_review_status = 'needs_review' FROM hr_absence_entry WHERE entry_id = t_entry_of('emp_pa')));
+-- J-295 C: offboarding returns the pending list (service_role / server only).
+SELECT count(t_mk(k, 'Gov', 'employee', 'employee')) = 3 AS j295_ok FROM unnest(ARRAY['emp_ob', 'emp_oi', 'emp_on']) k;
+INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind, kind_review_status) VALUES
+  (t_u('emp_ob'), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 60, NULL, 'needs_review'),
+  (t_u('emp_ob'), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 61, NULL, 'needs_review'),
+  (t_u('emp_ob'), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 62, 'sick', 'reviewed'),
+  (t_u('emp_oi'), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 60, NULL, 'needs_review');
+CREATE TEMP TABLE t_j295 AS
+  SELECT 'future'::text AS label, rpc_offboard_employee(t_u('emp_ob'), clock_timestamp() + interval '5 days') AS j
+  UNION ALL SELECT 'immediate', rpc_offboard_employee(t_u('emp_oi'))
+  UNION ALL SELECT 'none', rpc_offboard_employee(t_u('emp_on'), clock_timestamp() + interval '5 days');
+GRANT SELECT ON t_j295 TO authenticated;
+SELECT t_assert('J-295 C: offboarding with a FUTURE end still succeeds and returns terminated_at + the 2 needs_review days (entry_id, absence_date, kind_review_status, reviewable = true) — the reviewed day and any kind / name / person id are not in it',
+  (SELECT (j->>'terminated_at')::timestamptz > clock_timestamp() AND (j->'hr_kind_review_pending'->>'count')::int = 2
+          AND jsonb_array_length(j->'hr_kind_review_pending'->'entries') = 2
+          AND (SELECT bool_and((SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(e) k) = ARRAY['absence_date', 'entry_id', 'kind_review_status', 'reviewable']
+                               AND e->>'kind_review_status' = 'needs_review' AND (e->>'reviewable')::boolean)
+                 FROM jsonb_array_elements(j->'hr_kind_review_pending'->'entries') e)
+          AND NOT (j::text ~* '(absence_kind|sick|other|full_name|user_id|Fixture)')
+     FROM t_j295 WHERE label = 'future'));
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+SELECT t_assert('J-295 C / J-297 B: until the future end date vp_hr sets the kind of a listed day',
+  rpc_hr_absence_set_kind('00000000-0000-0000-0000-0000000a5c01',
+    ((SELECT j FROM t_j295 WHERE label = 'future')->'hr_kind_review_pending'->'entries'->0->>'entry_id')::uuid, 'sick')->>'status' = 'reviewed');
+RESET ROLE;
+SELECT t_assert('J-295 C / J-310: an IMMEDIATE offboarding still succeeds; its pending day is listed with reviewable = false (vp_hr can no longer set it); no pending days → count 0, empty list',
+  (SELECT (j->'hr_kind_review_pending'->>'count')::int = 1 AND NOT (j->'hr_kind_review_pending'->'entries'->0->>'reviewable')::boolean
+     FROM t_j295 WHERE label = 'immediate')
+  AND (SELECT (j->'hr_kind_review_pending'->>'count')::int = 0 AND j->'hr_kind_review_pending'->'entries' = '[]'::jsonb
+     FROM t_j295 WHERE label = 'none'));
+SELECT t_assert('J-295 C: nothing reaches anyone else — only service_role may call offboarding (no authenticated / anon EXECUTE); the employee_offboarded audit row holds no pending list or kind; the helper is internal',
+  NOT has_function_privilege('authenticated', 'rpc_offboard_employee(uuid, timestamptz)', 'EXECUTE')
+  AND NOT has_function_privilege('anon', 'rpc_offboard_employee(uuid, timestamptz)', 'EXECUTE')
+  AND has_function_privilege('service_role', 'rpc_offboard_employee(uuid, timestamptz)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'fn_hr_offboarding_pending(uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'fn_hr_employed_at(timestamptz, timestamptz)', 'EXECUTE')
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'employee_offboarded'
+                   AND subject_user_id IN (t_u('emp_ob'), t_u('emp_oi')) AND scope::text ~* '(pending|entries|kind|sick)'));
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+SELECT t_expect_err_any('J-295 C: vp_hr (a client) cannot call offboarding herself — permission denied (she sees the pending days in rpc_hr_absence_list_company, reviewable flag)',
+  format('SELECT rpc_offboard_employee(%L)', t_u('emp_gh')), '42501');
+RESET ROLE;

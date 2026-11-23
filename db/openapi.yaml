@@ -1738,7 +1738,13 @@ paths:
         crypto-shred (O-14)'
       description: 'O-14 (Karin 24.10): sets users.employment_ended_at and consent_vault = false, wipes manager
         vault entries immediately, and schedules pseudonym_key crypto-shredding for terminated_at + 30 days (cancellable
-        via /rpc/rpc_revert_offboarding within 30 days).'
+        via /rpc/rpc_revert_offboarding within 30 days). v1.6.21 J-295 C (Karin 23.11): offboarding always succeeds and
+        now returns OffboardResult — terminated_at plus hr_kind_review_pending (count + entries: entry_id, absence_date,
+        kind_review_status, reviewable) of the employee''s HR absence days whose kind vp_hr has not set yet; never
+        the kind or a name. With a FUTURE p_terminated_at the employee stays active until then (J-297 B), so vp_hr
+        can still set the kind (reviewable = true); an immediate end makes them unreviewable (reviewable = false,
+        J-310). Callable by service_role only (no client grant, J-309); vp_hr sees the same days in
+        /rpc/rpc_hr_absence_list_company (p_needs_review_only, reviewable).'
       requestBody:
         required: true
         content:
@@ -1760,7 +1766,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PseudonymKeyStatus'
+                $ref: '#/components/schemas/OffboardResult'
         '403':
           $ref: '#/components/responses/BusinessError403'
   /org_role:
@@ -3437,7 +3443,7 @@ paths:
         else 403 insufficient_privilege; an active employee of that company, else 403 access_denied). J-292 (Karin
         23.11): vp_hr reads are NOT logged (no audit row). One employee per call; the whole company:
         /rpc/rpc_hr_absence_list_company (J-288 B). Rows carry the review state (J-278 B). Cancelled days are included
-        (cancelled = true). No person field in the rows (shape unchanged). The employee reads her own days through
+        (cancelled = true). No person field in the rows; J-296 B: + reviewable (the guard''s answer). The employee reads her own days through
         /rpc/rpc_hr_absence_my_list (J-291 B); no other role (manager, cfo, board, legal_ethics, owner_shareholder)
         can call this.'
       requestBody:
@@ -3464,7 +3470,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/HrAbsenceRow'
+                  $ref: '#/components/schemas/HrAbsenceVpHrRow'
         '403':
           $ref: '#/components/responses/BusinessError403'
   /rpc/rpc_hr_absence_list_company:
@@ -3478,7 +3484,7 @@ paths:
         and full_name — an explicitly approved exception to the no-person-id rule (like J-173), for vp_hr of the same
         company only. p_needs_review_only = only the rows whose kind must be set (J-278 B). J-292: NOT logged.
         Cancelled rows and leavers'' rows included (cancelled = true; a leaver''s needs_review row cannot be reviewed —
-        J-294 C / J-295).'
+        J-294 C / J-295; reviewable = false — J-296 B).'
       requestBody:
         required: true
         content:
@@ -3542,7 +3548,8 @@ paths:
         → the same 403 access_denied (no existence hint, no hint that she left); p_absence_kind sick | other
         (else 400 invalid_absence_kind — a kind is never guessed). The row becomes reviewed; coordination and
         cancellation are unchanged; the manager list is unchanged. Audited as hr_absence_kind_set WITH the kind
-        (J-280 B), the employee as the subject. Active employees only (J-294 C replaced "any row").'
+        (J-280 B), the employee as the subject. Active employees only (J-294 C replaced "any row"); J-297 B: an employee with a FUTURE end date is
+        still active until that instant (at the end instant she has left).'
       requestBody:
         required: true
         content:
@@ -5452,10 +5459,10 @@ components:
   schemas:
     HrAbsenceCompanyRow:
       type: object
-      description: 'v1.6.21 J-288 B / J-293 — one HR absence row of the vp_hr company list: HrAbsenceRow + the employee''s
-        user_id and full_name (approved exception to the no-person-id rule, vp_hr of the same company only).'
+      description: 'v1.6.21 J-288 B / J-293 — one HR absence row of the vp_hr company list: HrAbsenceVpHrRow + the
+        employee''s user_id and full_name (approved exception to the no-person-id rule, vp_hr of the same company only).'
       allOf:
-      - $ref: '#/components/schemas/HrAbsenceRow'
+      - $ref: '#/components/schemas/HrAbsenceVpHrRow'
       - type: object
         properties:
           user_id:
@@ -5463,6 +5470,46 @@ components:
             format: uuid
           full_name:
             type: string
+    HrAbsenceVpHrRow:
+      type: object
+      description: 'v1.6.21 J-296 B — HrAbsenceRow + reviewable for the vp_hr readers: true when vp_hr may set the kind
+        (rpc_hr_absence_set_kind would accept it — an active employee, J-294 C / J-297 B), false e.g. for a leaver''s row.'
+      allOf:
+      - $ref: '#/components/schemas/HrAbsenceRow'
+      - type: object
+        properties:
+          reviewable:
+            type: boolean
+    OffboardResult:
+      type: object
+      description: 'v1.6.21 J-295 C — result of /rpc/rpc_offboard_employee (service_role only). hr_kind_review_pending =
+        the employee''s HR days still in needs_review (no kind, no name).'
+      properties:
+        terminated_at:
+          type: string
+          format: date-time
+        hr_kind_review_pending:
+          type: object
+          properties:
+            count:
+              type: integer
+            entries:
+              type: array
+              items:
+                type: object
+                properties:
+                  entry_id:
+                    type: string
+                    format: uuid
+                  absence_date:
+                    type: string
+                    format: date
+                  kind_review_status:
+                    type: string
+                    enum:
+                    - needs_review
+                  reviewable:
+                    type: boolean
     HrAbsenceRow:
       type: object
       description: 'v1.6.21 J-267 C / J-278 B / J-288 B — one HR absence row for vp_hr (health data). absence_kind is
