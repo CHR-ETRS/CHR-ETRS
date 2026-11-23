@@ -52,6 +52,12 @@ rows() {
   psql -d "$DB" -qAt -c "SELECT string_agg((absence_date - CURRENT_DATE) || ':' || COALESCE(absence_kind, '-') || ':' || kind_review_status, ' ' ORDER BY absence_date) FROM hr_absence_entry"
 }
 
+# J-300 B / J-301 B: the import objects exist after an upgrade — employee_number + its per-company unique index,
+# the two staging tables with RLS forced, no policy and no client grant. $1 = label.
+import_objects() {
+  check "$1: J-300 B / J-301 B import objects (employee_number unique per company, staging closed to clients)" "$(psql -d "$DB" -qAt -c "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'employee_number')::text || '/' || (SELECT indisunique FROM pg_index WHERE indexrelid = 'uq_users_company_employee_number'::regclass)::text || '/' || (SELECT count(*) FROM pg_class WHERE relname IN ('hr_absence_import_batch', 'hr_absence_import_row') AND relrowsecurity AND relforcerowsecurity)::text || '/' || (SELECT count(*) FROM pg_policy WHERE polrelid IN ('hr_absence_import_batch'::regclass, 'hr_absence_import_row'::regclass))::text || '/' || has_table_privilege('authenticated', 'hr_absence_import_row', 'SELECT')::text")" "1/true/2/0/false"
+}
+
 # Upgrade checks after the current pack was applied over an old shape; $1 = label, $2 = expected rows.
 after_upgrade() {
   check "$1: rows after upgrade (never a guessed kind)" "$(rows)" "$2"
@@ -59,6 +65,7 @@ after_upgrade() {
   check "$1: absence_kind nullable, review state NOT NULL" "$(psql -d "$DB" -qAt -c "SELECT string_agg(column_name || '=' || is_nullable, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_name = 'hr_absence_entry' AND column_name IN ('absence_kind', 'kind_review_status')")" "absence_kind=YES,kind_review_status=NO"
   check "$1: needs_review rows are not sick days in the totals" "$(psql -d "$DB" -qAt -c "SELECT fn_hr_sick_days('00000000-0000-0000-0000-00000000aa01', 'T', date_trunc('month', CURRENT_DATE)::date) + fn_hr_sick_days('00000000-0000-0000-0000-00000000aa01', 'T', date_trunc('month', CURRENT_DATE + 1)::date) - CASE WHEN date_trunc('month', CURRENT_DATE) = date_trunc('month', CURRENT_DATE + 1) THEN fn_hr_sick_days('00000000-0000-0000-0000-00000000aa01', 'T', date_trunc('month', CURRENT_DATE)::date) ELSE 0 END")" "$3"
   check "$1: J-291 B no direct client read (SELECT revoked, own-rows policy gone)" "$(psql -d "$DB" -qAt -c "SELECT has_table_privilege('authenticated', 'hr_absence_entry', 'SELECT')::text || '/' || (SELECT count(*) FROM pg_policy WHERE polrelid = 'hr_absence_entry'::regclass)")" "false/0"
+  import_objects "$1"
   # vp_hr's review (stand-in: the state the review RPC writes), then a re-apply must not reset it
   psql -d "$DB" -qAt >/dev/null -c "UPDATE hr_absence_entry SET absence_kind = 'other', kind_review_status = 'reviewed' WHERE absence_date = CURRENT_DATE + 1"
   apply_pack .
@@ -91,6 +98,19 @@ for REV in c56d380 8eade64; do
     echo "SKIP HRUP real $REV pack (git history not available)"
   fi
 done
+# (3) J-308 A: upgrade from the sixth-round commit 46a366f (no import objects yet) — the HR rows are untouched.
+if git cat-file -e "46a366f:db/schema.sql" 2>/dev/null; then
+  OLD=$(mktemp -d)
+  for f in ref_country_calendar.sql schema.sql rpc.sql; do git show "46a366f:db/$f" > "$OLD/$f"; done
+  fresh_db; apply_pack "$OLD"; add_rows kind
+  BEFORE="$(rows)"
+  apply_pack .
+  check "real 46a366f pack: HR rows unchanged by the import upgrade" "$(rows)" "$BEFORE"
+  import_objects "real 46a366f pack"
+  rm -rf "$OLD"
+else
+  echo "SKIP HRUP real 46a366f pack (git history not available)"
+fi
 psql -qc "DROP DATABASE IF EXISTS $DB" postgres
 echo "HR KIND UPGRADE TESTS: $FAILS failed"
 [ "$FAILS" = 0 ]

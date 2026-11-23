@@ -1189,6 +1189,99 @@ REVOKE ALL ON TABLE hr_absence_entry FROM PUBLIC, anon, authenticated;
 DROP POLICY IF EXISTS hr_absence_own ON hr_absence_entry;
 
 -- ---------------------------------------------------------------------------
+-- 6c. HR absence bulk import — v1.6.21 J-300 B … J-308 A (Karin 23.11; PR #12)
+--   * users.employee_number (J-300 B): a per-company employee number — unique per company, NULL until set. It
+--     lives on users because the "employee profile" is a flag on users (has_employee_profile), not a table.
+--     Writer: rpc_hr_set_employee_number (vp_hr of the same company only); no HR sync writes it (the PR #13
+--     directory sync matches by e-mail and writes shifts only). Email is the fallback key, case-insensitive.
+--   * hr_absence_import_batch / hr_absence_import_row (J-301 B): staging of ONE uploaded CSV (J-307 C) — written
+--     and read only through the SECURITY DEFINER import RPCs of an active vp_hr of the same company; no client
+--     grant, RLS forced with no policy. The staged rows hold the kind (health data) as typed in the file.
+--     Retention of the file, the staging rows and their size limits: 'לא הוגדר'.
+-- ---------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS employee_number text;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_users_employee_number' AND conrelid = 'users'::regclass) THEN
+    ALTER TABLE users ADD CONSTRAINT chk_users_employee_number
+      CHECK (employee_number IS NULL OR (employee_number = btrim(employee_number) AND employee_number <> ''));
+  END IF;
+END $$;
+COMMENT ON COLUMN users.employee_number IS
+  'J-300 B: per-company employee number (the HR import match key; e-mail is the fallback). Unique per company; NULL until vp_hr sets it (rpc_hr_set_employee_number).';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_company_employee_number ON users (company_id, employee_number)
+  WHERE employee_number IS NOT NULL;
+-- J-300 B fallback: e-mail match inside one company, case-insensitive (users.email is unique case-sensitively only).
+CREATE INDEX IF NOT EXISTS idx_users_company_lower_email ON users (company_id, lower(email));
+
+CREATE TABLE IF NOT EXISTS hr_absence_import_batch (
+    batch_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id      uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    created_by      uuid REFERENCES users(user_id) ON DELETE SET NULL,
+    created_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
+    source_filename text CHECK (source_filename IS NULL OR btrim(source_filename) <> ''),
+    source_sha256   text CHECK (source_sha256 IS NULL OR source_sha256 ~ '^[0-9a-f]{64}$'),
+    status          text NOT NULL DEFAULT 'staged' CHECK (status IN ('staged', 'validated', 'committed')),
+    validated_at    timestamptz,
+    committed_at    timestamptz,
+    committed_by    uuid REFERENCES users(user_id) ON DELETE SET NULL,
+    CONSTRAINT chk_hr_import_batch_committed CHECK ((status = 'committed') = (committed_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_hr_import_batch_company ON hr_absence_import_batch (company_id, created_at DESC);
+
+-- One staged CSV row. The *_text columns keep the file values as typed (trimmed; empty → NULL); the normalised
+-- columns, the match (user_id — internal, never returned) and the outcome are filled by the dry run.
+CREATE TABLE IF NOT EXISTS hr_absence_import_row (
+    batch_id          uuid NOT NULL REFERENCES hr_absence_import_batch(batch_id) ON DELETE CASCADE,
+    row_no            int NOT NULL CHECK (row_no >= 1),
+    employee_number   text,
+    email             text,
+    absence_date_text text,
+    absence_kind_text text,
+    action_text       text,
+    user_id           uuid REFERENCES users(user_id) ON DELETE SET NULL,
+    absence_date      date,
+    absence_kind      text CHECK (absence_kind IS NULL OR absence_kind IN ('sick', 'other')),
+    action            text CHECK (action IS NULL OR action IN ('put', 'cancel')),
+    outcome           text CHECK (outcome IS NULL OR outcome IN ('accepted', 'rejected', 'duplicate', 'superseded')),
+    code              text,
+    winner_row_no     int,
+    PRIMARY KEY (batch_id, row_no)
+);
+
+-- J-301 B: a committed batch is final — its header and rows can no longer change (a second commit is refused by the
+-- RPC as well). Trigger function for both tables; deletes are left to ON DELETE CASCADE of the company.
+CREATE OR REPLACE FUNCTION fn_hr_import_committed_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM hr_absence_import_batch b WHERE b.batch_id = OLD.batch_id AND b.status = 'committed') THEN
+    RAISE EXCEPTION 'import_batch_committed'
+      USING ERRCODE = '23505', DETAIL = 'http_hint=409;code=import_batch_committed', HINT = 'import_batch_committed';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_hr_import_batch_committed ON hr_absence_import_batch;
+CREATE TRIGGER trg_hr_import_batch_committed BEFORE UPDATE ON hr_absence_import_batch
+    FOR EACH ROW EXECUTE FUNCTION fn_hr_import_committed_immutable();
+DROP TRIGGER IF EXISTS trg_hr_import_row_committed ON hr_absence_import_row;
+CREATE TRIGGER trg_hr_import_row_committed BEFORE UPDATE ON hr_absence_import_row
+    FOR EACH ROW EXECUTE FUNCTION fn_hr_import_committed_immutable();
+REVOKE ALL ON FUNCTION fn_hr_import_committed_immutable() FROM PUBLIC;
+
+COMMENT ON TABLE hr_absence_import_batch IS
+  'J-301 B: one HR absence import (CSV, J-307 C) of one company — staged → validated (dry run) → committed (once). Import RPCs of an active vp_hr of the company only; retention לא הוגדר.';
+COMMENT ON TABLE hr_absence_import_row IS
+  'J-301 B: the staged rows of an import batch, with the dry-run outcome. Holds the kind as typed (health data). Import RPCs only; retention לא הוגדר.';
+ALTER TABLE hr_absence_import_batch ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_import_batch FORCE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_import_row ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_import_row FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE hr_absence_import_batch, hr_absence_import_row FROM PUBLIC, anon, authenticated;
+
+-- ---------------------------------------------------------------------------
 -- 7. team_aggregate — REGULAR team data, N ≥ 5 ACTUAL contributors (lock #3)
 -- Deprivation tax (count × avg × 0.12), turnover range sums, TPS-12 team average.
 -- Sensitive Shadow Balance figures moved to shadow_balance_aggregate (N ≥ 10).

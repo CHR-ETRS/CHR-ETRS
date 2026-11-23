@@ -2393,6 +2393,485 @@ GRANT EXECUTE ON FUNCTION rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_abs
   rpc_hr_absence_set_kind(uuid, uuid, text), rpc_hr_absence_my_list() TO authenticated;
 
 -- ---------------------------------------------------------------------------
+-- v1.6.21 J-300 B … J-308 A (Karin 23.11): HR absence BULK IMPORT (CSV) — stage → dry run → commit.
+--   * Only an active vp_hr of the company (fn_assert_vp_hr) — every RPC, every batch (a batch of another company
+--     is the same neutral 403 access_denied as an unknown id). No client touches the tables (J-301 B).
+--   * CSV columns (J-307 C): employee_number, email, absence_date (YYYY-MM-DD), absence_kind (sick | other),
+--     action (put | cancel). No reason / free-text column (J-267 C): any other column → 400. xlsx is converted
+--     to CSV outside the DB. The client sends the parsed rows as a jsonb array (file order = row number).
+--   * Match (J-300 B): employee_number in the company; only when it is empty, e-mail (case-insensitive).
+--     Report codes (J-303 B): 'leaver' only for this company's own leavers (J-294 C / J-297 B,
+--     fn_hr_employed_at); anything else that does not match an active employee → opaque 'unmatched'.
+--   * Same employee + day twice (J-306 C): the LAST file row wins; the others are 'duplicate' (same values,
+--     collapsed) or 'superseded' with code 'conflict' — the report shows both rows with their values.
+--   * Explicit action per row (J-305 C) — nothing is cancelled implicitly; any date (J-304 A / J-273 A).
+--   * The dry run writes only staging state — nothing to hr_absence_entry, nothing to the audit. The commit applies
+--     the accepted rows set-based with the put / cancel semantics (J-279 A) and writes one WORM audit row per write
+--     WITH the kind (J-302 A / J-280 B) plus one batch header row; a committed batch is final (409).
+--   * Size limit, batch size, file and staging retention: 'לא הוגדר' (nothing enforced).
+-- ---------------------------------------------------------------------------
+
+-- 409 helper (SQLSTATE 23505 → PostgREST 409), first used by the J-301 B import (import_batch_committed) and
+-- the J-300 B number setter (employee_number_taken).
+CREATE OR REPLACE FUNCTION fn_raise_conflict(p_code text)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION '%', p_code USING ERRCODE = '23505', DETAIL = format('http_hint=409;code=%s', p_code), HINT = p_code;
+END;
+$$;
+
+-- One CSV cell from the jsonb row: trimmed text; empty or missing → NULL. Pure.
+CREATE OR REPLACE FUNCTION fn_hr_import_cell(p_row jsonb, p_key text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT NULLIF(btrim(p_row ->> p_key), '') $$;
+
+-- J-307 C: the staged rows are a non-empty jsonb array of objects whose keys are CSV columns only (no reason or
+-- free-text column, J-267 C). Pure.
+CREATE OR REPLACE FUNCTION fn_hr_import_rows_valid(p_rows jsonb)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT p_rows IS NOT NULL AND jsonb_typeof(p_rows) = 'array' AND jsonb_array_length(p_rows) > 0
+     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(p_rows) e
+                      WHERE CASE WHEN jsonb_typeof(e) <> 'object' THEN true
+                                 ELSE EXISTS (SELECT 1 FROM jsonb_object_keys(e) k
+                                               WHERE k NOT IN ('employee_number', 'email', 'absence_date', 'absence_kind',
+                                                               'action')) END)
+$$;
+
+-- J-307 C: a CSV date cell → date, only in the exact form YYYY-MM-DD and a real calendar day; else NULL. Pure.
+CREATE OR REPLACE FUNCTION fn_hr_import_parse_date(p_text text)
+RETURNS date
+LANGUAGE plpgsql
+IMMUTABLE
+AS $$
+DECLARE
+  v date;
+BEGIN
+  IF p_text IS NULL OR p_text !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN
+    RETURN NULL;
+  END IF;
+  v := make_date(substr(p_text, 1, 4)::int, substr(p_text, 6, 2)::int, substr(p_text, 9, 2)::int);
+  RETURN v;
+EXCEPTION WHEN others THEN
+  RETURN NULL;
+END;
+$$;
+
+-- J-305 C / J-267 C: the format code of one row (NULL = well-formed): action put | cancel, a valid date, a kind
+-- sick | other required for put; for cancel the kind may be empty (ignored) but not invalid. Pure.
+CREATE OR REPLACE FUNCTION fn_hr_import_format_code(p_action text, p_date date, p_kind text, p_kind_text text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT CASE WHEN p_action IS NULL THEN 'invalid_action'
+              WHEN p_date IS NULL THEN 'invalid_date'
+              WHEN p_kind_text IS NOT NULL AND p_kind IS NULL THEN 'invalid_kind'
+              WHEN p_action = 'put' AND p_kind IS NULL THEN 'invalid_kind' END
+$$;
+
+-- J-300 B / J-303 B: match one row to an employee of p_company — employee_number when given, else e-mail
+-- (case-insensitive). Returns the user (only for an active employee) and the code: NULL = matched, 'leaver' = an
+-- own employee who has left (J-297 B: a future end date is still active), 'missing_key' = both keys empty,
+-- 'unmatched' = everything else (another company, unknown, ambiguous e-mail, no employee profile — no hint).
+CREATE OR REPLACE FUNCTION fn_hr_import_match(p_company uuid, p_number text, p_email text)
+RETURNS TABLE (user_id uuid, code text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_n     int;
+  v_user  users%ROWTYPE;
+BEGIN
+  IF p_number IS NULL AND p_email IS NULL THEN
+    RETURN QUERY SELECT NULL::uuid, 'missing_key'::text;
+    RETURN;
+  END IF;
+  SELECT count(*) INTO v_n FROM users u
+   WHERE u.company_id = p_company
+     AND CASE WHEN p_number IS NOT NULL THEN u.employee_number = p_number ELSE lower(u.email) = lower(p_email) END;
+  IF v_n <> 1 THEN
+    RETURN QUERY SELECT NULL::uuid, 'unmatched'::text;
+    RETURN;
+  END IF;
+  SELECT u.* INTO v_user FROM users u
+   WHERE u.company_id = p_company
+     AND CASE WHEN p_number IS NOT NULL THEN u.employee_number = p_number ELSE lower(u.email) = lower(p_email) END;
+  IF NOT v_user.has_employee_profile THEN
+    RETURN QUERY SELECT NULL::uuid, 'unmatched'::text;
+  ELSIF NOT fn_hr_employed_at(v_user.employment_ended_at, clock_timestamp()) THEN
+    RETURN QUERY SELECT NULL::uuid, 'leaver'::text;
+  ELSE
+    RETURN QUERY SELECT v_user.user_id, NULL::text;
+  END IF;
+END;
+$$;
+
+-- Dry-run step 1: normalise every staged row (action, date, kind), match it, and set its format / match code.
+-- Clears any earlier outcome. Writes staging only.
+CREATE OR REPLACE FUNCTION fn_hr_import_normalise(p_batch uuid, p_company uuid)
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  UPDATE hr_absence_import_row r
+     SET action       = n.action,
+         absence_date = n.absence_date,
+         absence_kind = n.absence_kind,
+         user_id      = CASE WHEN n.fmt IS NULL THEN m.user_id END,
+         code         = COALESCE(n.fmt, m.code),
+         outcome      = CASE WHEN COALESCE(n.fmt, m.code) IS NOT NULL THEN 'rejected' END,
+         winner_row_no = NULL
+    FROM (SELECT x.batch_id, x.row_no, x.employee_number, x.email, x.action, x.absence_date, x.absence_kind,
+                 fn_hr_import_format_code(x.action, x.absence_date, x.absence_kind, x.absence_kind_text) AS fmt
+            FROM (SELECT r0.batch_id, r0.row_no, r0.employee_number, r0.email, r0.absence_kind_text,
+                         CASE WHEN lower(r0.action_text) IN ('put', 'cancel') THEN lower(r0.action_text) END AS action,
+                         fn_hr_import_parse_date(r0.absence_date_text) AS absence_date,
+                         CASE WHEN lower(r0.absence_kind_text) IN ('sick', 'other') THEN lower(r0.absence_kind_text) END
+                           AS absence_kind
+                    FROM hr_absence_import_row r0 WHERE r0.batch_id = p_batch) x) n
+    CROSS JOIN LATERAL fn_hr_import_match(p_company, n.employee_number, n.email) m
+   WHERE r.batch_id = n.batch_id AND r.row_no = n.row_no
+$$;
+
+-- Dry-run step 2 (J-306 C): among the well-formed matched rows, the LAST file row of each employee + day wins;
+-- an earlier row with the same values is a 'duplicate' (collapsed), one with other values is 'superseded'
+-- (code 'conflict'). winner_row_no points at the winning row. For cancel the kind is ignored. Writes staging only.
+CREATE OR REPLACE FUNCTION fn_hr_import_resolve(p_batch uuid)
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  WITH ok AS (
+    SELECT r.row_no, r.action, CASE WHEN r.action = 'put' THEN r.absence_kind END AS kind,
+           max(r.row_no) OVER (PARTITION BY r.user_id, r.absence_date) AS winner
+      FROM hr_absence_import_row r
+     WHERE r.batch_id = p_batch AND r.code IS NULL),
+  loser AS (
+    SELECT o.row_no, o.winner,
+           (o.action, o.kind) IS NOT DISTINCT FROM (w.action, w.kind) AS same
+      FROM ok o JOIN ok w ON w.row_no = o.winner
+     WHERE o.row_no <> o.winner)
+  UPDATE hr_absence_import_row r
+     SET outcome = CASE WHEN l.same THEN 'duplicate' ELSE 'superseded' END,
+         code    = CASE WHEN l.same THEN 'duplicate' ELSE 'conflict' END,
+         winner_row_no = l.winner
+    FROM loser l
+   WHERE r.batch_id = p_batch AND r.row_no = l.row_no
+$$;
+
+-- Dry-run step 3: check each winning row against the stored HR rows — a cancel needs an existing row of that day
+-- (else 'no_entry', like rpc_hr_absence_cancel); a put over an existing row needs the J-294 C guard
+-- (fn_hr_kind_settable, else 'leaver'). The rest is 'accepted'. Writes staging only.
+CREATE OR REPLACE FUNCTION fn_hr_import_check_targets(p_batch uuid, p_company uuid)
+RETURNS void
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  UPDATE hr_absence_import_row r
+     SET outcome = CASE WHEN t.code IS NULL THEN 'accepted' ELSE 'rejected' END,
+         code    = t.code
+    FROM (SELECT r0.row_no,
+                 CASE WHEN r0.action = 'cancel' AND h.entry_id IS NULL THEN 'no_entry'
+                      WHEN r0.action = 'put' AND h.entry_id IS NOT NULL
+                           AND NOT fn_hr_kind_settable(p_company, h.entry_id) THEN 'leaver' END AS code
+            FROM hr_absence_import_row r0
+            LEFT JOIN hr_absence_entry h
+              ON h.user_id = r0.user_id AND h.company_id = p_company AND h.absence_date = r0.absence_date
+           WHERE r0.batch_id = p_batch AND r0.code IS NULL AND r0.outcome IS NULL) t
+   WHERE r.batch_id = p_batch AND r.row_no = t.row_no
+$$;
+
+-- The whole dry run of one batch (steps 1–3). Re-runnable; writes staging only (never hr_absence_entry or audit).
+CREATE OR REPLACE FUNCTION fn_hr_import_validate(p_batch uuid, p_company uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_hr_import_normalise(p_batch, p_company);
+  PERFORM fn_hr_import_resolve(p_batch);
+  PERFORM fn_hr_import_check_targets(p_batch, p_company);
+END;
+$$;
+
+-- The counts of a batch by outcome (no person data). Internal.
+CREATE OR REPLACE FUNCTION fn_hr_import_counts(p_batch uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object('rows', count(*),
+                            'accepted', count(*) FILTER (WHERE outcome = 'accepted'),
+                            'rejected', count(*) FILTER (WHERE outcome = 'rejected'),
+                            'duplicate', count(*) FILTER (WHERE outcome = 'duplicate'),
+                            'superseded', count(*) FILTER (WHERE outcome = 'superseded'))
+    FROM hr_absence_import_row WHERE batch_id = p_batch
+$$;
+
+-- One staged row as the vp_hr typed it in her file (row number + the five CSV cells) — for the conflict report.
+CREATE OR REPLACE FUNCTION fn_hr_import_row_values(p_row hr_absence_import_row)
+RETURNS jsonb
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT jsonb_build_object('row_no', p_row.row_no, 'employee_number', p_row.employee_number, 'email', p_row.email,
+                            'absence_date', p_row.absence_date_text, 'absence_kind', p_row.absence_kind_text,
+                            'action', p_row.action_text)
+$$;
+
+-- The result of a batch for its vp_hr: status, counts, one entry per row (row_no, outcome, code, winner_row_no —
+-- never a user id or name) and every conflict with BOTH rows and their file values (J-306 C).
+CREATE OR REPLACE FUNCTION fn_hr_import_result(p_batch uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT jsonb_build_object(
+    'batch_id', b.batch_id,
+    'status', b.status,
+    'counts', fn_hr_import_counts(b.batch_id),
+    'rows', COALESCE((SELECT jsonb_agg(jsonb_build_object('row_no', r.row_no, 'outcome', r.outcome, 'code', r.code,
+                                                          'winner_row_no', r.winner_row_no) ORDER BY r.row_no)
+                        FROM hr_absence_import_row r WHERE r.batch_id = b.batch_id), '[]'::jsonb),
+    'conflicts', COALESCE((SELECT jsonb_agg(jsonb_build_object('code', 'conflict',
+                                                               'superseded', fn_hr_import_row_values(l),
+                                                               'winner', fn_hr_import_row_values(w)) ORDER BY l.row_no)
+                             FROM hr_absence_import_row l
+                             JOIN hr_absence_import_row w ON w.batch_id = l.batch_id AND w.row_no = l.winner_row_no
+                            WHERE l.batch_id = b.batch_id AND l.outcome = 'superseded'), '[]'::jsonb))
+    FROM hr_absence_import_batch b WHERE b.batch_id = p_batch
+$$;
+
+-- The batch p_batch of p_company for an active vp_hr of that company, locked for the rest of the transaction.
+-- Not a vp_hr of the company → 403 insufficient_privilege (fn_assert_vp_hr); a batch of another company or an
+-- unknown id → 403 access_denied (the same answer — no existence hint).
+CREATE OR REPLACE FUNCTION fn_hr_import_batch_of(p_company uuid, p_batch uuid)
+RETURNS hr_absence_import_batch
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_batch hr_absence_import_batch;
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company);
+  SELECT * INTO v_batch FROM hr_absence_import_batch b
+   WHERE b.batch_id = p_batch AND b.company_id = p_company FOR UPDATE;
+  IF NOT FOUND THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+  RETURN v_batch;
+END;
+$$;
+
+-- vp_hr stages ONE CSV file (J-307 C) as a new batch: p_rows = the parsed rows in file order (row_no = position,
+-- 1-based), optional source file name and SHA-256 (hex). 400 invalid_import_rows (not a non-empty array of
+-- objects with CSV columns only) / invalid_source_sha256. Writes staging only — no audit (J-301 B). Returns the
+-- batch id, status and row count.
+CREATE OR REPLACE FUNCTION rpc_hr_absence_import_stage(p_company_id uuid, p_rows jsonb,
+                                                       p_source_filename text DEFAULT NULL,
+                                                       p_source_sha256 text DEFAULT NULL)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_batch uuid;
+  v_sha   text := lower(NULLIF(btrim(p_source_sha256), ''));
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  IF NOT fn_hr_import_rows_valid(p_rows) THEN
+    PERFORM fn_raise_bad_request('invalid_import_rows');
+  END IF;
+  IF v_sha IS NOT NULL AND v_sha !~ '^[0-9a-f]{64}$' THEN
+    PERFORM fn_raise_bad_request('invalid_source_sha256');
+  END IF;
+  INSERT INTO hr_absence_import_batch (company_id, created_by, source_filename, source_sha256)
+  VALUES (p_company_id, auth.uid(), NULLIF(btrim(p_source_filename), ''), v_sha)
+  RETURNING batch_id INTO v_batch;
+  INSERT INTO hr_absence_import_row (batch_id, row_no, employee_number, email, absence_date_text, absence_kind_text,
+                                     action_text)
+  SELECT v_batch, e.ord, fn_hr_import_cell(e.r, 'employee_number'), fn_hr_import_cell(e.r, 'email'),
+         fn_hr_import_cell(e.r, 'absence_date'), fn_hr_import_cell(e.r, 'absence_kind'), fn_hr_import_cell(e.r, 'action')
+    FROM jsonb_array_elements(p_rows) WITH ORDINALITY AS e(r, ord);
+  RETURN jsonb_build_object('batch_id', v_batch, 'status', 'staged', 'rows', jsonb_array_length(p_rows));
+END;
+$$;
+
+-- J-301 B DRY RUN: validate a staged (or already validated) batch and return the report (fn_hr_import_result).
+-- Writes nothing to hr_absence_entry and nothing to the audit — staging state only. Committed batch → 409.
+CREATE OR REPLACE FUNCTION rpc_hr_absence_import_validate(p_company_id uuid, p_batch_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_batch hr_absence_import_batch := fn_hr_import_batch_of(p_company_id, p_batch_id);
+BEGIN
+  IF v_batch.status = 'committed' THEN
+    PERFORM fn_raise_conflict('import_batch_committed');
+  END IF;
+  PERFORM fn_hr_import_validate(p_batch_id, p_company_id);
+  UPDATE hr_absence_import_batch SET status = 'validated', validated_at = clock_timestamp() WHERE batch_id = p_batch_id;
+  RETURN fn_hr_import_result(p_batch_id);
+END;
+$$;
+
+-- One WORM audit row of an import write — the put / cancel shape (fn_hr_absence_audit_scope: company, date, kind,
+-- review state — J-280 B) + the import batch id; the employee is the subject (J-274 A). Returns 1 (for counting).
+CREATE OR REPLACE FUNCTION fn_hr_import_audit_write(p_action text, p_row hr_absence_entry, p_batch uuid)
+RETURNS int
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_audit_view(p_action, fn_hr_absence_audit_scope(p_row) || jsonb_build_object('import_batch_id', p_batch),
+                        p_row.user_id);
+  RETURN 1;
+END;
+$$;
+
+-- Commit step: the accepted 'put' rows, set-based, with rpc_hr_absence_put's semantics (J-279 A: an active row keeps
+-- its id and coordination status and takes the new kind, a needs_review row becomes reviewed; a cancelled row is
+-- re-opened as pending_coordination). One audit row per write. Returns the number written.
+CREATE OR REPLACE FUNCTION fn_hr_import_apply_puts(p_batch uuid, p_company uuid)
+RETURNS int
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  WITH up AS (
+    INSERT INTO hr_absence_entry AS h (user_id, company_id, absence_date, absence_kind)
+    SELECT r.user_id, p_company, r.absence_date, r.absence_kind
+      FROM hr_absence_import_row r
+     WHERE r.batch_id = p_batch AND r.outcome = 'accepted' AND r.action = 'put'
+    ON CONFLICT (user_id, absence_date) DO UPDATE
+      SET absence_kind = EXCLUDED.absence_kind,
+          kind_review_status = 'reviewed',
+          cancelled_at = NULL,
+          coordination_status = CASE WHEN h.cancelled_at IS NULL THEN h.coordination_status ELSE 'pending_coordination' END,
+          entered_at = CASE WHEN h.cancelled_at IS NULL THEN h.entered_at ELSE clock_timestamp() END
+    RETURNING h AS e)
+  SELECT COALESCE(sum(fn_hr_import_audit_write('hr_absence_put', up.e, p_batch)), 0)::int FROM up
+$$;
+
+-- Commit step: the accepted 'cancel' rows, set-based, with rpc_hr_absence_cancel's semantics (status only — the
+-- row stays, never a delete; an already cancelled row keeps its time). One audit row per write. Returns the count.
+CREATE OR REPLACE FUNCTION fn_hr_import_apply_cancels(p_batch uuid, p_company uuid)
+RETURNS int
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  WITH up AS (
+    UPDATE hr_absence_entry h SET cancelled_at = COALESCE(h.cancelled_at, clock_timestamp())
+      FROM hr_absence_import_row r
+     WHERE r.batch_id = p_batch AND r.outcome = 'accepted' AND r.action = 'cancel'
+       AND h.user_id = r.user_id AND h.company_id = p_company AND h.absence_date = r.absence_date
+    RETURNING h AS e)
+  SELECT COALESCE(sum(fn_hr_import_audit_write('hr_absence_cancel', up.e, p_batch)), 0)::int FROM up
+$$;
+
+-- J-301 B COMMIT: vp_hr applies a dry-run-validated batch ONCE. The dry run is re-run first (the state may have
+-- changed since — e.g. an employee left), then only the accepted rows are written (puts, then cancels), each with
+-- its audit row, plus ONE batch header audit row (company, batch, counts, source file name / hash — no kind, no
+-- person). Staged batch (no dry run yet) → 409 import_batch_not_validated; already committed → 409
+-- import_batch_committed (the batch row is locked, so two commits cannot both pass). Returns the final report.
+CREATE OR REPLACE FUNCTION rpc_hr_absence_import_commit(p_company_id uuid, p_batch_id uuid)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_batch  hr_absence_import_batch := fn_hr_import_batch_of(p_company_id, p_batch_id);
+  v_put    int;
+  v_cancel int;
+BEGIN
+  IF v_batch.status = 'committed' THEN
+    PERFORM fn_raise_conflict('import_batch_committed');
+  ELSIF v_batch.status <> 'validated' THEN
+    PERFORM fn_raise_conflict('import_batch_not_validated');
+  END IF;
+  PERFORM fn_hr_import_validate(p_batch_id, p_company_id);
+  v_put := fn_hr_import_apply_puts(p_batch_id, p_company_id);
+  v_cancel := fn_hr_import_apply_cancels(p_batch_id, p_company_id);
+  PERFORM fn_audit_view('hr_absence_import_commit',
+                        jsonb_build_object('company_id', p_company_id, 'import_batch_id', p_batch_id,
+                                           'counts', fn_hr_import_counts(p_batch_id)
+                                                     || jsonb_build_object('put', v_put, 'cancel', v_cancel),
+                                           'source_filename', v_batch.source_filename,
+                                           'source_sha256', v_batch.source_sha256));
+  UPDATE hr_absence_import_batch
+     SET status = 'committed', committed_at = clock_timestamp(), committed_by = auth.uid()
+   WHERE batch_id = p_batch_id;
+  RETURN fn_hr_import_result(p_batch_id) || jsonb_build_object('written', jsonb_build_object('put', v_put, 'cancel', v_cancel));
+END;
+$$;
+
+-- J-300 B: the ONE writer of users.employee_number — an active vp_hr of the company sets (or clears with NULL) the
+-- number of a user of her own company. Another company's user or an unknown id → 403 access_denied; a number
+-- already used in the company → 409 employee_number_taken; blank → 400 invalid_employee_number. Audited
+-- ('employee_number_set', company only — the number itself is not logged).
+CREATE OR REPLACE FUNCTION rpc_hr_set_employee_number(p_company_id uuid, p_user_id uuid, p_employee_number text)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_number text := btrim(p_employee_number);
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  IF p_employee_number IS NOT NULL AND v_number = '' THEN
+    PERFORM fn_raise_bad_request('invalid_employee_number');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM users u WHERE u.user_id = p_user_id AND u.company_id = p_company_id) THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+  IF v_number IS NOT NULL AND EXISTS (SELECT 1 FROM users u WHERE u.company_id = p_company_id
+                                         AND u.employee_number = v_number AND u.user_id <> p_user_id) THEN
+    PERFORM fn_raise_conflict('employee_number_taken');
+  END IF;
+  UPDATE users SET employee_number = v_number WHERE user_id = p_user_id;
+  PERFORM fn_audit_view('employee_number_set', jsonb_build_object('company_id', p_company_id), p_user_id);
+  RETURN jsonb_build_object('status', 'saved');
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_raise_conflict(text), fn_hr_import_cell(jsonb, text), fn_hr_import_rows_valid(jsonb),
+  fn_hr_import_parse_date(text), fn_hr_import_format_code(text, date, text, text), fn_hr_import_match(uuid, text, text),
+  fn_hr_import_normalise(uuid, uuid), fn_hr_import_resolve(uuid), fn_hr_import_check_targets(uuid, uuid),
+  fn_hr_import_validate(uuid, uuid), fn_hr_import_counts(uuid), fn_hr_import_row_values(hr_absence_import_row),
+  fn_hr_import_result(uuid), fn_hr_import_batch_of(uuid, uuid), fn_hr_import_audit_write(text, hr_absence_entry, uuid),
+  fn_hr_import_apply_puts(uuid, uuid), fn_hr_import_apply_cancels(uuid, uuid),
+  rpc_hr_absence_import_stage(uuid, jsonb, text, text), rpc_hr_absence_import_validate(uuid, uuid),
+  rpc_hr_absence_import_commit(uuid, uuid), rpc_hr_set_employee_number(uuid, uuid, text)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_hr_absence_import_stage(uuid, jsonb, text, text), rpc_hr_absence_import_validate(uuid, uuid),
+  rpc_hr_absence_import_commit(uuid, uuid), rpc_hr_set_employee_number(uuid, uuid, text) TO authenticated;
+
+-- ---------------------------------------------------------------------------
 -- v1.6.18 (A-13, Karin 31.10): a time benefit bought before leaving but scheduled AFTER the end of employment is
 -- cancelled — the approved_absence_entry gets schedule_status 'cancelled' (cancel_reason 'employment_ended') and
 -- the Golden Spoons it cost are refunded to the employee, who is then in the 30-day exit redemption window where

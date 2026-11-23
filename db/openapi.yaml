@@ -3434,6 +3434,205 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_set_employee_number:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: set or clear the per-company employee number of a user of her company (J-300 B)'
+      description: 'v1.6.21 J-300 B (Karin 23.11). The import match key: unique per company (the same number may exist
+        in another company). The ONLY writer of users.employee_number — no HR sync writes it (the PR #13 directory
+        sync matches by e-mail and writes shifts only). Only an active vp_hr of p_company_id (else 403
+        insufficient_privilege); a user of another company or an unknown id → 403 access_denied (no existence hint);
+        null clears it. Audited as employee_number_set (company only; the number itself is not logged).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              - p_employee_number
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_employee_number:
+                  type: string
+                  nullable: true
+                  description: Trimmed; blank → 400. Null clears the number.
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                    - saved
+        '400':
+          description: invalid_employee_number (blank)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+        '409':
+          description: employee_number_taken (already used by another user of the same company)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_hr_absence_import_stage:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: stage one HR absence CSV file as an import batch (J-301 B / J-307 C)'
+      description: 'v1.6.21 J-301 B / J-307 C (Karin 23.11). CSV is the standard; the client parses the file (xlsx is
+        converted to CSV outside the DB) and sends its rows in file order (row_no = position, 1-based). Columns:
+        employee_number, email, absence_date (YYYY-MM-DD), absence_kind (sick | other — HEALTH DATA), action (put |
+        cancel). No reason or free-text column (J-267 C): any other key → 400 invalid_import_rows. Optional source
+        file name and SHA-256 (hex) go to the commit header audit row. Only an active vp_hr of p_company_id (else 403
+        insufficient_privilege). Writes staging only (no HR row, no audit). Size limit, batch size and retention of
+        the staged rows: לא הוגדר.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_rows
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_rows:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: '#/components/schemas/HrAbsenceImportCsvRow'
+                p_source_filename:
+                  type: string
+                  nullable: true
+                p_source_sha256:
+                  type: string
+                  nullable: true
+                  pattern: ^[0-9a-fA-F]{64}$
+      responses:
+        '200':
+          description: Staged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum:
+                    - staged
+                  rows:
+                    type: integer
+        '400':
+          description: invalid_import_rows | invalid_source_sha256
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_import_validate:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: DRY RUN of a staged import batch — the report, nothing written (J-301 B)'
+      description: 'v1.6.21 J-301 B (Karin 23.11). Validates every row and returns HrAbsenceImportResult. Writes NOTHING
+        to the HR rows and nothing to the audit (staging state only); repeatable. Match (J-300 B): employee_number in
+        the company; only when it is empty, e-mail (case-insensitive). Row codes: invalid_action, invalid_date,
+        invalid_kind, missing_key, unmatched (opaque — another company, unknown, ambiguous, no employee profile:
+        J-303 B), leaver (this company''s own leaver only; an end date in the future is still active — J-297 B),
+        no_entry (cancel of a day with no stored row; nothing is cancelled implicitly — J-305 C), duplicate and
+        conflict (J-306 C: the LAST file row of an employee + day wins; conflicts list both rows with their file
+        values). Any date (J-304 A). Only an active vp_hr of the batch''s company: not vp_hr of p_company_id → 403
+        insufficient_privilege; a batch of another company or an unknown id → 403 access_denied. Committed batch →
+        409 import_batch_committed.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAbsenceImportBatchRef'
+      responses:
+        '200':
+          description: The dry-run report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrAbsenceImportResult'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+        '409':
+          description: import_batch_committed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_hr_absence_import_commit:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: commit a dry-run-validated import batch ONCE (J-301 B / J-302 A)'
+      description: 'v1.6.21 J-301 B / J-302 A (Karin 23.11). Re-runs the dry run (the state may have changed), then
+        writes the accepted rows only, set-based, with the put / cancel semantics (J-279 A: a re-put keeps the entry
+        and its coordination status and takes the new kind; a needs_review day becomes reviewed; a cancelled day is
+        re-opened; cancel is status only, never a delete). One WORM audit row per write WITH the kind (hr_absence_put
+        / hr_absence_cancel, the single-RPC shape + import_batch_id — J-280 B), plus ONE header row
+        hr_absence_import_commit (company, batch, counts, source file name / hash; no kind, no person). A staged batch
+        without a dry run → 409 import_batch_not_validated; a second commit → 409 import_batch_committed. Same access
+        rules as the dry run.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAbsenceImportBatchRef'
+      responses:
+        '200':
+          description: Committed — the final report plus the rows written
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/HrAbsenceImportResult'
+                - type: object
+                  properties:
+                    written:
+                      type: object
+                      properties:
+                        put:
+                          type: integer
+                        cancel:
+                          type: integer
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+        '409':
+          description: import_batch_not_validated | import_batch_committed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_hr_absence_list:
     post:
       tags:
@@ -5470,6 +5669,130 @@ components:
             format: uuid
           full_name:
             type: string
+    HrAbsenceImportCsvRow:
+      type: object
+      additionalProperties: false
+      description: 'J-307 C — one CSV row (all cells text; empty = missing). Key: employee_number, else email (J-300 B).'
+      properties:
+        employee_number:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        absence_date:
+          type: string
+          description: YYYY-MM-DD
+        absence_kind:
+          type: string
+          nullable: true
+          description: sick | other (required for put; may be empty for cancel) — health data
+        action:
+          type: string
+          description: put | cancel
+    HrAbsenceImportBatchRef:
+      type: object
+      required:
+      - p_company_id
+      - p_batch_id
+      properties:
+        p_company_id:
+          type: string
+          format: uuid
+        p_batch_id:
+          type: string
+          format: uuid
+    HrAbsenceImportFileRow:
+      type: object
+      description: J-306 C — one file row as typed (row number + the five cells), used in conflicts.
+      properties:
+        row_no:
+          type: integer
+        employee_number:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        absence_date:
+          type: string
+          nullable: true
+        absence_kind:
+          type: string
+          nullable: true
+        action:
+          type: string
+          nullable: true
+    HrAbsenceImportResult:
+      type: object
+      description: 'J-301 B — the import report for the batch''s vp_hr. No user id, name or other person data; the
+        conflicts echo the vp_hr''s own file values (including the kind).'
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - validated
+          - committed
+        counts:
+          type: object
+          properties:
+            rows:
+              type: integer
+            accepted:
+              type: integer
+            rejected:
+              type: integer
+            duplicate:
+              type: integer
+            superseded:
+              type: integer
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              row_no:
+                type: integer
+              outcome:
+                type: string
+                enum:
+                - accepted
+                - rejected
+                - duplicate
+                - superseded
+              code:
+                type: string
+                nullable: true
+                enum:
+                - invalid_action
+                - invalid_date
+                - invalid_kind
+                - missing_key
+                - unmatched
+                - leaver
+                - no_entry
+                - duplicate
+                - conflict
+                - null
+              winner_row_no:
+                type: integer
+                nullable: true
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                - conflict
+              superseded:
+                $ref: '#/components/schemas/HrAbsenceImportFileRow'
+              winner:
+                $ref: '#/components/schemas/HrAbsenceImportFileRow'
     HrAbsenceVpHrRow:
       type: object
       description: 'v1.6.21 J-296 B — HrAbsenceRow + reviewable for the vp_hr readers: true when vp_hr may set the kind
