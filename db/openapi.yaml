@@ -231,8 +231,9 @@ info:
     \ always `NULL`); `/rpc/rpc_convert_golden_to_chr` was active on the server in 1.6.13 (superseded in 1.6.16:\
     \ blocked, 422).\n- Time-benefit voucher redemption privacy (`נעילת הפרגוד`): purchasing/redeeming a `time_benefit`\
     \ item in EverStore automatically creates a standard HR approved absence / refresh time entry (`/approved_absence_entry`\
-    \ / `/approved_absence_manager_v`: `'זמן התרעננות / היעדרות מאושרת'`), so the direct manager coordinates the\
-    \ schedule (`/rpc/rpc_coordinate_approved_absence`) without ever seeing that the voucher came from EverStore,\
+    \ / `/approved_absence_manager_v`: `'זמן התרעננות / היעדרות מאושרת'`; since v1.6.21 J-156 A the manager sees only\
+    \ the uniform `/manager_unavailability_v` row), so the direct manager coordinates it (`/rpc/rpc_coordinate_approved_absence`)\
+    \ without ever seeing that the voucher came from EverStore,\
     \ while `/shop_purchase` remains strictly hidden from managers.\n- Cleaned up all resolved `TODO` comments across\
     \ the spec.\n\n**New in 1.6.12-mvp (2026-10-24, Karin + Chief of Drive):**\n- O-7: PCQ-12 answer scale locked\
     \ as 1–6 (Luthans original scale, 12 items, all required), converted linearly to 0–100 (`(mean - 1) / 5.0 *\
@@ -1263,22 +1264,43 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/EarlyLeaveLog'
-  /early_leave_manager_v:
+  /manager_unavailability_v:
     get:
       tags:
       - reads
-      summary: Go-home notices for the direct manager — pseudonym + locked text + time
+      summary: 'Direct manager: one uniform list of who is unavailable (לא זמינה), today and future only'
+      description: "v1.6.21 J-156 A / J-169 / J-170 (Karin, relayed 23.11): ONE uniform list for the active direct manager — entry id, pseudonym, date, availability_he and coordination_status. Identical columns, texts, statuses and order for every source (early leave / go-home, approved absence, EverStore time benefit). Today and future days only (the employee's own calendar day); no history, no cancelled entries, no ex-employees. availability_he = 'לא זמינה להמשך היום' for today, 'לא זמינה' for a later day (J-255, by date only). Order: date, pseudonym, entry id (J-256). Never a time, כפיות, type, source text, count or reason. Averages-only roles get no rows."
       parameters:
       - $ref: '#/components/parameters/select'
       responses:
         '200':
-          description: Go-home notices for the direct manager — pseudonym + locked text + time
+          description: Uniform unavailability rows of the caller's active direct reports
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/EarlyLeaveManagerView'
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
+  /early_leave_manager_v:
+    get:
+      tags:
+      - reads
+      summary: 'Deprecated alias (J-258) of /manager_unavailability_v — identical rows; no early-leave text or time'
+      description: 'Replaced in v1.6.21 (J-156 A): was pseudonym + ''יציאה מוקדמת מאושרת'' + left_at. Now returns
+        exactly /manager_unavailability_v (same columns, rows and order). Kept so existing clients do not break; removal
+        is for Karin (J-258).'
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/select'
+      responses:
+        '200':
+          description: Same rows as /manager_unavailability_v
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
   /turnover_tier_config:
     get:
       tags:
@@ -1455,7 +1477,7 @@ paths:
       - rpc
       summary: v1.6.21-r4 (J-137 = A) Cron — vp_hr reminders for teams of ≥ 10 without a Shadow Balance row in the month
         that just closed (service_role)
-      description: v1.6.21-r5 (J-141 = A; J-142 open) — closed months only; one 'team_not_calculated' notification per vp_hr, team and month (re-runs and rebuilt reports never add a second; the pack runs it too).
+      description: v1.6.21-r5 (J-141 = A; J-142 = A — one reminder per team per month per vp_hr) — closed months only; one 'team_not_calculated' notification per vp_hr, team and month (re-runs and rebuilt reports never add a second; the pack runs it too).
         The text comes from /rpc/rpc_notification_message_he (team name only). Returns the number of notices added.
       responses:
         '200':
@@ -3244,20 +3266,21 @@ paths:
     get:
       tags:
       - reads
-      summary: Direct manager view of approved absence / refresh time entries — pseudonym + locked text only (נעילת
-        הפרגוד)
-      description: 'v1.6.13 (Karin 25.10, נעילת הפרגוד): shows display_pseudonym, requested_date, entry_type (approved_absence),
-        entry_text (זמן התרעננות / היעדרות מאושרת), and schedule_status for direct reports. Contains zero reference
-        to EverStore, item_id, or Golden Spoons.'
+      summary: 'Deprecated alias (J-258) of /manager_unavailability_v — identical rows; no type or source text'
+      description: 'Replaced in v1.6.21 (J-156 A / J-170): was display_pseudonym, requested_date, entry_type, entry_text,
+        schedule_status and created_at of all dates (v1.6.13 נעילת הפרגוד). Now returns exactly /manager_unavailability_v
+        (same columns, rows and order; today and future only). Still zero reference to EverStore, item_id or Golden
+        Spoons. Removal is for Karin (J-258).'
+      deprecated: true
       responses:
         '200':
-          description: Pseudonymous approved absence entries for direct reports
+          description: Same rows as /manager_unavailability_v
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ApprovedAbsenceManagerView'
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
   /rpc/rpc_everstore_upsert_item:
     post:
       tags:
@@ -3333,7 +3356,7 @@ paths:
     post:
       tags:
       - rpc
-      summary: 'Direct manager: coordinate schedule of an approved absence / refresh time entry (נעילת הפרגוד)'
+      summary: 'Direct manager: coordinate ONE row of the uniform unavailability list (any source; coordinate only)'
       requestBody:
         required: true
         content:
@@ -3346,23 +3369,24 @@ paths:
                 p_absence_id:
                   type: string
                   format: uuid
-                p_requested_date:
-                  type: string
-                  format: date
-                  nullable: true
+                  description: entry_id of a /manager_unavailability_v row
       responses:
         '200':
-          description: Coordinated pseudonymous entry
+          description: The coordinated row, same shape as /manager_unavailability_v (coordination_status coordinated);
+            idempotent
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ApprovedAbsenceManagerView'
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
         '403':
           $ref: '#/components/responses/BusinessError403'
-      description: 'v1.6.18 (A-13): a cancelled entry, or an entry of an employee whose employment has ended, cannot
-        be coordinated or moved → 403 anti_get_blocked.'
+      description: 'v1.6.21 J-169 / J-170 (Karin, relayed 23.11): the manager can only coordinate — p_requested_date was removed
+        (J-257; dates change only through the employee''s /rpc/rpc_request_absence_reschedule). Works the same for every
+        source. Not a row of the caller''s direct report → 403 access_denied. v1.6.18 (A-13): a direct report''s row that
+        is cancelled, past, or of an employee whose employment has ended → 403 anti_get_blocked. Neither refusal depends
+        on the source.'
   /rpc/rpc_submit_morning_checkin: *id014
   /rpc/rpc_submit_midday_checkin: *id015
   /rpc/rpc_get_agent_settings:
@@ -5913,17 +5937,38 @@ components:
           type: boolean
           enum:
           - false
-    EarlyLeaveManagerView:
+    ManagerUnavailabilityRow:
       type: object
+      description: v1.6.21 J-156 A / J-169 / J-170 — the ONE row shape a direct manager sees for every unavailability
+        source. No time, כפיות, type, source text, count or reason; no person id.
       properties:
+        entry_id:
+          type: string
+          format: uuid
+          description: Opaque id of the row (for /rpc/rpc_coordinate_approved_absence only)
         display_pseudonym:
           type: string
-          nullable: true
-        entry_text:
+        unavailable_date:
+          type: string
+          format: date
+          description: The employee's own calendar day; today or later
+        availability_he:
           type: string
           enum:
-          - יציאה מוקדמת מאושרת
-        left_at: *id030
+          - לא זמינה להמשך היום
+          - לא זמינה
+          description: today → 'לא זמינה להמשך היום', a later day → 'לא זמינה' (J-255, by date only)
+        coordination_status:
+          type: string
+          enum:
+          - pending_coordination
+          - coordinated
+    EarlyLeaveManagerView:
+      description: Replaced in v1.6.21 (J-156 A) — was pseudonym + 'יציאה מוקדמת מאושרת' + left_at; now the uniform
+        ManagerUnavailabilityRow.
+      deprecated: true
+      allOf:
+      - $ref: '#/components/schemas/ManagerUnavailabilityRow'
     TurnoverTier:
       type: object
       properties:
@@ -6763,35 +6808,11 @@ components:
           description: 'v1.6.18 (A-13): scheduled after the end of employment → cancelled (its Golden Spoons refunded;
             never shown to the manager as an EverStore item).'
     ApprovedAbsenceManagerView:
-      type: object
-      description: Direct manager view of approved absence / refresh time entries (pseudonym only, zero link to
-        EverStore, נעילת הפרגוד).
-      properties:
-        absence_id:
-          type: string
-          format: uuid
-        display_pseudonym:
-          type: string
-        requested_date:
-          type: string
-          format: date
-        entry_type:
-          type: string
-          enum:
-          - approved_absence
-        entry_text:
-          type: string
-          enum:
-          - זמן התרעננות / היעדרות מאושרת
-        schedule_status:
-          type: string
-          enum:
-          - pending_coordination
-          - coordinated
-          - cancelled
-        created_at:
-          type: string
-          format: date-time
+      description: Replaced in v1.6.21 (J-156 A / J-170) — was absence_id, display_pseudonym, requested_date, entry_type,
+        entry_text, schedule_status (incl. cancelled) and created_at; now the uniform ManagerUnavailabilityRow.
+      deprecated: true
+      allOf:
+      - $ref: '#/components/schemas/ManagerUnavailabilityRow'
     AgentSetting:
       type: object
       description: v1.6.16 agent parameter in effect (company override or default). value_status not_defined → display_he

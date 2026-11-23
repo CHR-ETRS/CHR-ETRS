@@ -104,8 +104,8 @@
 --     refresh time entry (approved_absence_entry: 'זמן התרעננות / היעדרות מאושרת', נעילת הפרגוד)
 --     with zero link to EverStore or item_id.
 --   * rpc_everstore_upsert_item (CHRO / vp_hr): add or update catalog items across all 8 categories.
---   * rpc_coordinate_approved_absence (direct manager): coordinate schedule on an approved absence
---     entry without ever seeing its source.
+--   * rpc_coordinate_approved_absence (direct manager): coordinate ONE row of the uniform unavailability list
+--     (v1.6.21 J-156 A / J-169 / J-170: no date change; the manager never sees the source of an entry).
 --   * (superseded in 1.6.16: rpc_convert_golden_to_chr is blocked with 422 in v1)
 --     Golden Spoons never expire while the employee is active.
 --   * Aliases rpc_submit_morning_checkin and rpc_submit_midday_checkin added alongside
@@ -1888,61 +1888,152 @@ $$;
 REVOKE ALL ON FUNCTION rpc_everstore_upsert_item(varchar, varchar, varchar, text, numeric, shop_tier_enum, boolean, text, boolean) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION rpc_everstore_upsert_item(varchar, varchar, varchar, text, numeric, shop_tier_enum, boolean, text, boolean) TO authenticated;
 
--- Direct manager coordinates the schedule of an approved absence / refresh time entry (נעילת הפרגוד).
--- Returns pseudonymous row only (no user_id, no EverStore/voucher info).
-CREATE OR REPLACE FUNCTION rpc_coordinate_approved_absence(
-  p_absence_id     uuid,
-  p_requested_date date DEFAULT NULL
-)
-RETURNS TABLE (
-  absence_id        uuid,
-  display_pseudonym varchar,
-  requested_date    date,
-  entry_type        text,
-  entry_text        text,
-  schedule_status   text
-)
+-- ---------------------------------------------------------------------------
+-- Manager unavailability list — v1.6.21 J-156 A + J-169 / J-170 (Karin, relayed by Chief of Drive 23.11).
+--   * ONE uniform list for the active direct manager: entry id, pseudonym, date, "לא זמינה" text, coordination
+--     status. Identical columns, texts, statuses and order for every source (early leave / go-home, approved
+--     absence, EverStore time benefit) — never entry_type, entry_text, left_at, created_at, כפיות, counts or reasons.
+--   * Today and future only (the employee's own calendar day); no history; cancelled entries and ex-employees are
+--     not listed.
+--   * Text: today → "לא זמינה להמשך היום" (J-156 A), a future day → "לא זמינה" (J-170) — chosen by the DATE only,
+--     never by the source (J-255, flagged for Karin).
+--   * Order: date, pseudonym, entry id (random) — neutral (J-256).
+--   * The manager can only coordinate (J-170): no date parameter (J-257). The source data stays
+--     for vp_hr (J-80 team input) and the employee's own rows.
+-- ---------------------------------------------------------------------------
+
+-- J-255: the one text of a manager row — today → 'לא זמינה להמשך היום', a later day → 'לא זמינה'.
+CREATE OR REPLACE FUNCTION fn_unavailable_text_he(p_date date, p_today date)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT CASE WHEN p_date = p_today THEN 'לא זמינה להמשך היום' ELSE 'לא זמינה' END $$;
+
+-- Internal: all unavailability rows of ONE employee from every source, today and later on her own calendar,
+-- cancelled entries excluded. Same shape for every source; never exposed directly (it carries no person field,
+-- but it is only reached through the manager functions below).
+CREATE OR REPLACE FUNCTION fn_unavailability_rows_of(p_user uuid)
+RETURNS TABLE (entry_id uuid, unavailable_date date, coordination_status text)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT a.absence_id, a.requested_date, a.schedule_status
+    FROM approved_absence_entry a
+   WHERE a.user_id = p_user AND a.schedule_status <> 'cancelled' AND a.requested_date >= fn_user_local_date(p_user)
+  UNION ALL
+  SELECT l.log_id, l.local_date,
+         CASE WHEN EXISTS (SELECT 1 FROM early_leave_coordination c WHERE c.log_id = l.log_id)
+              THEN 'coordinated' ELSE 'pending_coordination' END
+    FROM early_leave_log l
+   WHERE l.user_id = p_user AND l.local_date >= fn_user_local_date(p_user)
+$$;
+
+-- The uniform list of the CALLING active direct manager (pseudonyms only; averages-only roles get nothing).
+CREATE OR REPLACE FUNCTION fn_manager_unavailability_feed()
+RETURNS TABLE (entry_id uuid, display_pseudonym varchar, unavailable_date date, availability_he text,
+               coordination_status text)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT r.entry_id, u.display_pseudonym, r.unavailable_date,
+         fn_unavailable_text_he(r.unavailable_date, fn_user_local_date(u.user_id)), r.coordination_status
+    FROM users u
+    CROSS JOIN LATERAL fn_unavailability_rows_of(u.user_id) r
+   WHERE fn_viewer_may_see_pseudonyms()
+     AND fn_is_direct_manager_of(u.user_id)
+   ORDER BY r.unavailable_date, u.display_pseudonym, r.entry_id
+$$;
+
+DROP VIEW IF EXISTS early_leave_manager_v;
+DROP VIEW IF EXISTS approved_absence_manager_v;
+DROP FUNCTION IF EXISTS fn_early_leave_manager_feed();
+DROP FUNCTION IF EXISTS fn_approved_absence_manager_feed();
+CREATE OR REPLACE VIEW manager_unavailability_v AS
+  SELECT * FROM fn_manager_unavailability_feed() ORDER BY unavailable_date, display_pseudonym, entry_id;
+-- J-258: the two old names stay as IDENTICAL aliases of the one list (no source split, no extra column).
+CREATE VIEW early_leave_manager_v AS SELECT * FROM manager_unavailability_v;
+CREATE VIEW approved_absence_manager_v AS SELECT * FROM manager_unavailability_v;
+
+-- Which row of the caller's list is p_entry_id: 'listed' (coordinatable), 'not_coordinatable' (an entry of a
+-- direct report of the caller that is cancelled, past, or of an ex-employee — A-13), or NULL (anything else).
+-- Decided by status / date / employment only, never by the source.
+CREATE OR REPLACE FUNCTION fn_unavailability_entry_state(p_entry_id uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  WITH src AS (
+    SELECT a.user_id FROM approved_absence_entry a WHERE a.absence_id = p_entry_id
+    UNION ALL
+    SELECT l.user_id FROM early_leave_log l WHERE l.log_id = p_entry_id
+  )
+  SELECT CASE
+           WHEN EXISTS (SELECT 1 FROM fn_manager_unavailability_feed() f WHERE f.entry_id = p_entry_id) THEN 'listed'
+           WHEN EXISTS (SELECT 1 FROM src JOIN users u ON u.user_id = src.user_id WHERE u.reports_to = auth.uid())
+             THEN 'not_coordinatable'
+         END
+$$;
+
+-- Mark one listed row as coordinated, whatever its source (approved entry status, or an early-leave coordination
+-- row; the WORM early_leave_log is not touched). Idempotent.
+CREATE OR REPLACE FUNCTION fn_coordinate_unavailability_entry(p_entry_id uuid)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  UPDATE approved_absence_entry a SET schedule_status = 'coordinated'
+   WHERE a.absence_id = p_entry_id AND a.schedule_status = 'pending_coordination';
+  INSERT INTO early_leave_coordination (log_id)
+  SELECT l.log_id FROM early_leave_log l WHERE l.log_id = p_entry_id
+  ON CONFLICT (log_id) DO NOTHING;
+END;
+$$;
+
+-- Direct manager coordinates ONE row of her uniform list (J-169 / J-170: coordinate only — no date change; dates
+-- are changed only by whoever may correct the source, e.g. the employee's rpc_request_absence_reschedule).
+-- Works identically for every source and returns the same uniform row as the list. Refusals: not a row of a
+-- direct report → 403 access_denied; a direct report's row that is cancelled / past / of an ex-employee (A-13)
+-- → 403 anti_get_blocked. Neither depends on the source.
+DROP FUNCTION IF EXISTS rpc_coordinate_approved_absence(uuid, date);
+CREATE OR REPLACE FUNCTION rpc_coordinate_approved_absence(p_absence_id uuid)
+RETURNS TABLE (entry_id uuid, display_pseudonym varchar, unavailable_date date, availability_he text,
+               coordination_status text)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_uid uuid := auth.uid();
-  v_sub uuid;
+  v_state text;
 BEGIN
-  IF v_uid IS NULL OR NOT fn_viewer_may_see_pseudonyms() THEN
+  IF auth.uid() IS NULL OR NOT fn_viewer_may_see_pseudonyms() THEN
     PERFORM fn_raise_business('access_denied');
   END IF;
-
-  SELECT a.user_id INTO v_sub
-    FROM approved_absence_entry a
-    JOIN users u ON u.user_id = a.user_id
-   WHERE a.absence_id = p_absence_id
-     AND u.reports_to = v_uid;
-  IF NOT FOUND THEN
+  v_state := fn_unavailability_entry_state(p_absence_id);
+  IF v_state IS NULL THEN
     PERFORM fn_raise_business('access_denied');
-  END IF;
-  -- v1.6.18 (A-13): a cancelled entry is final, and nothing is rescheduled once the employment has ended.
-  IF fn_employment_ended(v_sub) OR EXISTS (SELECT 1 FROM approved_absence_entry a
-                                            WHERE a.absence_id = p_absence_id AND a.schedule_status = 'cancelled') THEN
+  ELSIF v_state = 'not_coordinatable' THEN
     PERFORM fn_raise_business('anti_get_blocked');
   END IF;
-
-  UPDATE approved_absence_entry a
-     SET requested_date  = COALESCE(p_requested_date, a.requested_date),
-         schedule_status = 'coordinated'
-   WHERE a.absence_id = p_absence_id;
-
-  RETURN QUERY
-  SELECT a.absence_id, u.display_pseudonym, a.requested_date, a.entry_type, a.entry_text, a.schedule_status
-    FROM approved_absence_entry a
-    JOIN users u ON u.user_id = a.user_id
-   WHERE a.absence_id = p_absence_id;
+  PERFORM fn_coordinate_unavailability_entry(p_absence_id);
+  RETURN QUERY SELECT f.* FROM fn_manager_unavailability_feed() f WHERE f.entry_id = p_absence_id;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION rpc_coordinate_approved_absence(uuid, date) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION rpc_coordinate_approved_absence(uuid, date) TO authenticated;
+REVOKE ALL ON FUNCTION fn_unavailable_text_he(date, date), fn_unavailability_rows_of(uuid),
+  fn_manager_unavailability_feed(), fn_unavailability_entry_state(uuid), fn_coordinate_unavailability_entry(uuid),
+  rpc_coordinate_approved_absence(uuid) FROM PUBLIC, anon;
+-- The list function must be executable by the caller of the views (views run functions with the caller's rights).
+GRANT EXECUTE ON FUNCTION fn_manager_unavailability_feed(), rpc_coordinate_approved_absence(uuid) TO authenticated;
+REVOKE ALL ON TABLE manager_unavailability_v, early_leave_manager_v, approved_absence_manager_v FROM PUBLIC, anon;
+GRANT SELECT ON TABLE manager_unavailability_v, early_leave_manager_v, approved_absence_manager_v TO authenticated;
 
 -- ---------------------------------------------------------------------------
 -- v1.6.18 (A-13, Karin 31.10): a time benefit bought before leaving but scheduled AFTER the end of employment is
@@ -6979,7 +7070,7 @@ REVOKE ALL ON FUNCTION fn_teams_not_calculated(uuid, date) FROM PUBLIC;
 -- vp_hr gets ONE 'team_not_calculated' notice per team of ≥ 10 without a row that month (reference: company, team,
 -- month). Idempotent (unique reference + unique notice): re-runs and a second pack apply add nothing. A month that
 -- is not closed yet gives nothing. Returns the notices added. One company, or all when p_company is NULL.
--- v1.6.21-r5 (J-141 = A, J-142 open): at most one reminder per team per month — one reference per (company, team,
+-- v1.6.21-r5 (J-141 = A, J-142 = A — Karin 04.11): at most one reminder per team per month — one reference per (company, team,
 -- month) and one notice of it per active vp_hr; re-runs (job, pack, rebuilt report) never add a second.
 CREATE OR REPLACE FUNCTION fn_refresh_team_not_calculated_reminders(p_company uuid DEFAULT NULL, p_month date DEFAULT NULL)
 RETURNS int

@@ -8,6 +8,9 @@
 -- J-146 A (Karin 04.11): for the authorized direct manager every refusal after that check is ONE neutral 403
 -- assignment_unavailable (J-152 = A, Karin); only self-assignment shows the exact reason; strangers
 -- always get the identical 403 access_denied (J-153 = A).
+-- Section 10 (v1.6.21, Karin, relayed 23.11 — J-156 A / J-169 / J-170): ONE uniform manager unavailability list —
+-- byte-identical rows for every source, today and future only, no time / כפיות / type / count; coordinate-only RPC;
+-- vp_hr J-80 team input unchanged.
 -- Same harness as tests/test_v1_5.sql (pgTAP-style PASS lines; pgTAP itself is not installed). Every check
 -- prints "PASS <name>"; any failure aborts. No identifier is printed.
 -- =============================================================================
@@ -413,3 +416,146 @@ SELECT t_assert('J-146 A: assignment_unavailable is raised from ONE place (the r
   (SELECT count(*) = 1 FROM pg_proc p WHERE p.prosrc LIKE '%fn_raise_business(''assignment_unavailable'')%')
   AND pg_get_functiondef('rpc_assign_task(uuid, varchar, task_kind_enum, boolean, boolean, jsonb, boolean, varchar, varchar)'::regprocedure)
       LIKE '%EXCEPTION WHEN OTHERS THEN%fn_assign_neutral_refusal(v_self)%');
+
+-- ============ 10. v1.6.21 J-156 A / J-169 / J-170 (Karin, relayed 23.11) · ONE uniform manager unavailability list ============
+-- Real clock (no libfaketime): every date is relative to each employee's own local today.
+-- mgr_u's team: emp_el (early leave today, via rpc_assign_task), emp_gh (go-home today, rpc_log_go_home),
+-- emp_ab (approved absence today + a future day), emp_tb (EverStore-style time benefit = approved entry, future day);
+-- plus a past early leave and a past approved entry that must never show.
+SELECT FROM t_mk('mgr_u', 'TeamU', 'manager', 'direct_manager', 'dept_head');
+SELECT FROM t_mk('emp_el', 'TeamU', 'employee', 'employee', 'mgr_u');
+SELECT FROM t_mk('emp_gh', 'TeamU', 'employee', 'employee', 'mgr_u');
+SELECT FROM t_mk('emp_ab', 'TeamU', 'employee', 'employee', 'mgr_u');
+SELECT FROM t_mk('emp_tb', 'TeamU', 'employee', 'employee', 'mgr_u');
+SELECT FROM t_mk('vp_u', 'HR', 'vp_hr', 'employee');
+-- emp_el: the direct manager's allowed assignment that leaves her at 3 כפיות writes the early-leave entry.
+SELECT t_set_spoons('emp_el', 6);
+SELECT t_as(t_u('mgr_u'));
+SET ROLE authenticated;
+SELECT t_assert('J-156 A fixture: mgr_u assigns a task of cost 3 at 6 כפיות → allowed (3 left → early leave logged)',
+  (SELECT assignee_id = t_u('emp_el') FROM rpc_assign_task(t_u('emp_el'), 'u-task', 'fighting', false, false, '[2]'::jsonb)));
+RESET ROLE;
+-- emp_gh goes home herself.
+SELECT t_set_spoons('emp_gh', 2);
+SELECT t_as(t_u('emp_gh'));
+SET ROLE authenticated;
+SELECT t_assert('J-156 A fixture: emp_gh goes home (rpc_log_go_home)', (SELECT log_id IS NOT NULL FROM rpc_log_go_home()));
+RESET ROLE;
+INSERT INTO approved_absence_entry (user_id, requested_date) VALUES
+  (t_u('emp_ab'), fn_user_local_date(t_u('emp_ab'))),
+  (t_u('emp_ab'), fn_user_local_date(t_u('emp_ab')) + 9),
+  (t_u('emp_tb'), fn_user_local_date(t_u('emp_tb')) + 9),
+  (t_u('emp_ab'), fn_user_local_date(t_u('emp_ab')) - 1);           -- past: never listed
+INSERT INTO early_leave_log (user_id, local_date) VALUES (t_u('emp_tb'), fn_user_local_date(t_u('emp_tb')) - 2);  -- past
+SELECT t_assert('J-156 A fixture: 2 early-leave days today, 2 past rows, 3 current approved entries exist in the sources',
+  (SELECT count(*) = 2 FROM early_leave_log l JOIN users u USING (user_id) WHERE u.reports_to = t_u('mgr_u') AND l.local_date = fn_user_local_date(l.user_id))
+  AND (SELECT count(*) = 3 FROM approved_absence_entry a JOIN users u USING (user_id) WHERE u.reports_to = t_u('mgr_u') AND a.requested_date >= fn_user_local_date(a.user_id)));
+
+CREATE TEMP TABLE t_unav (label text, j jsonb, ord int);
+GRANT SELECT, INSERT ON t_unav TO authenticated;
+SELECT t_as(t_u('mgr_u'));
+SET ROLE authenticated;
+INSERT INTO t_unav SELECT 'v', to_jsonb(v), row_number() OVER () FROM manager_unavailability_v v;
+INSERT INTO t_unav SELECT 'el', to_jsonb(v), row_number() OVER () FROM early_leave_manager_v v;
+INSERT INTO t_unav SELECT 'ab', to_jsonb(v), row_number() OVER () FROM approved_absence_manager_v v;
+RESET ROLE;
+SELECT t_assert('J-156 A / J-170: the manager sees 5 rows — today (go-home, task early leave, approved) and the 2 future approved days; no past day',
+  (SELECT count(*) = 5 FROM t_unav WHERE label = 'v')
+  AND (SELECT bool_and((j->>'unavailable_date')::date >= CURRENT_DATE - 1) FROM t_unav WHERE label = 'v')
+  AND NOT EXISTS (SELECT 1 FROM t_unav u JOIN approved_absence_entry a ON a.absence_id = (u.j->>'entry_id')::uuid
+                   WHERE a.requested_date < fn_user_local_date(a.user_id))
+  AND NOT EXISTS (SELECT 1 FROM t_unav u JOIN early_leave_log l ON l.log_id = (u.j->>'entry_id')::uuid
+                   WHERE l.local_date < fn_user_local_date(l.user_id)));
+SELECT t_assert('J-156 A: the 3 rows of TODAY are byte-identical apart from entry id and pseudonym (early leave via task, go-home, approved absence): same columns, date, text, status',
+  (SELECT count(*) = 3 AND count(DISTINCT (j - 'entry_id' - 'display_pseudonym')::text) = 1
+     FROM t_unav u WHERE label = 'v' AND (j->>'unavailable_date')::date = fn_user_local_date(t_u('emp_el')))
+  AND (SELECT bool_and(j->>'availability_he' = 'לא זמינה להמשך היום' AND j->>'coordination_status' = 'pending_coordination')
+         FROM t_unav WHERE label = 'v' AND (j->>'unavailable_date')::date = fn_user_local_date(t_u('emp_el'))));
+SELECT t_assert('J-170: the 2 future rows (approved absence, time benefit) are byte-identical apart from id / pseudonym: "לא זמינה", pending_coordination',
+  (SELECT count(*) = 2 AND count(DISTINCT (j - 'entry_id' - 'display_pseudonym')::text) = 1
+          AND bool_and(j->>'availability_he' = 'לא זמינה')
+     FROM t_unav WHERE label = 'v' AND (j->>'unavailable_date')::date > fn_user_local_date(t_u('emp_el'))));
+SELECT t_assert('J-156 A: every row has exactly the 5 uniform keys (entry_id, display_pseudonym, unavailable_date, availability_he, coordination_status)',
+  (SELECT bool_and((SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(j) k)
+                   = ARRAY['availability_he', 'coordination_status', 'display_pseudonym', 'entry_id', 'unavailable_date'])
+     FROM t_unav));
+SELECT t_assert('J-156 A: no time, כפיות, type, source text, count or history in the manager output (no left_at / spoons / entry_type / entry_text / created_at; no "יציאה מוקדמת" / "זמן התרעננות" wording; no clock time)',
+  (SELECT bool_and(j::text !~* '(left_at|spoon|entry_type|entry_text|created_at|count|history|יציאה|מוקדמת|התרעננות|היעדרות|[0-9]{2}:[0-9]{2})')
+     FROM t_unav));
+SELECT t_assert('J-156 A: no manager-facing column anywhere exposes time, כפיות, type, source text or a count (catalog: the 3 views + the coordinate RPC result)',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name IN ('manager_unavailability_v', 'early_leave_manager_v', 'approved_absence_manager_v')
+                 AND column_name ~* '(left_at|spoon|entry_type|entry_text|created_at|count|reason|user_id|person)')
+  AND (SELECT pg_get_function_result('rpc_coordinate_approved_absence(uuid)'::regprocedure)
+       = 'TABLE(entry_id uuid, display_pseudonym character varying, unavailable_date date, availability_he text, coordination_status text)'));
+SELECT t_assert('J-156 A: neutral order — by date, then pseudonym (never by type / source / time)',
+  (SELECT array_agg(j ORDER BY ord) = array_agg(j ORDER BY (j->>'unavailable_date')::date, j->>'display_pseudonym', j->>'entry_id')
+     FROM t_unav WHERE label = 'v'));
+SELECT t_assert('J-258: early_leave_manager_v and approved_absence_manager_v are byte-identical aliases of the one list (same rows, same order)',
+  (SELECT array_agg(j ORDER BY ord) FROM t_unav WHERE label = 'el') = (SELECT array_agg(j ORDER BY ord) FROM t_unav WHERE label = 'v')
+  AND (SELECT array_agg(j ORDER BY ord) FROM t_unav WHERE label = 'ab') = (SELECT array_agg(j ORDER BY ord) FROM t_unav WHERE label = 'v'));
+
+-- Coordination works for every source and returns the same uniform row.
+CREATE TEMP TABLE t_coord AS
+  SELECT (SELECT log_id FROM early_leave_log WHERE user_id = t_u('emp_el') AND local_date = fn_user_local_date(t_u('emp_el'))) AS el_id,
+         (SELECT absence_id FROM approved_absence_entry WHERE user_id = t_u('emp_ab') AND requested_date = fn_user_local_date(t_u('emp_ab'))) AS ab_id,
+         (SELECT log_id FROM early_leave_log WHERE user_id = t_u('emp_tb') AND local_date < fn_user_local_date(t_u('emp_tb'))) AS past_id,
+         (SELECT log_id FROM early_leave_log WHERE user_id = t_u('emp_gh')) AS gh_id;
+GRANT SELECT ON t_coord TO authenticated;
+SELECT t_as(t_u('mgr_u'));
+SET ROLE authenticated;
+INSERT INTO t_unav SELECT 'c_el', to_jsonb(r), 1 FROM rpc_coordinate_approved_absence((SELECT el_id FROM t_coord)) r;
+INSERT INTO t_unav SELECT 'c_ab', to_jsonb(r), 1 FROM rpc_coordinate_approved_absence((SELECT ab_id FROM t_coord)) r;
+INSERT INTO t_unav SELECT 'c_el2', to_jsonb(r), 1 FROM rpc_coordinate_approved_absence((SELECT el_id FROM t_coord)) r;   -- idempotent
+SELECT t_expect_http('J-169: a past day of a direct report cannot be coordinated (not in the list) → 403 anti_get_blocked',
+  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT past_id FROM t_coord))$$, 'anti_get_blocked', 403);
+SELECT t_expect_http('J-169: an unknown entry → 403 access_denied',
+  $$SELECT * FROM rpc_coordinate_approved_absence('00000000-0000-0000-0000-00000000dead')$$, 'access_denied', 403);
+INSERT INTO t_unav SELECT 'v2', to_jsonb(v), row_number() OVER () FROM manager_unavailability_v v;
+RESET ROLE;
+SELECT t_assert('J-169: coordinating an early-leave row and an approved row returns ONE row each, byte-identical apart from id / pseudonym, status coordinated; repeating is idempotent',
+  (SELECT count(*) = 3 AND bool_and(j->>'coordination_status' = 'coordinated') FROM t_unav WHERE label LIKE 'c\_%')
+  AND (SELECT count(DISTINCT (j - 'entry_id' - 'display_pseudonym')::text) = 1 FROM t_unav WHERE label LIKE 'c\_%')
+  AND (SELECT j FROM t_unav WHERE label = 'c_el') = (SELECT j FROM t_unav WHERE label = 'c_el2'));
+SELECT t_assert('J-169: the list now shows the 2 rows as coordinated, the rest unchanged; the WORM early_leave_log is untouched (coordination lives in early_leave_coordination)',
+  (SELECT count(*) = 2 FROM t_unav WHERE label = 'v2' AND j->>'coordination_status' = 'coordinated')
+  AND (SELECT count(*) = 3 FROM t_unav WHERE label = 'v2' AND j->>'coordination_status' = 'pending_coordination')
+  AND (SELECT count(*) = 1 FROM early_leave_coordination)
+  AND (SELECT schedule_status = 'coordinated' FROM approved_absence_entry WHERE absence_id = (SELECT ab_id FROM t_coord)));
+-- Strangers, the employee herself, and the dotted / skip level cannot coordinate.
+SELECT t_as(t_u('mgr_a'));
+SET ROLE authenticated;
+SELECT t_expect_http('J-169: another team''s manager cannot coordinate → 403 access_denied',
+  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT gh_id FROM t_coord))$$, 'access_denied', 403);
+SELECT t_assert('J-169: …and sees none of mgr_u''s team rows',
+  NOT EXISTS (SELECT 1 FROM manager_unavailability_v v WHERE v.entry_id IN (SELECT el_id FROM t_coord UNION ALL SELECT gh_id FROM t_coord)));
+SELECT t_as(t_u('dept_head'));
+SELECT t_expect_http('J-169: the skip-level manager cannot coordinate → 403 access_denied',
+  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT gh_id FROM t_coord))$$, 'access_denied', 403);
+SELECT t_as(t_u('emp_gh'));
+SELECT t_expect_http('J-169: the employee cannot coordinate her own row → 403 access_denied',
+  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT gh_id FROM t_coord))$$, 'access_denied', 403);
+SELECT t_assert('J-169: the employee sees no manager list', NOT EXISTS (SELECT 1 FROM manager_unavailability_v));
+RESET ROLE;
+SELECT t_assert('J-170: the manager cannot change a date — the coordinate RPC has ONE parameter (p_absence_id) and the old (uuid, date) form is gone',
+  to_regprocedure('rpc_coordinate_approved_absence(uuid, date)') IS NULL
+  AND to_regprocedure('rpc_coordinate_approved_absence(uuid)') IS NOT NULL);
+SELECT t_assert('J-156 A: the internal helpers / coordination table are closed to clients; the old type-revealing feeds are gone',
+  NOT has_function_privilege('authenticated', 'fn_unavailability_rows_of(uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'fn_unavailability_entry_state(uuid)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'fn_coordinate_unavailability_entry(uuid)', 'EXECUTE')
+  AND NOT has_table_privilege('authenticated', 'early_leave_coordination', 'SELECT')
+  AND (SELECT relforcerowsecurity FROM pg_class WHERE relname = 'early_leave_coordination')
+  AND to_regproc('fn_early_leave_manager_feed') IS NULL AND to_regproc('fn_approved_absence_manager_feed') IS NULL);
+
+-- vp_hr J-80 team input still works (the team summary is where absence data lives — team totals only).
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+SELECT t_assert('J-80: vp_hr still enters the team month total (sickness + unplanned + unapproved early leave) → saved',
+  (SELECT r->>'status' = 'saved' AND r->>'team' = 'TeamU'
+     FROM rpc_put_team_absences('00000000-0000-0000-0000-0000000a5c01', 'TeamU', CURRENT_DATE, 1.0, 0.5, 2.0) r));
+RESET ROLE;
+SELECT t_assert('J-80: the team input row holds team totals only (no person column)',
+  (SELECT count(*) = 1 FROM team_absence_input WHERE team_id = 'TeamU')
+  AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_absence_input'
+                   AND column_name ~* '(person|user|employee|pseudonym)'));

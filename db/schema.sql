@@ -69,7 +69,8 @@
 --     item automatically creates a standard HR approved absence / refresh time entry
 --     (approved_absence_entry / approved_absence_manager_v: 'זמן התרעננות / היעדרות מאושרת') so the
 --     direct manager coordinates the schedule without ever seeing that it came from EverStore, while
---     shop_purchase / shop_inventory remains strictly hidden from managers.
+--     shop_purchase / shop_inventory remains strictly hidden from managers. (v1.6.21 J-156 A: the manager
+--     now sees only the uniform manager_unavailability_v row — no type or source text.)
 -- New in 1.6.12 (Karin 24.10 + Chief of Drive 24.10):
 --   * O-7: PCQ-12 answer scale locked as 1–6 (Luthans, 12 items, all required), converted linearly
 --     to 0–100 ((mean − 1) / 5.0 × 100, fn_pcq12_score); questionnaire_submission.pcq12_score.
@@ -1097,6 +1098,17 @@ CREATE TABLE IF NOT EXISTS early_leave_log (
 COMMENT ON TABLE early_leave_log IS
   'Locked text only (יציאה מוקדמת מאושרת) + time; no reason, no health data; full workday, no sick day.';
 
+-- early_leave_coordination — v1.6.21 J-169 (Karin, relayed 23.11): every row of the manager's uniform unavailability list
+-- carries a coordination status, so an early-leave day can be coordinated like any other unavailability (the
+-- WORM early_leave_log itself is never updated). One row = "the direct manager coordinated this day". Internal only.
+CREATE TABLE IF NOT EXISTS early_leave_coordination (
+    log_id          uuid PRIMARY KEY REFERENCES early_leave_log(log_id) ON DELETE CASCADE,
+    coordinated_at  timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+ALTER TABLE early_leave_coordination ENABLE ROW LEVEL SECURITY;
+ALTER TABLE early_leave_coordination FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE early_leave_coordination FROM PUBLIC, anon, authenticated;
+
 -- ---------------------------------------------------------------------------
 -- 7. team_aggregate — REGULAR team data, N ≥ 5 ACTUAL contributors (lock #3)
 -- Deprivation tax (count × avg × 0.12), turnover range sums, TPS-12 team average.
@@ -1454,7 +1466,8 @@ UPDATE shop_item_catalog
 --     it converts automatically through HR into a standard approved absence / refresh time entry
 --     ('זמן התרעננות / היעדרות מאושרת') with NO link to shop_purchase, item_id, or Golden Spoons,
 --     so the direct manager coordinates the schedule via approved_absence_manager_v without ever
---     seeing that the voucher came from an EverStore purchase.
+--     seeing that the voucher came from an EverStore purchase. (v1.6.21 J-156 A / J-170: that view is now an
+--     identical alias of the uniform manager_unavailability_v — date, "לא זמינה", status only.)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS shop_purchase (
     purchase_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2572,64 +2585,15 @@ $$;
 CREATE OR REPLACE VIEW cuckoo_alert_manager_v AS
   SELECT * FROM fn_cuckoo_manager_inbox();
 
--- Early-leave notices for the calling direct manager: pseudonym + locked text + time.
-CREATE OR REPLACE FUNCTION fn_early_leave_manager_feed()
-RETURNS TABLE (display_pseudonym varchar, entry_text text, left_at timestamptz)
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-  SELECT u.display_pseudonym, l.entry_text, l.left_at
-    FROM early_leave_log l
-    JOIN users u ON u.user_id = l.user_id
-   WHERE u.reports_to = auth.uid()
-     AND fn_viewer_may_see_pseudonyms()   -- B2: CEO / owners / board see averages only
-$$;
-
-CREATE OR REPLACE VIEW early_leave_manager_v AS
-  SELECT * FROM fn_early_leave_manager_feed();
-
--- v1.6.13 (נעילת הפרגוד): Standard HR approved absence / refresh time feed for the direct manager.
--- Exposes pseudonym, requested_date, locked text 'זמן התרעננות / היעדרות מאושרת', schedule_status, created_at;
--- NEVER exposes whether the entry came from an EverStore time_benefit voucher, item_id, or Golden Spoons.
-CREATE OR REPLACE FUNCTION fn_approved_absence_manager_feed()
-RETURNS TABLE (
-  absence_id        uuid,
-  display_pseudonym varchar,
-  requested_date    date,
-  entry_type        text,
-  entry_text        text,
-  schedule_status   text,
-  created_at        timestamptz
-)
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-  SELECT a.absence_id, u.display_pseudonym, a.requested_date, a.entry_type, a.entry_text, a.schedule_status, a.created_at
-    FROM approved_absence_entry a
-    JOIN users u ON u.user_id = a.user_id
-   WHERE u.reports_to = auth.uid()
-     AND fn_viewer_may_see_pseudonyms()
-$$;
-
-CREATE OR REPLACE VIEW approved_absence_manager_v AS
-  SELECT * FROM fn_approved_absence_manager_feed();
+-- v1.6.21 J-156 A / J-169 / J-170 (Karin, relayed by Chief of Drive 23.11): the two type-revealing manager feeds
+-- (early_leave_manager_v: locked early-leave text + left_at; approved_absence_manager_v: entry_type / entry_text /
+-- created_at, all dates) are REPLACED by one uniform list — see rpc.sql "Manager unavailability list"
+-- (manager_unavailability_v; the two old view names stay as identical aliases of it).
 
 REVOKE ALL ON FUNCTION fn_cuckoo_manager_inbox() FROM PUBLIC;
-REVOKE ALL ON FUNCTION fn_early_leave_manager_feed() FROM PUBLIC;
-REVOKE ALL ON FUNCTION fn_approved_absence_manager_feed() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fn_cuckoo_manager_inbox() TO authenticated;
-GRANT EXECUTE ON FUNCTION fn_early_leave_manager_feed() TO authenticated;
-GRANT EXECUTE ON FUNCTION fn_approved_absence_manager_feed() TO authenticated;
 REVOKE ALL ON TABLE cuckoo_alert_manager_v FROM PUBLIC, anon;
-REVOKE ALL ON TABLE early_leave_manager_v FROM PUBLIC, anon;
-REVOKE ALL ON TABLE approved_absence_manager_v FROM PUBLIC, anon;
 GRANT SELECT ON TABLE cuckoo_alert_manager_v TO authenticated;
-GRANT SELECT ON TABLE early_leave_manager_v TO authenticated;
-GRANT SELECT ON TABLE approved_absence_manager_v TO authenticated;
 
 -- =============================================================================
 -- v1.6.1 — role tree, access audit, notifications, projects, emergency mode,

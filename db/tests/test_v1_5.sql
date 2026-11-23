@@ -335,8 +335,9 @@ SELECT t_expect_err('fighting blocked at 4 (J-146 A: neutral assignment_unavaila
 SELECT t_assert('farming +1 at 4 → 3', (SELECT s_final = 1 FROM rpc_assign_task(t_emp('D9', 1), 'farm2', 'farming', false, false, '[1]')));
 SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Farming (J-146 A: neutral for the manager)', format($$SELECT rpc_assign_task(%L, 'farm3', 'farming')$$, t_emp('D9', 1)), 'assignment_unavailable');
 SELECT t_expect_err('lock #1: at ≤3 ALL tasks blocked — Fighting (J-146 A: neutral for the manager)', format($$SELECT rpc_assign_task(%L, 'fight3', 'fighting')$$, t_emp('D9', 1)), 'assignment_unavailable');
-SELECT t_assert('manager feed: pseudonym + locked text only',
-  (SELECT count(*) = 1 AND bool_and(display_pseudonym = t_pseudo('D9', 1) AND entry_text = 'יציאה מוקדמת מאושרת') FROM early_leave_manager_v));
+SELECT t_assert('manager feed (J-156 A): pseudonym + "לא זמינה להמשך היום" only — no early-leave wording, no time',
+  (SELECT count(*) = 1 AND bool_and(display_pseudonym = t_pseudo('D9', 1) AND availability_he = 'לא זמינה להמשך היום'
+                                    AND coordination_status = 'pending_coordination') FROM early_leave_manager_v));
 RESET ROLE;
 SELECT t_assert('go-home at 3: text exact, full workday, no sick day',
   (SELECT count(*) = 1 AND bool_and(entry_text = 'יציאה מוקדמת מאושרת' AND counts_as_full_workday AND NOT sick_day_deducted AND left_at IS NOT NULL)
@@ -2905,7 +2906,7 @@ SELECT t_assert('J-137 = A: only vp_hr — an employee of the team sees no notic
   NOT EXISTS (SELECT 1 FROM notification WHERE kind = 'team_not_calculated')
   AND rpc_notification_message_he('team_not_calculated', (SELECT ref_id FROM t_j137_ref)) IS NULL);
 RESET ROLE;
--- ============ v1.6.21-r5 J-141 = A (Karin 04.11) + J-142 (open): at most one reminder per team per month — per vp_hr ============
+-- ============ v1.6.21-r5 J-141 = A (Karin 04.11) + J-142 = A (Karin 04.11): at most one reminder per team per month — per vp_hr ============
 -- A second active vp_hr joins D after the first run; the job and a rebuilt report of the SAME closed month give her
 -- her one notice and never a second one to anyone: per (team, month, vp_hr) = 1, total = the active vp_hr count.
 INSERT INTO auth.users (id) VALUES (md5('j141-hr2-d')::uuid);
@@ -3571,23 +3572,22 @@ SET ROLE authenticated;
 SELECT t_assert('v1.6.13 נעילת הפרגוד: direct manager sees 0 rows of any subordinate in shop_purchase (employee purchase history strictly hidden from managers)',
   (SELECT count(*) = 0 FROM shop_purchase WHERE user_id <> '00000000-0000-0000-0000-00000000aaaa')
   AND (SELECT count(*) = 0 FROM shop_purchase WHERE user_id = t_emp('D5', 4)));
-SELECT t_assert('v1.6.13 נעילת הפרגוד: direct manager sees the time_benefit redemption ONLY as a standard approved_absence_manager_v entry (זמן התרעננות / היעדרות מאושרת) with pseudonym',
+SELECT t_assert('v1.6.13 נעילת הפרגוד + J-156 A / J-169: direct manager sees the time_benefit redemption ONLY as a uniform row (pseudonym, date, "לא זמינה", status)',
   (SELECT count(*) = 1
           AND bool_and(display_pseudonym = t_pseudo('D5', 4)
-                       AND entry_type = 'approved_absence'
-                       AND entry_text = 'זמן התרעננות / היעדרות מאושרת'
-                       AND requested_date = CURRENT_DATE + 7
-                       AND schedule_status = 'pending_coordination')
-     FROM approved_absence_manager_v));
+                       AND availability_he = 'לא זמינה'
+                       AND unavailable_date = CURRENT_DATE + 7
+                       AND coordination_status = 'pending_coordination')
+     FROM approved_absence_manager_v WHERE display_pseudonym = t_pseudo('D5', 4)));
 SELECT t_assert('v1.6.13 נעילת הפרגוד: approved_absence_manager_v and approved_absence_entry have no item_id, purchase_id, or golden_spoons columns',
   NOT EXISTS (SELECT 1 FROM information_schema.columns
                WHERE table_name IN ('approved_absence_entry', 'approved_absence_manager_v')
                  AND column_name ~* '(item|purchase|spoon|voucher|shop|price|coin)'));
--- Direct manager coordinates the schedule via rpc_coordinate_approved_absence
-SELECT schedule_status = 'coordinated' AS coord_ok
-  FROM rpc_coordinate_approved_absence((SELECT absence_id FROM approved_absence_manager_v LIMIT 1), CURRENT_DATE + 8);
-SELECT t_assert('v1.6.13 נעילת הפרגוד: direct manager coordinated schedule_status = coordinated and updated date',
-  (SELECT schedule_status = 'coordinated' AND requested_date = CURRENT_DATE + 8 FROM approved_absence_manager_v LIMIT 1));
+-- Direct manager coordinates via rpc_coordinate_approved_absence (J-169 / J-170: coordinate only, no date change)
+SELECT coordination_status = 'coordinated' AS coord_ok
+  FROM rpc_coordinate_approved_absence((SELECT entry_id FROM approved_absence_manager_v WHERE display_pseudonym = t_pseudo('D5', 4)));
+SELECT t_assert('v1.6.13 נעילת הפרגוד / J-170: direct manager coordinated → coordinated; the date is unchanged (the manager cannot move it)',
+  (SELECT coordination_status = 'coordinated' AND unavailable_date = CURRENT_DATE + 7 FROM approved_absence_manager_v WHERE display_pseudonym = t_pseudo('D5', 4)));
 RESET ROLE;
 
 -- 4. Verify checkin aliases rpc_submit_morning_checkin / rpc_submit_midday_checkin exist and work
