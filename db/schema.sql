@@ -1114,6 +1114,9 @@ REVOKE ALL ON TABLE early_leave_coordination FROM PUBLIC, anon, authenticated;
 -- only by an active vp_hr of the employee's company through SECURITY DEFINER RPCs (audited, J-270 A); one row per
 -- employee per day; a cancellation is a status, never a delete. Retention: לא הוגדר (J-271 B — no go-live block,
 -- no purge job).
+-- J-278 B (Karin 23.11): a row whose kind was never entered (written before the kind existed) has absence_kind
+-- NULL and kind_review_status 'needs_review' — never a guessed kind; vp_hr sets it with rpc_hr_absence_set_kind
+-- (audited). Such a row is not a sick day in the totals until reviewed (J-289). Every other row is 'reviewed'.
 -- J-267 C (Karin 23.11): absence_kind 'sick' / 'other' — HEALTH DATA (a sick day). Required on every write; no
 -- reason, diagnosis or free text. Readable ONLY by the employee herself (own-rows policy below, J-269 A) and by an
 -- active vp_hr of the company through rpc_hr_absence_list (audited); never by the manager (the uniform list has no
@@ -1125,29 +1128,58 @@ CREATE TABLE IF NOT EXISTS hr_absence_entry (
     user_id             uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     company_id          uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
     absence_date        date NOT NULL,
-    absence_kind        text NOT NULL CONSTRAINT chk_hr_absence_kind CHECK (absence_kind IN ('sick', 'other')),
+    absence_kind        text CONSTRAINT chk_hr_absence_kind CHECK (absence_kind IN ('sick', 'other')),
+    kind_review_status  text NOT NULL DEFAULT 'reviewed'
+                        CONSTRAINT chk_hr_absence_review_status CHECK (kind_review_status IN ('reviewed', 'needs_review')),
     coordination_status text NOT NULL DEFAULT 'pending_coordination'
                         CHECK (coordination_status IN ('pending_coordination', 'coordinated')),
     entered_at          timestamptz NOT NULL DEFAULT clock_timestamp(),
     cancelled_at        timestamptz,
-    CONSTRAINT uq_hr_absence_user_day UNIQUE (user_id, absence_date)
+    CONSTRAINT uq_hr_absence_user_day UNIQUE (user_id, absence_date),
+    CONSTRAINT chk_hr_absence_kind_reviewed CHECK ((absence_kind IS NULL) = (kind_review_status = 'needs_review'))
 );
--- J-267 C upgrade (a database that has the table from the first J-263 B commit, without the kind): rows written
--- then get 'other' (J-278 — not a sick day unless vp_hr re-records it as sick), then the column becomes required.
-ALTER TABLE hr_absence_entry ADD COLUMN IF NOT EXISTS absence_kind text;
-UPDATE hr_absence_entry SET absence_kind = 'other' WHERE absence_kind IS NULL;
-ALTER TABLE hr_absence_entry ALTER COLUMN absence_kind SET NOT NULL;
+-- J-278 B upgrade — runs ONCE (only while kind_review_status is missing); never guesses a kind:
+--  * from the first J-263 B commit (c56d380: no absence_kind) → every existing row: kind NULL, 'needs_review';
+--  * from the J-267 C commit (8eade64: absence_kind NOT NULL, rows back-filled with 'other') → a back-filled 'other'
+--    cannot be told apart from an 'other' vp_hr entered, so every 'other' row becomes kind NULL, 'needs_review'
+--    (vp_hr confirms it — J-290); 'sick' rows were always entered by vp_hr and stay 'reviewed'.
 DO $$
+DECLARE
+  v_had_kind boolean;
 BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = 'public' AND table_name = 'hr_absence_entry' AND column_name = 'kind_review_status') THEN
+    v_had_kind := EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_schema = 'public' AND table_name = 'hr_absence_entry' AND column_name = 'absence_kind');
+    IF NOT v_had_kind THEN
+      ALTER TABLE hr_absence_entry ADD COLUMN absence_kind text;
+    END IF;
+    ALTER TABLE hr_absence_entry ALTER COLUMN absence_kind DROP NOT NULL;
+    ALTER TABLE hr_absence_entry ADD COLUMN kind_review_status text NOT NULL DEFAULT 'reviewed';
+    UPDATE hr_absence_entry SET absence_kind = NULL, kind_review_status = 'needs_review'
+     WHERE NOT v_had_kind OR absence_kind IS NULL OR absence_kind = 'other';
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_hr_absence_kind'
                                               AND conrelid = 'hr_absence_entry'::regclass) THEN
     ALTER TABLE hr_absence_entry ADD CONSTRAINT chk_hr_absence_kind CHECK (absence_kind IN ('sick', 'other'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_hr_absence_review_status'
+                                              AND conrelid = 'hr_absence_entry'::regclass) THEN
+    ALTER TABLE hr_absence_entry ADD CONSTRAINT chk_hr_absence_review_status
+      CHECK (kind_review_status IN ('reviewed', 'needs_review'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_hr_absence_kind_reviewed'
+                                              AND conrelid = 'hr_absence_entry'::regclass) THEN
+    ALTER TABLE hr_absence_entry ADD CONSTRAINT chk_hr_absence_kind_reviewed
+      CHECK ((absence_kind IS NULL) = (kind_review_status = 'needs_review'));
   END IF;
 END $$;
 COMMENT ON TABLE hr_absence_entry IS
   'J-263 B / J-267 C: a day of sick leave or other HR-entered absence (vp_hr only, audited). absence_kind sick / other is health data: own rows + vp_hr only, never the manager. No reason or diagnosis. Retention: לא הוגדר.';
 COMMENT ON COLUMN hr_absence_entry.absence_kind IS
-  'J-267 C: sick / other — health data. Readable by the employee (own rows) and the company vp_hr (rpc_hr_absence_list) only.';
+  'J-267 C: sick / other — health data. Readable by the employee (own rows) and the company vp_hr (rpc_hr_absence_list / rpc_hr_absence_list_company) only. NULL only while kind_review_status = needs_review (J-278 B).';
+COMMENT ON COLUMN hr_absence_entry.kind_review_status IS
+  'J-278 B: reviewed | needs_review (a row written before the kind existed; vp_hr sets the kind with rpc_hr_absence_set_kind). Never a guessed kind.';
 ALTER TABLE hr_absence_entry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hr_absence_entry FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE hr_absence_entry FROM PUBLIC, anon, authenticated;

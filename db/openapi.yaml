@@ -3367,8 +3367,10 @@ paths:
         p_absence_kind is REQUIRED: sick | other (else 400 invalid_absence_kind) — HEALTH DATA. No reason, diagnosis
         or free-text field. Any date (no range set, J-273). One row per employee per day: an active day keeps its
         coordination and takes the new kind (correction, J-279); a cancelled day is re-opened (pending_coordination).
-        Audited (action, company, date — never the kind, J-280). The kind is readable only by the company''s vp_hr
-        (/rpc/rpc_hr_absence_list) and by the employee herself (own rows, J-269 A); the direct manager sees the day only
+        Audited WITH the kind (J-280 B, Karin 23.11 — health data kept for good in the WORM audit log: company, date,
+        kind, review state; the employee as the subject). A row that needs review (J-278 B) becomes reviewed. The
+        kind is readable only by the company''s vp_hr (/rpc/rpc_hr_absence_list, /rpc/rpc_hr_absence_list_company)
+        and by the employee herself (own rows, J-269 A); the direct manager sees the day only
         as a uniform "לא זמינה" row of /manager_unavailability_v, identical for sick and other. Sick days (not cancelled)
         feed the J-80 / J-53 team and board sickness totals as an aggregate, deduplicated per employee-day and combined
         with the vp_hr manual monthly number as the larger of the two (J-272 B / J-276); all thresholds unchanged.
@@ -3433,8 +3435,9 @@ paths:
       summary: 'vp_hr: read the HR absence days of ONE employee, with the kind (J-267 C)'
       description: 'v1.6.21 J-267 C (Karin 23.11). Same checks as /rpc/rpc_hr_absence_put (active vp_hr of the company,
         else 403 insufficient_privilege; an active employee of that company, else 403 access_denied). Every call is
-        audited (hr_absence_read, company, the employee as subject; the kind is never in the audit row, J-280). One
-        employee per call — no company-wide list of health data. Cancelled days are included (cancelled = true).
+        audited (hr_absence_read, company, the employee as subject; read audit rows hold no kind — J-292). One
+        employee per call; the whole company: /rpc/rpc_hr_absence_list_company (J-288 B). Rows carry the review state
+        (J-278 B). Cancelled days are included (cancelled = true).
         No person field in the rows. The employee reads her own days (with the kind) through her own-rows policy
         (J-269 A); no other role (manager, cfo, board, legal_ethics, owner_shareholder) can call this.'
       requestBody:
@@ -3461,26 +3464,101 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  properties:
-                    entry_id:
-                      type: string
-                      format: uuid
-                    absence_date:
-                      type: string
-                      format: date
-                    absence_kind:
-                      type: string
-                      enum:
-                      - sick
-                      - other
-                    coordination_status:
-                      type: string
-                      enum:
-                      - pending_coordination
-                      - coordinated
-                    cancelled:
-                      type: boolean
+                  $ref: '#/components/schemas/HrAbsenceRow'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_list_company:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: read the HR absence rows of EVERY employee of the company, with kind and review state (J-288 B)'
+      description: 'v1.6.21 J-288 B (Karin 23.11). Only an active vp_hr of p_company_id; everyone else (manager, cfo,
+        board, legal_ethics, owner_shareholder, other employees, other companies, every other role) → 403
+        insufficient_privilege. Same row shape as /rpc/rpc_hr_absence_list (no employee field — J-293). p_needs_review_only
+        = only the rows whose kind must be set (J-278 B). Audited like the single reader (hr_absence_read, scope
+        company-wide, no subject, no kind — J-292). Cancelled rows included (cancelled = true).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_needs_review_only:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: The company's HR rows, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceRow'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_set_kind:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: set (review) the kind of ONE HR row by its entry id (J-278 B)'
+      description: 'v1.6.21 J-278 B (Karin 23.11). Only an active vp_hr of p_company_id (else 403 insufficient_privilege);
+        a row of another company or an unknown id → 403 access_denied (no existence hint); p_absence_kind sick | other
+        (else 400 invalid_absence_kind — a kind is never guessed). The row becomes reviewed; coordination and
+        cancellation are unchanged; the manager list is unchanged. Audited as hr_absence_kind_set WITH the kind
+        (J-280 B), the employee as the subject. Works on any row of the company (J-294).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_entry_id
+              - p_absence_kind
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_entry_id:
+                  type: string
+                  format: uuid
+                p_absence_kind:
+                  type: string
+                  enum:
+                  - sick
+                  - other
+      responses:
+        '200':
+          description: Reviewed (no person field, no kind)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entry_id:
+                    type: string
+                    format: uuid
+                  absence_date:
+                    type: string
+                    format: date
+                  status:
+                    type: string
+                    enum:
+                    - reviewed
+        '400':
+          description: invalid_absence_kind
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '403':
           $ref: '#/components/responses/BusinessError403'
   /rpc/rpc_hr_absence_cancel:
@@ -3489,7 +3567,8 @@ paths:
       - rpc
       summary: 'vp_hr: cancel the HR absence day of one employee (status only, never a delete; J-263 B)'
       description: 'Same checks as /rpc/rpc_hr_absence_put. Idempotent. A day without an entry → 400
-        invalid_requested_date. Audited. The day disappears from the manager list.'
+        invalid_requested_date. Audited WITH the kind of the row (J-280 B; null while it needs review). The day
+        disappears from the manager list.'
       requestBody:
         required: true
         content:
@@ -5341,6 +5420,37 @@ components:
             message: aggregation_privacy_threshold
             http_status: 403
   schemas:
+    HrAbsenceRow:
+      type: object
+      description: 'v1.6.21 J-267 C / J-278 B / J-288 B — one HR absence row for vp_hr (health data). absence_kind is
+        null exactly while kind_review_status = needs_review (a row from before the kind existed; never guessed). No
+        person field.'
+      properties:
+        entry_id:
+          type: string
+          format: uuid
+        absence_date:
+          type: string
+          format: date
+        absence_kind:
+          type: string
+          nullable: true
+          enum:
+          - sick
+          - other
+          - null
+        kind_review_status:
+          type: string
+          enum:
+          - reviewed
+          - needs_review
+        coordination_status:
+          type: string
+          enum:
+          - pending_coordination
+          - coordinated
+        cancelled:
+          type: boolean
     ErrorBody:
       type: object
       required:
