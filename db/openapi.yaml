@@ -3370,7 +3370,7 @@ paths:
         Audited WITH the kind (J-280 B, Karin 23.11 — health data kept for good in the WORM audit log: company, date,
         kind, review state; the employee as the subject). A row that needs review (J-278 B) becomes reviewed. The
         kind is readable only by the company''s vp_hr (/rpc/rpc_hr_absence_list, /rpc/rpc_hr_absence_list_company)
-        and by the employee herself (own rows, J-269 A); the direct manager sees the day only
+        and by the employee herself (/rpc/rpc_hr_absence_my_list, audited — J-269 A / J-291 B); the direct manager sees the day only
         as a uniform "לא זמינה" row of /manager_unavailability_v, identical for sick and other. Sick days (not cancelled)
         feed the J-80 / J-53 team and board sickness totals as an aggregate, deduplicated per employee-day and combined
         with the vp_hr manual monthly number as the larger of the two (J-272 B / J-276); all thresholds unchanged.
@@ -3434,12 +3434,12 @@ paths:
       - rpc
       summary: 'vp_hr: read the HR absence days of ONE employee, with the kind (J-267 C)'
       description: 'v1.6.21 J-267 C (Karin 23.11). Same checks as /rpc/rpc_hr_absence_put (active vp_hr of the company,
-        else 403 insufficient_privilege; an active employee of that company, else 403 access_denied). Every call is
-        audited (hr_absence_read, company, the employee as subject; read audit rows hold no kind — J-292). One
-        employee per call; the whole company: /rpc/rpc_hr_absence_list_company (J-288 B). Rows carry the review state
-        (J-278 B). Cancelled days are included (cancelled = true).
-        No person field in the rows. The employee reads her own days (with the kind) through her own-rows policy
-        (J-269 A); no other role (manager, cfo, board, legal_ethics, owner_shareholder) can call this.'
+        else 403 insufficient_privilege; an active employee of that company, else 403 access_denied). J-292 (Karin
+        23.11): vp_hr reads are NOT logged (no audit row). One employee per call; the whole company:
+        /rpc/rpc_hr_absence_list_company (J-288 B). Rows carry the review state (J-278 B). Cancelled days are included
+        (cancelled = true). No person field in the rows (shape unchanged). The employee reads her own days through
+        /rpc/rpc_hr_absence_my_list (J-291 B); no other role (manager, cfo, board, legal_ethics, owner_shareholder)
+        can call this.'
       requestBody:
         required: true
         content:
@@ -3474,9 +3474,11 @@ paths:
       summary: 'vp_hr: read the HR absence rows of EVERY employee of the company, with kind and review state (J-288 B)'
       description: 'v1.6.21 J-288 B (Karin 23.11). Only an active vp_hr of p_company_id; everyone else (manager, cfo,
         board, legal_ethics, owner_shareholder, other employees, other companies, every other role) → 403
-        insufficient_privilege. Same row shape as /rpc/rpc_hr_absence_list (no employee field — J-293). p_needs_review_only
-        = only the rows whose kind must be set (J-278 B). Audited like the single reader (hr_absence_read, scope
-        company-wide, no subject, no kind — J-292). Cancelled rows included (cancelled = true).'
+        insufficient_privilege. J-293 (Karin 23.11): each row = the single reader''s fields + the employee''s user_id
+        and full_name — an explicitly approved exception to the no-person-id rule (like J-173), for vp_hr of the same
+        company only. p_needs_review_only = only the rows whose kind must be set (J-278 B). J-292: NOT logged.
+        Cancelled rows and leavers'' rows included (cancelled = true; a leaver''s needs_review row cannot be reviewed —
+        J-294 C / J-295).'
       requestBody:
         required: true
         content:
@@ -3500,6 +3502,33 @@ paths:
               schema:
                 type: array
                 items:
+                  $ref: '#/components/schemas/HrAbsenceCompanyRow'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_my_list:
+    post:
+      tags:
+      - rpc
+      summary: 'The employee reads her OWN HR absence days, with the kind — audited (J-291 B)'
+      description: 'v1.6.21 J-291 B (Karin 23.11). The only client read path of the HR absence rows: the direct table
+        read is revoked, so a read cannot bypass the log. The reader is the signed-in user (auth.uid(), no parameter).
+        Every call writes one access_audit_log row (action hr_absence_self_read, viewer = subject = herself, company
+        in the scope) WITHOUT the kind, dates or count. Same row shape as /rpc/rpc_hr_absence_list. Not signed in → 403
+        access_denied.'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Her own HR days, oldest first (empty when none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
                   $ref: '#/components/schemas/HrAbsenceRow'
         '403':
           $ref: '#/components/responses/BusinessError403'
@@ -3509,10 +3538,11 @@ paths:
       - rpc
       summary: 'vp_hr: set (review) the kind of ONE HR row by its entry id (J-278 B)'
       description: 'v1.6.21 J-278 B (Karin 23.11). Only an active vp_hr of p_company_id (else 403 insufficient_privilege);
-        a row of another company or an unknown id → 403 access_denied (no existence hint); p_absence_kind sick | other
+        a row of another company, an unknown id or (J-294 C, Karin 23.11) a row of an employee who is no longer active
+        → the same 403 access_denied (no existence hint, no hint that she left); p_absence_kind sick | other
         (else 400 invalid_absence_kind — a kind is never guessed). The row becomes reviewed; coordination and
         cancellation are unchanged; the manager list is unchanged. Audited as hr_absence_kind_set WITH the kind
-        (J-280 B), the employee as the subject. Works on any row of the company (J-294).'
+        (J-280 B), the employee as the subject. Active employees only (J-294 C replaced "any row").'
       requestBody:
         required: true
         content:
@@ -5420,6 +5450,19 @@ components:
             message: aggregation_privacy_threshold
             http_status: 403
   schemas:
+    HrAbsenceCompanyRow:
+      type: object
+      description: 'v1.6.21 J-288 B / J-293 — one HR absence row of the vp_hr company list: HrAbsenceRow + the employee''s
+        user_id and full_name (approved exception to the no-person-id rule, vp_hr of the same company only).'
+      allOf:
+      - $ref: '#/components/schemas/HrAbsenceRow'
+      - type: object
+        properties:
+          user_id:
+            type: string
+            format: uuid
+          full_name:
+            type: string
     HrAbsenceRow:
       type: object
       description: 'v1.6.21 J-267 C / J-278 B / J-288 B — one HR absence row for vp_hr (health data). absence_kind is

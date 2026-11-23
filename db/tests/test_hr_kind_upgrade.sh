@@ -4,7 +4,7 @@
 # shape (8eade64, where 'other' was back-filled) become kind NULL + 'needs_review'; 'sick' rows stay 'reviewed'.
 # Runs on (1) SIMULATED old shapes — the current pack with the table turned back to the c56d380 / 8eade64 shape — and
 # (2) when the git history is available, the REAL c56d380 / 8eade64 packs (git show). Also checks a re-apply changes
-# nothing (a reviewed row is never reset). Prints PASS / FAIL lines; exits 1 on any FAIL.
+# nothing (a reviewed row is never reset), and (J-291 B) that the direct client read is gone. Prints PASS / FAIL lines; exits 1 on any FAIL.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DB=${TEST_DB:-chr_v16_test}_hrup
@@ -58,6 +58,7 @@ after_upgrade() {
   check "$1: 3 kind / review constraints" "$(psql -d "$DB" -qAt -c "SELECT count(*) FROM pg_constraint WHERE conrelid = 'hr_absence_entry'::regclass AND conname IN ('chk_hr_absence_kind', 'chk_hr_absence_review_status', 'chk_hr_absence_kind_reviewed')")" "3"
   check "$1: absence_kind nullable, review state NOT NULL" "$(psql -d "$DB" -qAt -c "SELECT string_agg(column_name || '=' || is_nullable, ',' ORDER BY column_name) FROM information_schema.columns WHERE table_name = 'hr_absence_entry' AND column_name IN ('absence_kind', 'kind_review_status')")" "absence_kind=YES,kind_review_status=NO"
   check "$1: needs_review rows are not sick days in the totals" "$(psql -d "$DB" -qAt -c "SELECT fn_hr_sick_days('00000000-0000-0000-0000-00000000aa01', 'T', date_trunc('month', CURRENT_DATE)::date) + fn_hr_sick_days('00000000-0000-0000-0000-00000000aa01', 'T', date_trunc('month', CURRENT_DATE + 1)::date) - CASE WHEN date_trunc('month', CURRENT_DATE) = date_trunc('month', CURRENT_DATE + 1) THEN fn_hr_sick_days('00000000-0000-0000-0000-00000000aa01', 'T', date_trunc('month', CURRENT_DATE)::date) ELSE 0 END")" "$3"
+  check "$1: J-291 B no direct client read (SELECT revoked, own-rows policy gone)" "$(psql -d "$DB" -qAt -c "SELECT has_table_privilege('authenticated', 'hr_absence_entry', 'SELECT')::text || '/' || (SELECT count(*) FROM pg_policy WHERE polrelid = 'hr_absence_entry'::regclass)")" "false/0"
   # vp_hr's review (stand-in: the state the review RPC writes), then a re-apply must not reset it
   psql -d "$DB" -qAt >/dev/null -c "UPDATE hr_absence_entry SET absence_kind = 'other', kind_review_status = 'reviewed' WHERE absence_date = CURRENT_DATE + 1"
   apply_pack .

@@ -664,12 +664,15 @@ SELECT t_expect_http('J-270: the direct manager cannot record an HR day → 403 
 SELECT t_as(t_u('emp_sk'));
 SELECT t_expect_http('J-270: the employee cannot record an HR day for herself → 403 insufficient_privilege',
   $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'), t_today('emp_sk') + 1, 'sick')$$, 'insufficient_privilege', 403);
-SELECT t_assert('J-269: the employee reads her OWN HR rows only (3: today, +9, past) and no one else''s',
-  (SELECT count(*) = 3 AND bool_and(user_id = t_u('emp_sk')) FROM hr_absence_entry));
+SELECT t_assert('J-269 / J-291 B: the employee reads her OWN HR rows only (3: today, +9, past) through the audited self-read RPC',
+  (SELECT count(*) = 3 FROM rpc_hr_absence_my_list()));
+SELECT t_expect_err_any('J-291 B: the direct table read is revoked — the employee cannot bypass the self-read log (permission denied)',
+  $$SELECT count(*) FROM hr_absence_entry$$, '42501');
 SELECT t_expect_err_any('J-263 B: no client may write the table directly (insert → permission denied)',
   $$INSERT INTO hr_absence_entry (user_id, company_id, absence_date) VALUES (t_u('emp_sk'), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE + 20)$$, '42501');
 SELECT t_as(t_u('mgr_u'));
-SELECT t_assert('J-263 B: the manager reads no HR row directly (own-rows RLS)', NOT EXISTS (SELECT 1 FROM hr_absence_entry));
+SELECT t_expect_err_any('J-263 B / J-291 B: the manager cannot read the table directly (permission denied)',
+  $$SELECT 1 FROM hr_absence_entry$$, '42501');
 SELECT t_as(t_u('vp_u'));
 SELECT t_expect_http('J-263 B: an ex-employee (or anyone outside the company) → 403 access_denied, no existence hint',
   $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_a3'), CURRENT_DATE, 'sick')$$, 'access_denied', 403);
@@ -701,6 +704,8 @@ SELECT t_assert('J-267 C / J-278 B / J-263 B: hr_absence_entry has the kind (sic
   AND NOT has_table_privilege('authenticated', 'hr_absence_entry', 'UPDATE')
   AND NOT has_table_privilege('authenticated', 'hr_absence_entry', 'DELETE')
   AND NOT has_table_privilege('anon', 'hr_absence_entry', 'SELECT')
+  AND NOT has_table_privilege('authenticated', 'hr_absence_entry', 'SELECT')   -- J-291 B
+  AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = 'hr_absence_entry'::regclass)
   AND (SELECT bool_and(prosecdef AND prosrc LIKE '%fn_assert_vp_hr(p_company_id)%') FROM pg_proc
         WHERE proname IN ('rpc_hr_absence_put', 'rpc_hr_absence_cancel'))
   AND obj_description('hr_absence_entry'::regclass) LIKE '%Retention: לא הוגדר%');
@@ -765,9 +770,8 @@ SELECT t_assert('J-267 C: vp_hr reads the kind per day of the employee she names
   (SELECT jsonb_array_length(j) = 3 AND (SELECT bool_and(e->>'absence_kind' = 'sick') FROM jsonb_array_elements(j) e) FROM t_kind WHERE label = 'vp sk')
   AND (SELECT jsonb_array_length(j) = 2 AND (SELECT bool_and(e->>'absence_kind' = 'other') FROM jsonb_array_elements(j) e) FROM t_kind WHERE label = 'vp hr')
   AND (SELECT bool_and(NOT (j::text ~* '(user_id|person|pseudonym|full_name|email)')) FROM t_kind));
-SELECT t_assert('J-280 B: every vp_hr read is audited (hr_absence_read, the employee as subject) WITHOUT the kind (J-291); every put / cancel audit row RECORDS the kind and review state of the row (sick for emp_sk, other for the cancelled emp_hr day)',
-  (SELECT count(*) = 2 FROM access_audit_log WHERE action = 'hr_absence_read' AND viewer_id = t_u('vp_u') AND subject_user_id IS NOT NULL)
-  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_read' AND (scope::text ~* '(sick|other|kind)' OR reason IS NOT NULL))
+SELECT t_assert('J-280 B / J-292: vp_hr reads write NO audit row (J-292, replaced the read logging); every put / cancel audit row RECORDS the kind and review state of the row (sick for emp_sk, other for the cancelled emp_hr day)',
+  NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_read')   -- J-292: vp_hr reads are not logged
   AND (SELECT count(*) > 0 AND bool_and(scope ? 'absence_kind' AND scope->>'absence_kind' IN ('sick', 'other')
                                         AND scope->>'kind_review_status' = 'reviewed')
          FROM access_audit_log WHERE action IN ('hr_absence_put', 'hr_absence_cancel'))
@@ -777,21 +781,22 @@ SELECT t_assert('J-280 B: every vp_hr read is audited (hr_absence_read, the empl
         WHERE action = 'hr_absence_cancel' AND subject_user_id = t_u('emp_hr')));
 SELECT t_as(t_u('emp_sk'));
 SET ROLE authenticated;
-SELECT t_assert('J-269 A: the employee reads her OWN HR days WITH the kind (3 sick) and nothing of anyone else',
-  (SELECT count(*) = 3 AND bool_and(user_id = t_u('emp_sk') AND absence_kind = 'sick') FROM hr_absence_entry));
+SELECT t_assert('J-269 A / J-291 B: the employee reads her OWN HR days WITH the kind (3 sick) through rpc_hr_absence_my_list, nothing of anyone else; no person field',
+  (SELECT count(*) = 3 AND bool_and(absence_kind = 'sick') AND NOT (jsonb_agg(to_jsonb(r))::text ~* '(user_id|full_name|pseudonym)')
+     FROM rpc_hr_absence_my_list() r));
 SELECT t_expect_http('J-267 C: the employee cannot use the vp_hr reader, not even for herself → 403 insufficient_privilege',
   $$SELECT * FROM rpc_hr_absence_list('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'))$$, 'insufficient_privilege', 403);
 SELECT t_as(t_u('emp_hr'));
-SELECT t_assert('J-269 A: another employee sees only her own days (2 other) — never emp_sk''s sick days',
-  (SELECT count(*) = 2 AND bool_and(user_id = t_u('emp_hr') AND absence_kind = 'other') FROM hr_absence_entry));
+SELECT t_assert('J-269 A / J-291 B: another employee sees only her own days (2 other) — never emp_sk''s sick days',
+  (SELECT count(*) = 2 AND bool_and(absence_kind = 'other') FROM rpc_hr_absence_my_list()));
 RESET ROLE;
--- Every other role: no row through the table, refused by the reader.
+-- Every other role: no direct table read (J-291 B: permission denied → rows 0), refused by both readers.
 CREATE OR REPLACE FUNCTION t_kind_probe(p_key text, p_company uuid DEFAULT '00000000-0000-0000-0000-0000000a5c01') RETURNS void LANGUAGE plpgsql AS $$
 DECLARE v_rows int; v_sig jsonb; v_sig2 jsonb;
 BEGIN
   PERFORM t_as(t_u(p_key));
   SET LOCAL ROLE authenticated;
-  SELECT count(*) INTO v_rows FROM hr_absence_entry WHERE user_id <> t_u(p_key);
+  v_rows := CASE WHEN t_err_sig('SELECT count(*) FROM hr_absence_entry')->>'code' = '42501' THEN 0 ELSE -1 END;   -- J-291 B: no direct read
   v_sig := t_err_sig(format('SELECT * FROM rpc_hr_absence_list(%L, %L)', p_company, t_u('emp_sk')));
   v_sig2 := t_err_sig(format('SELECT * FROM rpc_hr_absence_list_company(%L)', p_company));   -- J-288 B
   RESET ROLE;
@@ -805,18 +810,18 @@ SELECT t_assert('J-267 C / J-288 B: the direct manager, another employee, cfo, l
   (SELECT count(*) = 10 AND bool_and((j->>'rows')::int = 0 AND j->>'msg' IN ('insufficient_privilege', 'access_denied')
                                      AND j->>'msg_company' = 'insufficient_privilege')
      FROM t_kind WHERE label LIKE 'probe %'));
-SELECT t_assert('J-267 C / J-284 A: catalog — the kind is in no view, and the only client-callable functions that touch hr_absence_entry (directly or through the internal row reader) or name the kind are the five vp_hr RPCs',
+SELECT t_assert('J-267 C / J-284 A / J-291 B: catalog — the kind is in no view, and the only client-callable functions that touch hr_absence_entry (directly or through the internal row reader) or name the kind are the five vp_hr RPCs and the employee''s audited self-read',
   NOT EXISTS (SELECT 1 FROM information_schema.columns c JOIN information_schema.views v
                 ON v.table_schema = c.table_schema AND v.table_name = c.table_name
                WHERE c.column_name = 'absence_kind')
   AND (SELECT array_agg(p.proname::text ORDER BY p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND (p.prosrc LIKE '%hr_absence_entry%' OR p.prosrc LIKE '%fn_hr_absence_rows%')
           AND (has_function_privilege('authenticated', p.oid, 'EXECUTE') OR has_function_privilege('anon', p.oid, 'EXECUTE')))
-      = ARRAY['rpc_hr_absence_cancel', 'rpc_hr_absence_list', 'rpc_hr_absence_list_company', 'rpc_hr_absence_put', 'rpc_hr_absence_set_kind']
+      = ARRAY['rpc_hr_absence_cancel', 'rpc_hr_absence_list', 'rpc_hr_absence_list_company', 'rpc_hr_absence_my_list', 'rpc_hr_absence_put', 'rpc_hr_absence_set_kind']
   AND (SELECT array_agg(p.proname::text ORDER BY p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND (p.prosrc LIKE '%absence_kind%' OR pg_get_function_result(p.oid) LIKE '%absence_kind%')
           AND has_function_privilege('authenticated', p.oid, 'EXECUTE'))
-      = ARRAY['rpc_hr_absence_list', 'rpc_hr_absence_list_company', 'rpc_hr_absence_put', 'rpc_hr_absence_set_kind']);
+      = ARRAY['rpc_hr_absence_list', 'rpc_hr_absence_list_company', 'rpc_hr_absence_my_list', 'rpc_hr_absence_put', 'rpc_hr_absence_set_kind']);
 -- A kind correction is invisible to the manager (her row stays byte-identical).
 CREATE TEMP TABLE t_kind_mgr (label text, j jsonb);
 GRANT SELECT, INSERT ON t_kind_mgr TO authenticated;
@@ -919,27 +924,25 @@ SELECT t_assert('J-278 B / J-156 A: the needs_review day is in the manager list 
   AND (SELECT count(*) = 1 FROM t_rv, jsonb_array_elements(j) e
         WHERE label = 'mgr before' AND e->>'display_pseudonym' = (SELECT display_pseudonym FROM users WHERE user_id = t_u('emp_nr'))
           AND e->>'availability_he' = 'לא זמינה' AND e->>'coordination_status' = 'pending_coordination'));
-SELECT t_assert('J-278 B / J-288 B: vp_hr lists the rows to review (exactly the emp_nr day: kind null, needs_review) and the whole company (every AuthzCo row incl. cancelled); same 6 keys as the single reader; no person field',
+SELECT t_assert('J-278 B / J-288 B / J-293: vp_hr lists the rows to review (exactly the emp_nr day: kind null, needs_review) and the whole company (every AuthzCo row incl. cancelled); company rows = the single reader''s 6 keys + user_id + full_name (J-293 exception); the single reader has no person field',
   (SELECT jsonb_array_length(j) = 1 AND j->0->'absence_kind' = 'null'::jsonb AND j->0->>'kind_review_status' = 'needs_review'
      FROM t_rv WHERE label = 'review list')
   AND (SELECT jsonb_array_length(j) = (SELECT count(*) FROM hr_absence_entry WHERE company_id = '00000000-0000-0000-0000-0000000a5c01')
      FROM t_rv WHERE label = 'company list')
   AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys((SELECT j->0 FROM t_rv WHERE label = 'company list')) k)
-      = (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys((SELECT j->0 FROM t_rv WHERE label = 'single list')) k)
+      = ARRAY['absence_date', 'absence_kind', 'cancelled', 'coordination_status', 'entry_id', 'full_name', 'kind_review_status', 'user_id']
   AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys((SELECT j->0 FROM t_rv WHERE label = 'single list')) k)
       = ARRAY['absence_date', 'absence_kind', 'cancelled', 'coordination_status', 'entry_id', 'kind_review_status']
-  AND NOT EXISTS (SELECT 1 FROM t_rv WHERE label LIKE '%list' AND j::text ~* '(user_id|person|pseudonym|full_name|email)'));
-SELECT t_assert('J-288 B: each company read is audited like the single reader (hr_absence_read, company-wide scope, no subject, no kind)',
-  (SELECT count(*) = 2 AND bool_and(subject_user_id IS NULL AND scope->>'read_scope' = 'company' AND NOT (scope::text ~* '(sick|other|absence_kind)'))
-     FROM access_audit_log WHERE action = 'hr_absence_read' AND scope ? 'read_scope' AND viewer_id = t_u('vp_u')));
+  AND NOT EXISTS (SELECT 1 FROM t_rv WHERE label = 'single list' AND j::text ~* '(user_id|person|pseudonym|full_name|email)'));
+SELECT t_assert('J-292 (replaced the J-288 B read audit): the company reads and the single read wrote NO audit row',
+  NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_read'));
 -- The review RPC: refusals first (nothing changes), then vp_hr sets the kind.
 CREATE OR REPLACE FUNCTION t_setkind_probe(p_key text, p_company uuid) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE v_sig jsonb;
+DECLARE v_sig jsonb; v_entry uuid := (SELECT entry_id FROM hr_absence_entry WHERE user_id = t_u('emp_nr'));   -- read as superuser (J-291 B)
 BEGIN
   PERFORM t_as(t_u(p_key));
   SET LOCAL ROLE authenticated;
-  v_sig := t_err_sig(format('SELECT rpc_hr_absence_set_kind(%L, %L, %L)', p_company,
-                            (SELECT entry_id FROM hr_absence_entry WHERE user_id = t_u('emp_nr')), 'sick'));
+  v_sig := t_err_sig(format('SELECT rpc_hr_absence_set_kind(%L, %L, %L)', p_company, v_entry, 'sick'));
   RESET ROLE;
   RETURN v_sig->>'message';
 END $$;
@@ -990,3 +993,98 @@ SELECT t_assert('J-288 B / J-278 B: the shared row reader and the audit-scope bu
   NOT has_function_privilege('authenticated', 'fn_hr_absence_rows(uuid, uuid, boolean)', 'EXECUTE')
   AND NOT has_function_privilege('authenticated', 'fn_hr_absence_audit_scope(hr_absence_entry)', 'EXECUTE')
   AND NOT has_function_privilege('anon', 'rpc_hr_absence_list_company(uuid, boolean)', 'EXECUTE'));
+
+-- ============ 14. J-289 A / J-291 B / J-292 / J-293 / J-294 C (Karin 23.11) ============
+-- J-291 B: every self-read writes ONE audit row (actor = subject = the employee), never the kind.
+SELECT t_assert('J-291 B: each self-read so far wrote exactly one hr_absence_self_read row — emp_sk 2 calls, emp_hr 1 — viewer = subject = the employee, company in the scope, NO kind, no count',
+  (SELECT count(*) = 2 FROM access_audit_log WHERE action = 'hr_absence_self_read' AND viewer_id = t_u('emp_sk') AND subject_user_id = t_u('emp_sk'))
+  AND (SELECT count(*) = 1 FROM access_audit_log WHERE action = 'hr_absence_self_read' AND viewer_id = t_u('emp_hr') AND subject_user_id = t_u('emp_hr'))
+  AND (SELECT bool_and(viewer_id = subject_user_id AND scope ? 'company_id' AND NOT (scope::text ~* '(sick|other|kind|count|absence_date)'))
+         FROM access_audit_log WHERE action = 'hr_absence_self_read'));
+SELECT t_as(t_u('emp_gh'));
+SET ROLE authenticated;
+SELECT t_assert('J-291 B: an employee with no HR rows gets an empty list (still logged)', (SELECT count(*) = 0 FROM rpc_hr_absence_my_list()));
+SELECT t_as(NULL);
+SELECT t_expect_http('J-291 B: not signed in → 403 access_denied', $$SELECT * FROM rpc_hr_absence_my_list()$$, 'access_denied', 403);
+RESET ROLE;
+SELECT t_assert('J-291 B: the empty read is logged too; anon cannot call the self-read',
+  (SELECT count(*) = 1 FROM access_audit_log WHERE action = 'hr_absence_self_read' AND viewer_id = t_u('emp_gh'))
+  AND NOT has_function_privilege('anon', 'rpc_hr_absence_my_list()', 'EXECUTE'));
+-- J-292 / J-280 B: vp_hr reads leave no row; writes keep logging WITH the kind.
+CREATE TEMP TABLE t_j292 AS SELECT count(*) AS n FROM access_audit_log;
+GRANT SELECT ON t_j292 TO authenticated;
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+SELECT t_assert('J-292 fixture: vp_hr reads one employee and the whole company', (SELECT count(*) > 0 FROM rpc_hr_absence_list('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk')))
+  AND (SELECT count(*) > 0 FROM rpc_hr_absence_list_company('00000000-0000-0000-0000-0000000a5c01')));
+RESET ROLE;
+SELECT t_assert('J-292: the vp_hr reads wrote NO audit row at all', (SELECT count(*) FROM access_audit_log) = (SELECT n FROM t_j292));
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+SELECT t_assert('J-292 fixture: vp_hr writes (put, cancel)', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 30, 'sick')->>'status' = 'saved'
+  AND rpc_hr_absence_cancel('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 30)->>'status' = 'cancelled');
+RESET ROLE;
+SELECT t_assert('J-292 / J-280 B / J-274 A: writes still log — put and cancel rows WITH the kind (sick), the employee as subject; still no read row',
+  (SELECT count(*) = 2 AND bool_and(scope->>'absence_kind' = 'sick') FROM access_audit_log
+    WHERE action IN ('hr_absence_put', 'hr_absence_cancel') AND subject_user_id = t_u('emp_gh')
+      AND (scope->>'absence_date')::date = t_today('emp_gh') + 30)
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_read'));
+-- J-293: the company list names the employee (user_id + full name), for vp_hr of the same company only.
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_rv SELECT 'j293', jsonb_agg(to_jsonb(r)) FROM rpc_hr_absence_list_company('00000000-0000-0000-0000-0000000a5c01') r;
+RESET ROLE;
+SELECT t_assert('J-293: every company-list row carries the right user_id and full name (emp_sk''s 3 rows: her id, "Fixture emp_sk", sick)',
+  (SELECT bool_and((e->>'user_id')::uuid = h.user_id AND e->>'full_name' = u.full_name)
+     FROM t_rv, jsonb_array_elements(j) e JOIN hr_absence_entry h ON h.entry_id = (e->>'entry_id')::uuid JOIN users u ON u.user_id = h.user_id
+    WHERE label = 'j293')
+  AND (SELECT count(*) = 3 AND bool_and(e->>'full_name' = 'Fixture emp_sk' AND e->>'absence_kind' = 'sick')
+         FROM t_rv, jsonb_array_elements(j) e WHERE label = 'j293' AND (e->>'user_id')::uuid = t_u('emp_sk')));
+SELECT t_assert('J-293: every other role (manager, employee, cfo, legal_ethics, board_chair, board_member, owner_shareholder, skip level, another company''s vp_hr) is refused by the company list — 403 insufficient_privilege (section 11 probes)',
+  (SELECT count(*) = 10 AND bool_and(j->>'msg_company' = 'insufficient_privilege') FROM t_kind WHERE label LIKE 'probe %'));
+-- J-294 C: a leaver's row cannot be reviewed; the refusal is identical to an unknown entry id.
+SELECT count(t_mk(k, 'Gov', 'employee', 'employee')) = 1 AS emp_lv_ok FROM unnest(ARRAY['emp_lv']) k;
+INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind, kind_review_status)
+VALUES (t_u('emp_lv'), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 40, NULL, 'needs_review');
+UPDATE users SET employment_ended_at = clock_timestamp() - interval '1 day' WHERE user_id = t_u('emp_lv');
+CREATE TEMP TABLE t_j294 (label text, sig jsonb);
+GRANT SELECT, INSERT ON t_j294 TO authenticated;
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_j294 SELECT 'leaver', t_err_sig(format('SELECT rpc_hr_absence_set_kind(%L, %L, %L)', '00000000-0000-0000-0000-0000000a5c01',
+  (SELECT r.entry_id FROM rpc_hr_absence_list_company('00000000-0000-0000-0000-0000000a5c01', true) r WHERE r.user_id = t_u('emp_lv')), 'sick'));
+INSERT INTO t_j294 SELECT 'unknown', t_err_sig(format('SELECT rpc_hr_absence_set_kind(%L, %L, %L)', '00000000-0000-0000-0000-0000000a5c01',
+  gen_random_uuid(), 'sick'));
+RESET ROLE;
+SELECT t_assert('J-294 C: vp_hr cannot set the kind of a leaver''s row → 403 access_denied, byte-identical to an unknown entry id (no hint that she left); the row stays needs_review; nothing audited',
+  (SELECT sig->>'message' = 'access_denied' FROM t_j294 WHERE label = 'leaver')
+  AND (SELECT sig FROM t_j294 WHERE label = 'leaver') = (SELECT sig FROM t_j294 WHERE label = 'unknown')
+  AND (SELECT absence_kind IS NULL AND kind_review_status = 'needs_review' FROM hr_absence_entry WHERE user_id = t_u('emp_lv'))
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_kind_set' AND subject_user_id = t_u('emp_lv')));
+SELECT t_assert('J-294 C: the rule sits in ONE internal guard (fn_hr_kind_settable, no client grant) used by rpc_hr_absence_set_kind',
+  NOT has_function_privilege('authenticated', 'fn_hr_kind_settable(uuid, uuid)', 'EXECUTE')
+  AND (SELECT prosrc LIKE '%fn_hr_kind_settable(p_company_id, p_entry_id)%' FROM pg_proc WHERE proname = 'rpc_hr_absence_set_kind'));
+SELECT t_assert('J-294 C: an ACTIVE employee''s row is still reviewable (emp_nr, section 13: reviewed, sick, audited once)',
+  (SELECT kind_review_status = 'reviewed' AND absence_kind = 'sick' FROM hr_absence_entry WHERE user_id = t_u('emp_nr'))
+  AND (SELECT count(*) = 1 FROM access_audit_log WHERE action = 'hr_absence_kind_set' AND subject_user_id = t_u('emp_nr')));
+-- J-289 A + J-294 C: a leaver's needs_review day in SickCo S1 stays out of the sick days AND the J-276 max.
+SELECT count(t_mk2(k, 'S1', 'employee')) = 1 AS s7_ok FROM unnest(ARRAY['s7']) k;
+INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind, kind_review_status)
+VALUES (t_u('s7'), '00000000-0000-0000-0000-0000000a5c02', (SELECT m FROM t_m) + 7, NULL, 'needs_review');
+UPDATE users SET employment_ended_at = clock_timestamp() - interval '1 day' WHERE user_id = t_u('s7');
+SELECT t_assert('J-289 A: needs_review days (s7, now a leaver) are NOT sick — S1 HR sick days stay 5 and the team total max(2, 5) + 1 + 1 = 7; a manual number above them still wins (max(6, 5))',
+  fn_hr_sick_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m)) = 5
+  AND fn_team_absence_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m)) = 7
+  AND fn_combined_sickness_days(6, fn_hr_sick_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m))) = 6);
+-- Manager rows still byte-identical across all types (after every change of this round).
+CREATE TEMP TABLE t_mgr14 (j jsonb);
+GRANT SELECT, INSERT ON t_mgr14 TO authenticated;
+SELECT t_as(t_u('mgr_u'));
+SET ROLE authenticated;
+INSERT INTO t_mgr14 SELECT to_jsonb(v) FROM manager_unavailability_v v;
+RESET ROLE;
+SELECT t_assert('J-156 A / J-267 C: the manager list is still uniform — every row byte-identical apart from id, pseudonym, date and coordination; "לא זמינה"; no kind, name or person id; the leaver is not in it',
+  (SELECT count(*) > 0 AND count(DISTINCT (j - 'entry_id' - 'display_pseudonym' - 'unavailable_date' - 'coordination_status')::text) = 1
+          AND bool_and(j->>'availability_he' = 'לא זמינה' AND NOT (j::text ~* '(sick|other|kind|user_id|full_name)'))
+     FROM t_mgr14)
+  AND NOT EXISTS (SELECT 1 FROM t_mgr14 WHERE j->>'display_pseudonym' = (SELECT display_pseudonym FROM users WHERE user_id = t_u('emp_lv'))));

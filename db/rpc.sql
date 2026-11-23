@@ -2096,9 +2096,11 @@ GRANT SELECT ON TABLE manager_unavailability_v, early_leave_manager_v, approved_
 -- diagnosis); any date (J-273 A); one row per employee per day; cancel = status (never a delete); every write and
 -- every vp_hr read audited (access_audit_log: action, company, date; the employee as the audit subject — J-274 A).
 -- J-280 B (Karin 23.11, knowingly accepted): put / cancel / kind review audit rows RECORD the kind (health data,
--- kept for good in the WORM log); read audit rows do not (J-291). J-278 B: rows without a kind are 'needs_review'
--- until vp_hr sets the kind (rpc_hr_absence_set_kind). J-288 B: vp_hr also reads the whole company
--- (rpc_hr_absence_list_company). Outputs hold no person id.
+-- kept for good in the WORM log). J-292 (Karin 23.11): vp_hr READS are not logged at all. J-291 B: every read
+-- the employee makes of her own rows is logged ('hr_absence_self_read', no kind) — the only client read path.
+-- J-278 B: rows without a kind are 'needs_review' until vp_hr sets the kind (rpc_hr_absence_set_kind, active
+-- employees only — J-294 C). J-288 B / J-293: vp_hr also reads the whole company WITH user_id and full name (an
+-- approved exception to the no-person-id rule, vp_hr of the same company only). Other outputs hold no person id.
 -- ---------------------------------------------------------------------------
 
 -- Internal: the target must be an active employee (with an employee profile) of the company; else 403
@@ -2202,18 +2204,19 @@ BEGIN
 END;
 $$;
 
--- The one row shape of every vp_hr HR-absence reader (J-288 B: the company reader uses the same shape as the
--- single reader): entry id, date, kind (NULL while it needs review), review state, coordination, cancelled. No
--- person field. p_user NULL = every employee of the company; p_needs_review_only = only rows to review. Internal.
+-- The one row source of every HR-absence reader: the employee's user id (INTERNAL — only the J-293 company reader
+-- passes it on), entry id, date, kind (NULL while it needs review), review state, coordination, cancelled.
+-- p_user NULL = every employee of the company; p_needs_review_only = only rows to review. Internal, no grant.
+DROP FUNCTION IF EXISTS fn_hr_absence_rows(uuid, uuid, boolean);
 CREATE OR REPLACE FUNCTION fn_hr_absence_rows(p_company uuid, p_user uuid, p_needs_review_only boolean)
-RETURNS TABLE (entry_id uuid, absence_date date, absence_kind text, kind_review_status text,
+RETURNS TABLE (user_id uuid, entry_id uuid, absence_date date, absence_kind text, kind_review_status text,
                coordination_status text, cancelled boolean)
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT h.entry_id, h.absence_date, h.absence_kind, h.kind_review_status, h.coordination_status,
+  SELECT h.user_id, h.entry_id, h.absence_date, h.absence_kind, h.kind_review_status, h.coordination_status,
          h.cancelled_at IS NOT NULL
     FROM hr_absence_entry h
    WHERE h.company_id = p_company AND (p_user IS NULL OR h.user_id = p_user)
@@ -2222,9 +2225,8 @@ AS $$
 $$;
 
 -- J-267 C: vp_hr reads the HR absence days (WITH the kind and the review state, J-278 B) of ONE employee she names.
--- Same checks as the writes (an active employee of the company). Every read is audited as 'hr_absence_read'
--- (company; the employee as the audit subject; no kind — J-291). No person field in the output; cancelled days are
--- included with cancelled = true.
+-- Same checks as the writes (an active employee of the company). J-292 (Karin 23.11): NOT logged (no read row).
+-- Row shape unchanged — no person field; cancelled days are included with cancelled = true.
 DROP FUNCTION IF EXISTS rpc_hr_absence_list(uuid, uuid);
 CREATE OR REPLACE FUNCTION rpc_hr_absence_list(p_company_id uuid, p_user_id uuid)
 RETURNS TABLE (entry_id uuid, absence_date date, absence_kind text, kind_review_status text,
@@ -2236,33 +2238,53 @@ AS $$
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
   PERFORM fn_assert_hr_absence_target(p_company_id, p_user_id);
-  PERFORM fn_audit_view('hr_absence_read', jsonb_build_object('company_id', p_company_id), p_user_id);
-  RETURN QUERY SELECT * FROM fn_hr_absence_rows(p_company_id, p_user_id, false);
+  RETURN QUERY SELECT r.entry_id, r.absence_date, r.absence_kind, r.kind_review_status, r.coordination_status, r.cancelled
+                 FROM fn_hr_absence_rows(p_company_id, p_user_id, false) r;
 END;
 $$;
 
--- J-288 B (Karin 23.11): an active vp_hr reads the HR absence rows of EVERY employee of her company — same row shape
--- as rpc_hr_absence_list (so no employee field, J-292); p_needs_review_only = only the rows whose kind must be set
--- (J-278 B). Audited like the single reader ('hr_absence_read', scope company-wide, no subject, no kind). Everyone
--- else (manager, cfo, board, other employees, other companies, every other role) → 403 insufficient_privilege.
+-- J-288 B (Karin 23.11): an active vp_hr reads the HR absence rows of EVERY employee of her company.
+-- J-293 (Karin 23.11): each row carries the employee's user_id and full name — an explicitly approved exception to
+-- the no-person-id rule (like J-173), for vp_hr of the same company only; the rest is the single reader's shape.
+-- p_needs_review_only = only the rows whose kind must be set (J-278 B). J-292: NOT logged. Everyone else (manager,
+-- cfo, board, other employees, other companies, every other role) → 403 insufficient_privilege.
+DROP FUNCTION IF EXISTS rpc_hr_absence_list_company(uuid, boolean);
 CREATE OR REPLACE FUNCTION rpc_hr_absence_list_company(p_company_id uuid, p_needs_review_only boolean DEFAULT false)
-RETURNS TABLE (entry_id uuid, absence_date date, absence_kind text, kind_review_status text,
-               coordination_status text, cancelled boolean)
+RETURNS TABLE (user_id uuid, full_name text, entry_id uuid, absence_date date, absence_kind text,
+               kind_review_status text, coordination_status text, cancelled boolean)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
-  PERFORM fn_audit_view('hr_absence_read', jsonb_build_object('company_id', p_company_id, 'read_scope', 'company',
-                                                              'needs_review_only', COALESCE(p_needs_review_only, false)));
-  RETURN QUERY SELECT * FROM fn_hr_absence_rows(p_company_id, NULL, p_needs_review_only);
+  RETURN QUERY SELECT r.user_id, u.full_name::text, r.entry_id, r.absence_date, r.absence_kind, r.kind_review_status,
+                      r.coordination_status, r.cancelled
+                 FROM fn_hr_absence_rows(p_company_id, NULL, p_needs_review_only) r
+                 JOIN users u ON u.user_id = r.user_id;
 END;
+$$;
+
+-- J-294 C GUARD (Karin 23.11, chosen wording: active only) — the ONE rule deciding which HR rows vp_hr may set the
+-- kind of: a row of p_company whose employee is still ACTIVE (no employment end, employee profile). false for a
+-- leaver's row, another company's row or an unknown id (the caller turns every false into the same neutral 403).
+-- To switch rules (e.g. ADR option B "needs_review rows only"), change only this function. Internal, no grant.
+CREATE OR REPLACE FUNCTION fn_hr_kind_settable(p_company uuid, p_entry uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (SELECT 1 FROM hr_absence_entry h JOIN users u ON u.user_id = h.user_id
+                  WHERE h.entry_id = p_entry AND h.company_id = p_company AND u.company_id = p_company
+                    AND u.employment_ended_at IS NULL AND u.has_employee_profile)
 $$;
 
 -- J-278 B (Karin 23.11): an active vp_hr of the row's company sets (or corrects) the kind of ONE HR row by its entry
 -- id — the way to review a 'needs_review' row; the row becomes 'reviewed'. Coordination and cancellation are not
--- touched. A row of another company or an unknown id → 403 access_denied (no existence hint); a bad kind → 400
+-- touched. J-294 C (Karin 23.11): only rows of an ACTIVE employee of the company — a leaver's row, a row of another
+-- company and an unknown id all get the SAME 403 access_denied (no hint that the person left); a bad kind → 400
 -- invalid_absence_kind. Audited as 'hr_absence_kind_set' WITH the kind (J-280 B), the employee as the subject.
 CREATE OR REPLACE FUNCTION rpc_hr_absence_set_kind(p_company_id uuid, p_entry_id uuid, p_absence_kind text)
 RETURNS jsonb
@@ -2274,7 +2296,7 @@ DECLARE
   v_row hr_absence_entry;
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
-  IF NOT EXISTS (SELECT 1 FROM hr_absence_entry h WHERE h.entry_id = p_entry_id AND h.company_id = p_company_id) THEN
+  IF NOT fn_hr_kind_settable(p_company_id, p_entry_id) THEN   -- J-294 C guard (one place to switch)
     PERFORM fn_raise_business('access_denied');
   END IF;
   IF NOT fn_hr_absence_kind_valid(p_absence_kind) THEN
@@ -2288,16 +2310,41 @@ BEGIN
 END;
 $$;
 
+-- J-291 B (Karin 23.11): the employee reads her OWN HR absence rows (with the kind, J-269 A) — the ONLY client read
+-- path of hr_absence_entry (the direct table read is revoked). The actor is the signed-in employee (auth.uid(),
+-- never a parameter); every call writes 'hr_absence_self_read' to access_audit_log (viewer = subject = herself,
+-- company in the scope, NO kind, no count). Same row shape as rpc_hr_absence_list. Not signed in → 403 access_denied.
+CREATE OR REPLACE FUNCTION rpc_hr_absence_my_list()
+RETURNS TABLE (entry_id uuid, absence_date date, absence_kind text, kind_review_status text,
+               coordination_status text, cancelled boolean)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_me uuid := auth.uid();
+  v_company uuid;
+BEGIN
+  SELECT u.company_id INTO v_company FROM users u WHERE u.user_id = v_me;
+  IF v_me IS NULL OR v_company IS NULL THEN
+    PERFORM fn_raise_business('access_denied');
+  END IF;
+  PERFORM fn_audit_view('hr_absence_self_read', jsonb_build_object('company_id', v_company), v_me);
+  RETURN QUERY SELECT r.entry_id, r.absence_date, r.absence_kind, r.kind_review_status, r.coordination_status, r.cancelled
+                 FROM fn_hr_absence_rows(v_company, v_me, false) r;
+END;
+$$;
+
 REVOKE ALL ON FUNCTION fn_assert_hr_absence_target(uuid, uuid), fn_hr_absence_kind_valid(text),
-  fn_hr_absence_audit_scope(hr_absence_entry), fn_hr_absence_rows(uuid, uuid, boolean),
+  fn_hr_absence_audit_scope(hr_absence_entry), fn_hr_absence_rows(uuid, uuid, boolean), fn_hr_kind_settable(uuid, uuid),
   rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_absence_cancel(uuid, uuid, date),
   rpc_hr_absence_list(uuid, uuid), rpc_hr_absence_list_company(uuid, boolean),
-  rpc_hr_absence_set_kind(uuid, uuid, text) FROM PUBLIC, anon;
-REVOKE ALL ON FUNCTION fn_hr_absence_audit_scope(hr_absence_entry), fn_hr_absence_rows(uuid, uuid, boolean)
-  FROM authenticated;
+  rpc_hr_absence_set_kind(uuid, uuid, text), rpc_hr_absence_my_list() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION fn_hr_absence_audit_scope(hr_absence_entry), fn_hr_absence_rows(uuid, uuid, boolean),
+  fn_hr_kind_settable(uuid, uuid) FROM authenticated;
 GRANT EXECUTE ON FUNCTION rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_absence_cancel(uuid, uuid, date),
   rpc_hr_absence_list(uuid, uuid), rpc_hr_absence_list_company(uuid, boolean),
-  rpc_hr_absence_set_kind(uuid, uuid, text) TO authenticated;
+  rpc_hr_absence_set_kind(uuid, uuid, text), rpc_hr_absence_my_list() TO authenticated;
 
 -- ---------------------------------------------------------------------------
 -- v1.6.18 (A-13, Karin 31.10): a time benefit bought before leaving but scheduled AFTER the end of employment is

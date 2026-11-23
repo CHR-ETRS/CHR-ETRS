@@ -1118,7 +1118,7 @@ REVOKE ALL ON TABLE early_leave_coordination FROM PUBLIC, anon, authenticated;
 -- NULL and kind_review_status 'needs_review' — never a guessed kind; vp_hr sets it with rpc_hr_absence_set_kind
 -- (audited). Such a row is not a sick day in the totals until reviewed (J-289). Every other row is 'reviewed'.
 -- J-267 C (Karin 23.11): absence_kind 'sick' / 'other' — HEALTH DATA (a sick day). Required on every write; no
--- reason, diagnosis or free text. Readable ONLY by the employee herself (own-rows policy below, J-269 A) and by an
+-- reason, diagnosis or free text. Readable ONLY by the employee herself (audited self-read RPC, J-269 A / J-291 B) and by an
 -- active vp_hr of the company through rpc_hr_absence_list (audited); never by the manager (the uniform list has no
 -- kind), cfo, board, legal_ethics or any view. J-53 "the system holds no sickness data" is superseded for
 -- HR-entered absence only. J-272 B: kind 'sick' days feed the J-80 / J-53 team and board sickness totals (combined
@@ -1182,12 +1182,11 @@ COMMENT ON COLUMN hr_absence_entry.kind_review_status IS
   'J-278 B: reviewed | needs_review (a row written before the kind existed; vp_hr sets the kind with rpc_hr_absence_set_kind). Never a guessed kind.';
 ALTER TABLE hr_absence_entry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hr_absence_entry FORCE ROW LEVEL SECURITY;
+-- J-291 B (Karin 23.11): NO direct client read any more — the employee reads her own rows only through the audited
+-- SECURITY DEFINER rpc_hr_absence_my_list (every read logged, without the kind), so a read cannot bypass the log.
+-- The J-269 own-rows policy hr_absence_own is REPLACED (dropped on upgrade); RLS stays forced with no policy.
 REVOKE ALL ON TABLE hr_absence_entry FROM PUBLIC, anon, authenticated;
-GRANT SELECT ON TABLE hr_absence_entry TO authenticated;
 DROP POLICY IF EXISTS hr_absence_own ON hr_absence_entry;
-CREATE POLICY hr_absence_own ON hr_absence_entry
-    FOR SELECT TO authenticated
-    USING (auth.uid() = user_id);
 
 -- ---------------------------------------------------------------------------
 -- 7. team_aggregate — REGULAR team data, N ≥ 5 ACTUAL contributors (lock #3)
