@@ -585,7 +585,12 @@ paths:
         → always the identical 403 access_denied, whatever the employee''s spoons. Timing: all refusals of (2)
         evaluate the same checks in the same order (budget row, Circuit Breaker AND cost, then one raise); a
         bad-input refusal ends earlier (it depends only on the manager''s own input), and lock waits / caching are
-        not equalized (no artificial delay).'
+        not equalized (no artificial delay).
+
+        J-260 A (Karin 23.11): the direct manager (assigning to someone else) is refused for EVERY task kind when the
+        employee has 5 spoons or fewer — Farming included — with the same neutral 403 assignment_unavailable, so
+        Farming-allowed / Fighting-refused no longer shows the 4–5 band. Above 5 unchanged. Self-assignment unchanged.
+        No cost refusal can occur above 5 (the cost is capped at 4).'
       requestBody:
         required: true
         content:
@@ -1269,7 +1274,7 @@ paths:
       tags:
       - reads
       summary: 'Direct manager: one uniform list of who is unavailable (לא זמינה), today and future only'
-      description: "v1.6.21 J-156 A / J-169 / J-170 (Karin, relayed 23.11): ONE uniform list for the active direct manager — entry id, pseudonym, date, availability_he and coordination_status. Identical columns, texts, statuses and order for every source (early leave / go-home, approved absence, EverStore time benefit). Today and future days only (the employee's own calendar day); no history, no cancelled entries, no ex-employees. availability_he = 'לא זמינה להמשך היום' for today, 'לא זמינה' for a later day (J-255, by date only). Order: date, pseudonym, entry id (J-256). Never a time, כפיות, type, source text, count or reason. Averages-only roles get no rows."
+      description: "v1.6.21 J-156 A / J-169 / J-170 + J-255 A / J-262 A / J-263 B (Karin 23.11): ONE uniform list for the active direct manager — entry id, pseudonym, date, availability_he and coordination_status. Identical columns, text, statuses and order for every source (early leave / go-home, approved absence, EverStore time benefit, HR-entered sick leave / absence — /rpc/rpc_hr_absence_put). ONE row per employee per day (J-262 A): entry_id = the smallest id of the day's parts; coordination_status coordinated only when every part is. Today and future days only (the employee's own calendar day); no history, no cancelled entries, no ex-employees. availability_he is always 'לא זמינה' (J-255 A). Order: date, pseudonym, entry id (J-256). Never a time, spoons, type, source text, count or reason. Averages-only roles get no rows."
       parameters:
       - $ref: '#/components/parameters/select'
       responses:
@@ -1285,10 +1290,10 @@ paths:
     get:
       tags:
       - reads
-      summary: 'Deprecated alias (J-258) of /manager_unavailability_v — identical rows; no early-leave text or time'
+      summary: 'Deprecated alias (J-258 A — removed in the next version after this one) of /manager_unavailability_v — identical rows; no early-leave text or time'
       description: 'Replaced in v1.6.21 (J-156 A): was pseudonym + ''יציאה מוקדמת מאושרת'' + left_at. Now returns
-        exactly /manager_unavailability_v (same columns, rows and order). Kept so existing clients do not break; removal
-        is for Karin (J-258).'
+        exactly /manager_unavailability_v (same columns, rows and order). Kept for THIS version only so existing clients
+        can move; removed in the next version after this one (J-258 A, Karin 23.11; no date set).'
       deprecated: true
       parameters:
       - $ref: '#/components/parameters/select'
@@ -3266,11 +3271,11 @@ paths:
     get:
       tags:
       - reads
-      summary: 'Deprecated alias (J-258) of /manager_unavailability_v — identical rows; no type or source text'
+      summary: 'Deprecated alias (J-258 A — removed in the next version after this one) of /manager_unavailability_v — identical rows; no type or source text'
       description: 'Replaced in v1.6.21 (J-156 A / J-170): was display_pseudonym, requested_date, entry_type, entry_text,
         schedule_status and created_at of all dates (v1.6.13 נעילת הפרגוד). Now returns exactly /manager_unavailability_v
         (same columns, rows and order; today and future only). Still zero reference to EverStore, item_id or Golden
-        Spoons. Removal is for Karin (J-258).'
+        Spoons. Kept for THIS version only; removed in the next version after this one (J-258 A, Karin 23.11; no date set).'
       deprecated: true
       responses:
         '200':
@@ -3352,6 +3357,114 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_put:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: record ONE day of sick leave or other HR absence for one employee (J-263 B)'
+      description: 'v1.6.21 J-263 B (Karin 23.11). Only an active vp_hr of p_company_id (else 403 insufficient_privilege,
+        J-270); the employee must be an active employee of that company (else 403 access_denied, no existence hint). No
+        kind, reason or medical field — the day is not labelled sickness or other absence (J-267). Any date (no range
+        set, J-273). One row per employee per day: an active day is left as it is; a cancelled day is re-opened
+        (pending_coordination). Audited (action, company, date). The direct manager sees the day only as a uniform
+        "לא זמינה" row of /manager_unavailability_v; the employee reads her own rows (J-269). Retention: לא הוגדר (J-271).
+        Not counted in the J-80 / J-53 team or board totals (J-272).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              - p_absence_date
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_absence_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Saved (no person field)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entry_id:
+                    type: string
+                    format: uuid
+                  absence_date:
+                    type: string
+                    format: date
+                  status:
+                    type: string
+                    enum:
+                    - saved
+        '400':
+          description: invalid_requested_date (no date)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_cancel:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: cancel the HR absence day of one employee (status only, never a delete; J-263 B)'
+      description: 'Same checks as /rpc/rpc_hr_absence_put. Idempotent. A day without an entry → 400
+        invalid_requested_date. Audited. The day disappears from the manager list.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              - p_absence_date
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_absence_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Cancelled (no person field)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  absence_date:
+                    type: string
+                    format: date
+                  status:
+                    type: string
+                    enum:
+                    - cancelled
+        '400':
+          description: invalid_requested_date (no entry on that day)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
   /rpc/rpc_coordinate_approved_absence:
     post:
       tags:
@@ -3369,11 +3482,12 @@ paths:
                 p_absence_id:
                   type: string
                   format: uuid
-                  description: entry_id of a /manager_unavailability_v row
+                  description: entry_id of a /manager_unavailability_v row, or the id of any part of that employee-day
+                    (J-262 A / J-268) — every part of the day is coordinated
       responses:
         '200':
-          description: The coordinated row, same shape as /manager_unavailability_v (coordination_status coordinated);
-            idempotent
+          description: The coordinated (merged) row, same shape as /manager_unavailability_v (coordination_status
+            coordinated); idempotent
           content:
             application/json:
               schema:
@@ -5945,7 +6059,8 @@ components:
         entry_id:
           type: string
           format: uuid
-          description: Opaque id of the row (for /rpc/rpc_coordinate_approved_absence only)
+          description: Opaque id of the row = the smallest id of the employee-day's parts (J-262 A; for
+            /rpc/rpc_coordinate_approved_absence only)
         display_pseudonym:
           type: string
         unavailable_date:
@@ -5955,9 +6070,8 @@ components:
         availability_he:
           type: string
           enum:
-          - לא זמינה להמשך היום
           - לא זמינה
-          description: today → 'לא זמינה להמשך היום', a later day → 'לא זמינה' (J-255, by date only)
+          description: always 'לא זמינה', today and future (J-255 A, Karin 23.11)
         coordination_status:
           type: string
           enum:
@@ -5965,7 +6079,7 @@ components:
           - coordinated
     EarlyLeaveManagerView:
       description: Replaced in v1.6.21 (J-156 A) — was pseudonym + 'יציאה מוקדמת מאושרת' + left_at; now the uniform
-        ManagerUnavailabilityRow.
+        ManagerUnavailabilityRow. Removed in the next version after this one (J-258 A).
       deprecated: true
       allOf:
       - $ref: '#/components/schemas/ManagerUnavailabilityRow'
@@ -6809,7 +6923,7 @@ components:
             never shown to the manager as an EverStore item).'
     ApprovedAbsenceManagerView:
       description: Replaced in v1.6.21 (J-156 A / J-170) — was absence_id, display_pseudonym, requested_date, entry_type,
-        entry_text, schedule_status (incl. cancelled) and created_at; now the uniform ManagerUnavailabilityRow.
+        entry_text, schedule_status (incl. cancelled) and created_at; now the uniform ManagerUnavailabilityRow. Removed in the next version after this one (J-258 A).
       deprecated: true
       allOf:
       - $ref: '#/components/schemas/ManagerUnavailabilityRow'

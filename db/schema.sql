@@ -1109,6 +1109,35 @@ ALTER TABLE early_leave_coordination ENABLE ROW LEVEL SECURITY;
 ALTER TABLE early_leave_coordination FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE early_leave_coordination FROM PUBLIC, anon, authenticated;
 
+-- hr_absence_entry — v1.6.21 J-263 B (Karin 23.11): sick leave and other HR-entered absence of ONE employee on ONE
+-- day, so the direct manager's uniform list shows the day as "לא זמינה" like every other source. Minimal safe design
+-- (flagged J-267 – J-273): entered / cancelled only by an active vp_hr of the employee's company through
+-- SECURITY DEFINER RPCs (audited); NO kind, reason or medical column — the row does not say whether it is sickness
+-- or another absence (J-267; keeps J-53 "the system holds no sickness data" true); the employee reads her own rows
+-- (J-269); one row per employee per day; a cancellation is a status, never a delete. Retention: לא הוגדר (J-271).
+-- Not counted anywhere else: J-80 / J-53 team and board totals stay the manual vp_hr input (J-272).
+CREATE TABLE IF NOT EXISTS hr_absence_entry (
+    entry_id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    company_id          uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    absence_date        date NOT NULL,
+    coordination_status text NOT NULL DEFAULT 'pending_coordination'
+                        CHECK (coordination_status IN ('pending_coordination', 'coordinated')),
+    entered_at          timestamptz NOT NULL DEFAULT clock_timestamp(),
+    cancelled_at        timestamptz,
+    CONSTRAINT uq_hr_absence_user_day UNIQUE (user_id, absence_date)
+);
+COMMENT ON TABLE hr_absence_entry IS
+  'J-263 B: a day of sick leave or other HR-entered absence (vp_hr only, audited). No kind, reason or medical data. Retention: לא הוגדר.';
+ALTER TABLE hr_absence_entry ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_entry FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE hr_absence_entry FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON TABLE hr_absence_entry TO authenticated;
+DROP POLICY IF EXISTS hr_absence_own ON hr_absence_entry;
+CREATE POLICY hr_absence_own ON hr_absence_entry
+    FOR SELECT TO authenticated
+    USING (auth.uid() = user_id);
+
 -- ---------------------------------------------------------------------------
 -- 7. team_aggregate — REGULAR team data, N ≥ 5 ACTUAL contributors (lock #3)
 -- Deprivation tax (count × avg × 0.12), turnover range sums, TPS-12 team average.
