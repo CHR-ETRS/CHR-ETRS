@@ -476,7 +476,7 @@ GRANT EXECUTE ON FUNCTION t_expect_err_any(text, text, text) TO authenticated;
 
 -- ============ 10. v1.6.21 J-156 A / J-169 / J-170 + J-255 A / J-262 A / J-263 B (Karin 23.11) · ONE uniform manager list ============
 -- Real clock (no libfaketime): every date is relative to each employee's own local today.
--- mgr_u's team, one source per employee (labels only — the HR source holds no kind, J-267):
+-- mgr_u's team, one source per employee (the HR days carry kind 'sick' for emp_sk / emp_mx and 'other' for emp_hr — J-267 C):
 --   emp_el early leave via rpc_assign_task (today) · emp_gh go-home (today) · emp_ab approved absence (today, +9, past)
 --   emp_tb time benefit = approved entry (+9) and a past early leave · emp_sk HR-entered sick leave (today, +9)
 --   emp_hr HR-entered other absence (today, +9) · emp_mx three sources on ONE day (approved + go-home + HR, today)
@@ -513,11 +513,12 @@ CREATE TEMP TABLE t_hr (label text, j jsonb);
 GRANT SELECT, INSERT ON t_hr TO authenticated;
 SELECT t_as(t_u('vp_u'));
 SET ROLE authenticated;
-INSERT INTO t_hr SELECT k || ' ' || d, rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u(k), t_today(k) + d)
+INSERT INTO t_hr SELECT k || ' ' || d, rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u(k), t_today(k) + d,
+                                                   CASE k WHEN 'emp_sk' THEN 'sick' ELSE 'other' END)
   FROM unnest(ARRAY['emp_sk', 'emp_hr']) k CROSS JOIN unnest(ARRAY[0, 9]) d;
-INSERT INTO t_hr SELECT 'emp_mx 0', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_mx'), t_today('emp_mx'));
-INSERT INTO t_hr SELECT 'emp_sk past', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'), t_today('emp_sk') - 3);
-INSERT INTO t_hr SELECT 'again', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'), t_today('emp_sk'));
+INSERT INTO t_hr SELECT 'emp_mx 0', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_mx'), t_today('emp_mx'), 'sick');
+INSERT INTO t_hr SELECT 'emp_sk past', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'), t_today('emp_sk') - 3, 'sick');
+INSERT INTO t_hr SELECT 'again', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'), t_today('emp_sk'), 'sick');
 RESET ROLE;
 CREATE TEMP TABLE t_hr_ids AS SELECT label AS k, (j->>'entry_id')::uuid AS entry_id FROM t_hr;
 GRANT SELECT ON t_hr_ids TO authenticated;
@@ -633,7 +634,7 @@ SELECT t_assert('J-169: the list now shows 4 coordinated rows (early leave, appr
 SELECT t_as(t_u('vp_u'));
 SET ROLE authenticated;
 SELECT t_assert('J-262 A fixture: vp_hr adds an HR day for emp_el on her already coordinated early-leave day',
-  (SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_el'), t_today('emp_el'))->>'status' = 'saved'));
+  (SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_el'), t_today('emp_el'), 'other')->>'status' = 'saved'));
 SELECT t_as(t_u('mgr_u'));
 SELECT t_assert('J-262 A: emp_el still has ONE row today, now pending_coordination (a part is not coordinated yet)',
   (SELECT count(*) = 1 AND bool_and(coordination_status = 'pending_coordination') FROM manager_unavailability_v
@@ -659,10 +660,10 @@ RESET ROLE;
 SELECT t_as(t_u('mgr_u'));
 SET ROLE authenticated;
 SELECT t_expect_http('J-270: the direct manager cannot record an HR day → 403 insufficient_privilege (vp_hr only)',
-  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 1)$$, 'insufficient_privilege', 403);
+  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 1, 'sick')$$, 'insufficient_privilege', 403);
 SELECT t_as(t_u('emp_sk'));
 SELECT t_expect_http('J-270: the employee cannot record an HR day for herself → 403 insufficient_privilege',
-  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'), t_today('emp_sk') + 1)$$, 'insufficient_privilege', 403);
+  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'), t_today('emp_sk') + 1, 'sick')$$, 'insufficient_privilege', 403);
 SELECT t_assert('J-269: the employee reads her OWN HR rows only (3: today, +9, past) and no one else''s',
   (SELECT count(*) = 3 AND bool_and(user_id = t_u('emp_sk')) FROM hr_absence_entry));
 SELECT t_expect_err_any('J-263 B: no client may write the table directly (insert → permission denied)',
@@ -671,7 +672,7 @@ SELECT t_as(t_u('mgr_u'));
 SELECT t_assert('J-263 B: the manager reads no HR row directly (own-rows RLS)', NOT EXISTS (SELECT 1 FROM hr_absence_entry));
 SELECT t_as(t_u('vp_u'));
 SELECT t_expect_http('J-263 B: an ex-employee (or anyone outside the company) → 403 access_denied, no existence hint',
-  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_a3'), CURRENT_DATE)$$, 'access_denied', 403);
+  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_a3'), CURRENT_DATE, 'sick')$$, 'access_denied', 403);
 SELECT t_assert('J-263 B: vp_hr cancels emp_hr''s +9 day → cancelled (status only)',
   (SELECT rpc_hr_absence_cancel('00000000-0000-0000-0000-0000000a5c01', t_u('emp_hr'), t_today('emp_hr') + 9)->>'status' = 'cancelled'));
 SELECT t_expect_err_any('J-263 B: cancelling a day with no entry → 400 invalid_requested_date',
@@ -681,7 +682,7 @@ SELECT t_assert('J-263 B: the cancelled HR day is gone from the manager''s list 
   (SELECT count(*) = 1 FROM manager_unavailability_v WHERE display_pseudonym = (SELECT ps FROM t_who WHERE k = 'emp_hr')));
 SELECT t_as(t_u('vp_u'));
 SELECT t_assert('J-263 B: re-recording the cancelled day re-opens the SAME entry as pending_coordination',
-  (SELECT (rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_hr'), t_today('emp_hr') + 9)->>'entry_id')::uuid
+  (SELECT (rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_hr'), t_today('emp_hr') + 9, 'other')->>'entry_id')::uuid
           = (SELECT entry_id FROM t_hr_ids WHERE k = 'emp_hr 9')));
 RESET ROLE;
 SELECT t_assert('J-263 B: the re-opened row is active and pending; cancelling never deleted a row (6 + 1 HR rows exist)',
@@ -689,9 +690,10 @@ SELECT t_assert('J-263 B: the re-opened row is active and pending; cancelling ne
     WHERE user_id = t_u('emp_hr') AND absence_date = t_today('emp_hr') + 9)
   AND (SELECT count(*) = 7 FROM hr_absence_entry)
   AND (SELECT count(*) = 1 FROM access_audit_log WHERE action = 'hr_absence_cancel'));
-SELECT t_assert('J-267 / J-263 B: hr_absence_entry has no kind, reason, text, medical or person-name column; RLS forced; no client insert / update / delete; the write RPCs are vp_hr-checked SECURITY DEFINER',
+SELECT t_assert('J-267 C / J-263 B: hr_absence_entry has the required kind (sick / other) but no reason, text, diagnosis or person-name column; RLS forced; no client insert / update / delete; the write RPCs are vp_hr-checked SECURITY DEFINER',
   (SELECT array_agg(column_name::text ORDER BY column_name) FROM information_schema.columns WHERE table_name = 'hr_absence_entry')
-    = ARRAY['absence_date', 'cancelled_at', 'company_id', 'coordination_status', 'entered_at', 'entry_id', 'user_id']
+    = ARRAY['absence_date', 'absence_kind', 'cancelled_at', 'company_id', 'coordination_status', 'entered_at', 'entry_id', 'user_id']
+  AND (SELECT is_nullable = 'NO' FROM information_schema.columns WHERE table_name = 'hr_absence_entry' AND column_name = 'absence_kind')
   AND (SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE relname = 'hr_absence_entry')
   AND NOT has_table_privilege('authenticated', 'hr_absence_entry', 'INSERT')
   AND NOT has_table_privilege('authenticated', 'hr_absence_entry', 'UPDATE')
@@ -726,3 +728,153 @@ SELECT t_assert('J-80: the team input row holds team totals only (no person colu
   (SELECT count(*) = 1 AND bool_and(sickness_days = 1.0 AND unplanned_absence_days = 0.5) FROM team_absence_input WHERE team_id = 'TeamU')
   AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'team_absence_input'
                    AND column_name ~* '(person|user|employee|pseudonym)'));
+
+-- ============ 11. J-267 C / J-269 A / J-270 A (Karin 23.11) · who can read the kind (health data) ============
+-- Readers allowed: the company's vp_hr (rpc_hr_absence_list, audited) and the employee herself (own rows). Nobody
+-- else — not the direct manager, another employee, cfo, legal_ethics, board_chair, board_member, owner_shareholder,
+-- or the vp_hr of another company — and no view. (Test helpers t_* are excluded from the catalog checks.)
+SELECT count(t_mk(k, 'Gov', r, 'employee')) = 5 AS roles_ok
+  FROM (VALUES ('cfo_u', 'cfo'), ('le_u', 'legal_ethics'), ('bc_u', 'board_chair'), ('bm_u', 'board_member'),
+               ('os_u', 'owner_shareholder')) v(k, r);
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
+VALUES ('00000000-0000-0000-0000-0000000a5c02', 'SickCo', 'IL', 0, 4, 'Asia/Jerusalem');
+-- Create one fixture user of SickCo (same shape as t_mk, other company).
+CREATE OR REPLACE FUNCTION t_mk2(p_key text, p_team text, p_role text) RETURNS uuid LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO auth.users (id) VALUES (t_u(p_key));
+  INSERT INTO users (user_id, company_id, email, full_name, department, app_role, org_role_code, timezone, hire_date)
+  VALUES (t_u(p_key), '00000000-0000-0000-0000-0000000a5c02', p_key || '@sick.test', 'Fixture ' || p_key, p_team, p_role,
+          'employee', 'Asia/Jerusalem', DATE '2025-01-01');
+  RETURN t_u(p_key);
+END $$;
+SELECT t_mk2('vp_s', 'S1', 'vp_hr') IS NOT NULL AS vp_s_ok;
+CREATE TEMP TABLE t_kind (label text, j jsonb);
+GRANT SELECT, INSERT ON t_kind TO authenticated;
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_kind SELECT 'vp sk', jsonb_agg(to_jsonb(r) ORDER BY r.absence_date) FROM rpc_hr_absence_list('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk')) r;
+INSERT INTO t_kind SELECT 'vp hr', jsonb_agg(to_jsonb(r) ORDER BY r.absence_date) FROM rpc_hr_absence_list('00000000-0000-0000-0000-0000000a5c01', t_u('emp_hr')) r;
+SELECT t_expect_err_any('J-267 C: an unknown kind is refused → 400 invalid_absence_kind',
+  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 2, 'flu')$$, '22023');
+SELECT t_expect_err_any('J-267 C: the kind is required (NULL) → 400 invalid_absence_kind',
+  $$SELECT rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 2, NULL)$$, '22023');
+RESET ROLE;
+SELECT t_assert('J-267 C: vp_hr reads the kind per day of the employee she names — emp_sk: 3 sick days (today, +9, past); emp_hr: 2 other days; no person field in the rows',
+  (SELECT jsonb_array_length(j) = 3 AND (SELECT bool_and(e->>'absence_kind' = 'sick') FROM jsonb_array_elements(j) e) FROM t_kind WHERE label = 'vp sk')
+  AND (SELECT jsonb_array_length(j) = 2 AND (SELECT bool_and(e->>'absence_kind' = 'other') FROM jsonb_array_elements(j) e) FROM t_kind WHERE label = 'vp hr')
+  AND (SELECT bool_and(NOT (j::text ~* '(user_id|person|pseudonym|full_name|email)')) FROM t_kind));
+SELECT t_assert('J-280: every vp_hr read is audited (hr_absence_read, the employee as subject) and NO audit row holds the kind',
+  (SELECT count(*) = 2 FROM access_audit_log WHERE action = 'hr_absence_read' AND viewer_id = t_u('vp_u') AND subject_user_id IS NOT NULL)
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action LIKE 'hr_absence%' AND (scope::text ~* '(sick|other|kind)' OR reason IS NOT NULL)));
+SELECT t_as(t_u('emp_sk'));
+SET ROLE authenticated;
+SELECT t_assert('J-269 A: the employee reads her OWN HR days WITH the kind (3 sick) and nothing of anyone else',
+  (SELECT count(*) = 3 AND bool_and(user_id = t_u('emp_sk') AND absence_kind = 'sick') FROM hr_absence_entry));
+SELECT t_expect_http('J-267 C: the employee cannot use the vp_hr reader, not even for herself → 403 insufficient_privilege',
+  $$SELECT * FROM rpc_hr_absence_list('00000000-0000-0000-0000-0000000a5c01', t_u('emp_sk'))$$, 'insufficient_privilege', 403);
+SELECT t_as(t_u('emp_hr'));
+SELECT t_assert('J-269 A: another employee sees only her own days (2 other) — never emp_sk''s sick days',
+  (SELECT count(*) = 2 AND bool_and(user_id = t_u('emp_hr') AND absence_kind = 'other') FROM hr_absence_entry));
+RESET ROLE;
+-- Every other role: no row through the table, refused by the reader.
+CREATE OR REPLACE FUNCTION t_kind_probe(p_key text, p_company uuid DEFAULT '00000000-0000-0000-0000-0000000a5c01') RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_rows int; v_sig jsonb;
+BEGIN
+  PERFORM t_as(t_u(p_key));
+  SET LOCAL ROLE authenticated;
+  SELECT count(*) INTO v_rows FROM hr_absence_entry WHERE user_id <> t_u(p_key);
+  v_sig := t_err_sig(format('SELECT * FROM rpc_hr_absence_list(%L, %L)', p_company, t_u('emp_sk')));
+  RESET ROLE;
+  INSERT INTO t_kind VALUES ('probe ' || p_key, jsonb_build_object('rows', v_rows, 'msg', v_sig->>'message'));
+END $$;
+SELECT t_kind_probe(k) FROM unnest(ARRAY['mgr_u', 'emp_gh', 'cfo_u', 'le_u', 'bc_u', 'bm_u', 'os_u', 'dept_head']) k;
+SELECT t_kind_probe('vp_s', '00000000-0000-0000-0000-0000000a5c01');
+SELECT t_kind_probe('vp_s', '00000000-0000-0000-0000-0000000a5c02');
+SELECT t_assert('J-267 C: the direct manager, another employee, cfo, legal_ethics, board_chair, board_member, owner_shareholder, the skip level and another company''s vp_hr read NO HR row and are refused by the reader',
+  (SELECT count(*) = 10 AND bool_and((j->>'rows')::int = 0 AND j->>'msg' IN ('insufficient_privilege', 'access_denied'))
+     FROM t_kind WHERE label LIKE 'probe %'));
+SELECT t_assert('J-267 C: catalog — the kind is in no view, and the only client-callable functions that touch hr_absence_entry are the three vp_hr RPCs (only put / list name the kind)',
+  NOT EXISTS (SELECT 1 FROM information_schema.columns c JOIN information_schema.views v
+                ON v.table_schema = c.table_schema AND v.table_name = c.table_name
+               WHERE c.column_name = 'absence_kind')
+  AND (SELECT array_agg(p.proname::text ORDER BY p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND p.prosrc LIKE '%hr_absence_entry%'
+          AND (has_function_privilege('authenticated', p.oid, 'EXECUTE') OR has_function_privilege('anon', p.oid, 'EXECUTE')))
+      = ARRAY['rpc_hr_absence_cancel', 'rpc_hr_absence_list', 'rpc_hr_absence_put']
+  AND (SELECT array_agg(p.proname::text ORDER BY p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname !~ '^t_' AND (p.prosrc LIKE '%absence_kind%' OR pg_get_function_result(p.oid) LIKE '%absence_kind%')
+          AND has_function_privilege('authenticated', p.oid, 'EXECUTE'))
+      = ARRAY['rpc_hr_absence_list', 'rpc_hr_absence_put']);
+-- A kind correction is invisible to the manager (her row stays byte-identical).
+CREATE TEMP TABLE t_kind_mgr (label text, j jsonb);
+GRANT SELECT, INSERT ON t_kind_mgr TO authenticated;
+SELECT t_as(t_u('mgr_u'));
+SET ROLE authenticated;
+INSERT INTO t_kind_mgr SELECT 'before', jsonb_agg(to_jsonb(v) ORDER BY v.entry_id) FROM manager_unavailability_v v;
+SELECT t_as(t_u('vp_u'));
+INSERT INTO t_kind_mgr SELECT 'put', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_mx'), t_today('emp_mx'), 'other');
+SELECT t_as(t_u('mgr_u'));
+INSERT INTO t_kind_mgr SELECT 'after', jsonb_agg(to_jsonb(v) ORDER BY v.entry_id) FROM manager_unavailability_v v;
+RESET ROLE;
+SELECT t_assert('J-279: vp_hr corrects emp_mx''s day from sick to other → same entry, coordination kept; the manager''s whole list is byte-identical before and after',
+  (SELECT absence_kind = 'other' AND coordination_status = 'coordinated' FROM hr_absence_entry WHERE user_id = t_u('emp_mx'))
+  AND (SELECT j FROM t_kind_mgr WHERE label = 'before') = (SELECT j FROM t_kind_mgr WHERE label = 'after'));
+
+-- ============ 12. J-272 B / J-276 / J-277 (Karin 23.11) · HR sick days in the J-80 / J-53 team and board totals ============
+-- SickCo: team S1 (vp_s + s1–s6 = 7 members), team S2 (t1–t5 = 5 members). Month = the current calendar month.
+SELECT count(t_mk2(k, 'S1', 'employee')) = 6 AS s1_ok FROM unnest(ARRAY['s1', 's2', 's3', 's4', 's5', 's6']) k;
+SELECT count(t_mk2(k, 'S2', 'employee')) = 5 AS s2_ok FROM unnest(ARRAY['t1', 't2', 't3', 't4', 't5']) k;
+CREATE TEMP TABLE t_m AS SELECT date_trunc('month', CURRENT_DATE)::date AS m;
+GRANT SELECT ON t_m TO authenticated;
+CREATE TEMP TABLE t_tot (label text, j jsonb);
+GRANT SELECT, INSERT ON t_tot TO authenticated;
+SELECT t_as(t_u('vp_s'));
+SET ROLE authenticated;
+INSERT INTO t_tot SELECT 'put ' || k || ' ' || d || ' ' || kind,
+       rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c02', t_u(k), (SELECT m FROM t_m) + d, kind)
+  FROM (VALUES ('s1', 0, 'sick'), ('s1', 1, 'sick'), ('s1', 2, 'sick'), ('s1', 3, 'other'), ('s2', 0, 'sick'),
+               ('s3', 4, 'sick'), ('t1', 0, 'sick'), ('s1', -5, 'sick'), ('s1', 0, 'sick')) v(k, d, kind);
+SELECT t_assert('J-272 fixture: s2''s sick day is cancelled', (SELECT rpc_hr_absence_cancel('00000000-0000-0000-0000-0000000a5c02', t_u('s2'), (SELECT m FROM t_m))->>'status' = 'cancelled'));
+RESET ROLE;
+-- The same employee-day of s1 also exists in two other sources (an approved absence and a go-home day).
+INSERT INTO approved_absence_entry (user_id, requested_date) VALUES (t_u('s1'), (SELECT m FROM t_m));
+INSERT INTO early_leave_log (user_id, local_date) VALUES (t_u('s1'), (SELECT m FROM t_m));
+SELECT t_assert('J-272 B: HR sick days of S1 this month = 4 distinct employee-days (s1 × 3 + s3 × 1): the re-recorded day, the other-kind day, the cancelled day, the previous-month day and the same day in two other sources are NOT counted again',
+  fn_hr_sick_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m)) = 4
+  AND fn_hr_sick_days('00000000-0000-0000-0000-0000000a5c02', 'S2', (SELECT m FROM t_m)) = 1);
+SELECT t_assert('J-277: without the vp_hr manual row the team total stays NULL (''חסר''), even with HR sick days; the board shows ''חסר''',
+  fn_team_absence_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m)) IS NULL
+  AND fn_board_absences_json('00000000-0000-0000-0000-0000000a5c02', (SELECT m FROM t_m))->>'display_he' = 'חסר: team_absence_input');
+SELECT t_as(t_u('vp_s'));
+SET ROLE authenticated;
+INSERT INTO t_tot SELECT 'man S1', rpc_put_team_absences('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m), 2.0, 1.0, 1.0);
+INSERT INTO t_tot SELECT 'man S2', rpc_put_team_absences('00000000-0000-0000-0000-0000000a5c02', 'S2', (SELECT m FROM t_m), 3.0, 0.0, 0.0);
+RESET ROLE;
+SELECT t_assert('J-276: team total = the LARGER of manual sickness and HR sick days + unplanned + unapproved early leave — S1: max(2, 4) + 1 + 1 = 6; S2: max(3, 1) + 0 + 0 = 3 (never 2 + 4 or 3 + 1)',
+  fn_team_absence_days('00000000-0000-0000-0000-0000000a5c02', 'S1', (SELECT m FROM t_m)) = 6
+  AND fn_team_absence_days('00000000-0000-0000-0000-0000000a5c02', 'S2', (SELECT m FROM t_m)) = 3
+  AND fn_combined_sickness_days(2, 4) = 4 AND fn_combined_sickness_days(5, 4) = 5 AND fn_combined_sickness_days(NULL, 4) IS NULL);
+SELECT t_assert('J-272 B / J-276: the board total sums the combined team sickness — sickness 4 + 3 = 7, days 7 + 1 + 1 = 9, 2 teams; no person field',
+  (SELECT (j->>'sickness_days')::numeric = 7 AND (j->>'days')::numeric = 9 AND (j->>'teams_count')::int = 2
+          AND NOT (j::text ~* '(user_id|person|pseudonym|[0-9a-f]{8}-[0-9a-f]{4})')
+     FROM (SELECT fn_board_absences_json('00000000-0000-0000-0000-0000000a5c02', (SELECT m FROM t_m)) AS j) x));
+-- Thresholds unchanged: a team of < 5 is not shown by the burnout signal; small teams whose combined size is 1–4
+-- hide the board total — even when one of them has an HR sick day.
+SELECT count(t_mk2(k, 'S3', 'employee')) = 2 AS s3_ok FROM unnest(ARRAY['u1', 'u2']) k;
+SELECT t_as(t_u('vp_s'));
+SET ROLE authenticated;
+INSERT INTO t_tot SELECT 'put u1', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c02', t_u('u1'), (SELECT m FROM t_m), 'sick');
+INSERT INTO t_tot SELECT 'man S3', rpc_put_team_absences('00000000-0000-0000-0000-0000000a5c02', 'S3', (SELECT m FROM t_m), 0.0, 0.0, 0.0);
+RESET ROLE;
+SELECT t_assert('Thresholds: the 2-person team''s HR sick day counts in its own total (max(0, 1) = 1) but the board total is hidden (small teams of combined size 2) — "אין מספיק עובדים להצגה"',
+  fn_team_absence_days('00000000-0000-0000-0000-0000000a5c02', 'S3', (SELECT m FROM t_m)) = 1
+  AND fn_board_absences_json('00000000-0000-0000-0000-0000000a5c02', (SELECT m FROM t_m))->>'display_he' = 'אין מספיק עובדים להצגה'
+  AND NOT (fn_board_absences_json('00000000-0000-0000-0000-0000000a5c02', (SELECT m FROM t_m)) ? 'days'));
+SELECT t_assert('Thresholds: the burnout absences signal of a team with < 5 employees is not shown even with HR sick days (team threshold 5 unchanged)',
+  fn_team_absence_signal('00000000-0000-0000-0000-0000000a5c02',
+                         ARRAY[NULL, NULL, fn_team_absence_days('00000000-0000-0000-0000-0000000a5c02', 'S3', (SELECT m FROM t_m))]::numeric[],
+                         3, 2, fn_absence_group_members('00000000-0000-0000-0000-0000000a5c02', 'S3', (SELECT m FROM t_m)))->>'display_he'
+  = 'אין מספיק עובדים להצגה');
+SELECT t_assert('J-272 B: the new total helpers are internal (no client grant)',
+  NOT has_function_privilege('authenticated', 'fn_hr_sick_days(uuid, character varying, date)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'fn_combined_sickness_days(numeric, numeric)', 'EXECUTE'));

@@ -106,8 +106,8 @@
 --   * rpc_everstore_upsert_item (CHRO / vp_hr): add or update catalog items across all 8 categories.
 --   * rpc_coordinate_approved_absence (direct manager): coordinate ONE row of the uniform unavailability list
 --     (v1.6.21 J-156 A / J-169 / J-170: no date change; the manager never sees the source of an entry).
---   * rpc_hr_absence_put / rpc_hr_absence_cancel (vp_hr of the company): one HR-entered sick-leave / absence day of
---     an employee — no kind, reason or medical field (v1.6.21 J-263 B, J-267 – J-274).
+--   * rpc_hr_absence_put / rpc_hr_absence_cancel / rpc_hr_absence_list (vp_hr of the company): one HR-entered day
+--     of an employee, kind 'sick' / 'other' (health data; no reason or diagnosis) — v1.6.21 J-263 B, J-267 C.
 --   * (superseded in 1.6.16: rpc_convert_golden_to_chr is blocked with 422 in v1)
 --     Golden Spoons never expire while the employee is active.
 --   * Aliases rpc_submit_morning_checkin and rpc_submit_midday_checkin added alongside
@@ -2091,10 +2091,11 @@ REVOKE ALL ON TABLE manager_unavailability_v, early_leave_manager_v, approved_ab
 GRANT SELECT ON TABLE manager_unavailability_v, early_leave_manager_v, approved_absence_manager_v TO authenticated;
 
 -- ---------------------------------------------------------------------------
--- J-263 B (Karin 23.11): HR-entered sick leave / absence days (hr_absence_entry). Minimal safe design, flagged
--- J-267 – J-273: only an active vp_hr of the employee's company (J-270), no kind / reason / medical field (J-267),
--- any date (no range invented, J-273), one row per employee per day, cancel = status (never a delete), every write
--- audited (access_audit_log: action, company, date; the employee as the audit subject). Outputs hold no person id.
+-- J-263 B (Karin 23.11): HR-entered sick leave / absence days (hr_absence_entry). Only an active vp_hr of the
+-- employee's company writes and reads them (J-270 A); kind 'sick' / 'other' (J-267 C, health data — no reason or
+-- diagnosis); any date (J-273 A); one row per employee per day; cancel = status (never a delete); every write and
+-- every vp_hr read audited (access_audit_log: action, company, date; the employee as the audit subject — J-274 A;
+-- never the kind — J-280). Outputs hold no person id.
 -- ---------------------------------------------------------------------------
 
 -- Internal: the target must be an active employee (with an employee profile) of the company; else 403
@@ -2115,10 +2116,20 @@ BEGIN
 END;
 $$;
 
--- vp_hr records ONE day of sick leave or other HR absence for one employee of her company. Re-recording the same
--- day re-opens a cancelled entry (status back to pending_coordination); an active entry is left as it is.
--- Returns the entry id, date and status only (no person field).
-CREATE OR REPLACE FUNCTION rpc_hr_absence_put(p_company_id uuid, p_user_id uuid, p_absence_date date)
+-- J-267 C: the one list of allowed kinds of an HR absence day (health data: 'sick' is a sick day).
+CREATE OR REPLACE FUNCTION fn_hr_absence_kind_valid(p_kind text)
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT p_kind IS NOT NULL AND p_kind IN ('sick', 'other') $$;
+
+-- vp_hr records ONE day of sick leave ('sick') or other HR absence ('other') for one employee of her company. The
+-- kind is required (400 invalid_absence_kind). Re-recording the same day: an active entry keeps its id and
+-- coordination status and takes the new kind (a correction, J-279); a cancelled entry is re-opened
+-- (pending_coordination). Audited WITHOUT the kind (J-280). Returns the entry id, date and status only.
+DROP FUNCTION IF EXISTS rpc_hr_absence_put(uuid, uuid, date);
+CREATE OR REPLACE FUNCTION rpc_hr_absence_put(p_company_id uuid, p_user_id uuid, p_absence_date date,
+                                              p_absence_kind text)
 RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -2132,10 +2143,14 @@ BEGIN
   IF p_absence_date IS NULL THEN
     PERFORM fn_raise_bad_request('invalid_requested_date');
   END IF;
-  INSERT INTO hr_absence_entry (user_id, company_id, absence_date)
-  VALUES (p_user_id, p_company_id, p_absence_date)
+  IF NOT fn_hr_absence_kind_valid(p_absence_kind) THEN
+    PERFORM fn_raise_bad_request('invalid_absence_kind');
+  END IF;
+  INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind)
+  VALUES (p_user_id, p_company_id, p_absence_date, p_absence_kind)
   ON CONFLICT (user_id, absence_date) DO UPDATE
-    SET cancelled_at = NULL,
+    SET absence_kind = EXCLUDED.absence_kind,
+        cancelled_at = NULL,
         coordination_status = CASE WHEN hr_absence_entry.cancelled_at IS NULL THEN hr_absence_entry.coordination_status
                                    ELSE 'pending_coordination' END,
         entered_at = CASE WHEN hr_absence_entry.cancelled_at IS NULL THEN hr_absence_entry.entered_at
@@ -2170,9 +2185,33 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION fn_assert_hr_absence_target(uuid, uuid), rpc_hr_absence_put(uuid, uuid, date),
-  rpc_hr_absence_cancel(uuid, uuid, date) FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION rpc_hr_absence_put(uuid, uuid, date), rpc_hr_absence_cancel(uuid, uuid, date) TO authenticated;
+-- J-267 C: vp_hr reads the HR absence days (WITH the kind) of ONE employee she names; the only per-row read of the
+-- kind besides the employee's own rows. Same checks as the writes (an active employee of the company). Every read
+-- is audited as 'hr_absence_read' (company; the employee as the audit subject; no kind) — J-280. No person field in
+-- the output; cancelled days are included with cancelled = true.
+CREATE OR REPLACE FUNCTION rpc_hr_absence_list(p_company_id uuid, p_user_id uuid)
+RETURNS TABLE (entry_id uuid, absence_date date, absence_kind text, coordination_status text, cancelled boolean)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  PERFORM fn_assert_hr_absence_target(p_company_id, p_user_id);
+  PERFORM fn_audit_view('hr_absence_read', jsonb_build_object('company_id', p_company_id), p_user_id);
+  RETURN QUERY
+    SELECT h.entry_id, h.absence_date, h.absence_kind, h.coordination_status, h.cancelled_at IS NOT NULL
+      FROM hr_absence_entry h
+     WHERE h.user_id = p_user_id AND h.company_id = p_company_id
+     ORDER BY h.absence_date;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_assert_hr_absence_target(uuid, uuid), fn_hr_absence_kind_valid(text),
+  rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_absence_cancel(uuid, uuid, date),
+  rpc_hr_absence_list(uuid, uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_absence_cancel(uuid, uuid, date),
+  rpc_hr_absence_list(uuid, uuid) TO authenticated;
 
 -- ---------------------------------------------------------------------------
 -- v1.6.18 (A-13, Karin 31.10): a time benefit bought before leaving but scheduled AFTER the end of employment is
@@ -6629,8 +6668,38 @@ AS $$ SELECT 'היעדרויות = סך ימי המחלה וההיעדרות ה�
 לא נספרים: היעדרות מאושרת וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש.
 המקור: הזנה חודשית של vp_hr, בלי פירוט לפי עובד.'::text $$;
 
--- Total absence days of a team month from team_absence_input (sickness + unplanned + unapproved early leave);
--- NULL when vp_hr has not entered the month (never 0 by default — 'חסר').
+-- v1.6.21 J-272 B (Karin 23.11): HR-entered SICK days of an absence group (a team, or the 'ללא מחלקה' key) in a
+-- month — distinct employee-days of hr_absence_entry with kind 'sick', not cancelled, dated in the month, of
+-- employees whose CURRENT group is p_group (J-282). One row per employee per day already (unique), and the
+-- DISTINCT keeps it so. INTERNAL; only the number leaves (aggregate, no person).
+CREATE OR REPLACE FUNCTION fn_hr_sick_days(p_company uuid, p_group varchar, p_month date)
+RETURNS numeric
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT count(DISTINCT (h.user_id, h.absence_date))::numeric
+    FROM hr_absence_entry h JOIN users u ON u.user_id = h.user_id
+   WHERE h.company_id = p_company AND u.company_id = p_company AND u.has_employee_profile
+     AND h.absence_kind = 'sick' AND h.cancelled_at IS NULL
+     AND h.absence_date >= p_month AND h.absence_date < fn_month_shift(p_month, 1)
+     AND fn_user_group_key(u.department, u.department_is_default) = p_group
+$$;
+
+-- J-276 (flagged for Karin, minimal safe option): the sickness days of a group month when BOTH the vp_hr manual
+-- monthly number (an aggregate that cannot be split into employee-days) and the HR-entered sick days exist —
+-- the LARGER of the two. Never adds them, so an employee-day that vp_hr counted in the manual number AND entered
+-- as an HR day is never counted twice; it may under-count when the two cover different days (J-276 options).
+CREATE OR REPLACE FUNCTION fn_combined_sickness_days(p_manual numeric, p_hr numeric)
+RETURNS numeric
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT CASE WHEN p_manual IS NULL THEN NULL ELSE GREATEST(p_manual, COALESCE(p_hr, 0)) END $$;
+
+-- Total absence days of a team month (sickness + unplanned + unapproved early leave). Sickness = the manual number
+-- combined with the HR-entered sick days (J-272 B / J-276). NULL when vp_hr has not entered the month — the
+-- manual row stays required (J-277), never 0 by default — 'חסר'.
 CREATE OR REPLACE FUNCTION fn_team_absence_days(p_company uuid, p_team varchar, p_month date)
 RETURNS numeric
 LANGUAGE sql
@@ -6638,7 +6707,8 @@ STABLE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-  SELECT x.sickness_days + x.unplanned_absence_days + x.unapproved_early_leave_days
+  SELECT fn_combined_sickness_days(x.sickness_days, fn_hr_sick_days(p_company, p_team, p_month))
+         + x.unplanned_absence_days + x.unapproved_early_leave_days
     FROM team_absence_input x WHERE x.company_id = p_company AND x.team_id = p_team AND x.period_month = p_month
 $$;
 
@@ -6737,6 +6807,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION fn_absence_group_members(uuid, varchar, date) FROM PUBLIC;
+REVOKE ALL ON FUNCTION fn_hr_sick_days(uuid, varchar, date), fn_combined_sickness_days(numeric, numeric) FROM PUBLIC;
 REVOKE ALL ON FUNCTION fn_team_absence_days(uuid, varchar, date),
                        fn_team_absence_signal(uuid, numeric[], int, int, int) FROM PUBLIC;
 REVOKE ALL ON FUNCTION rpc_put_team_absences(uuid, varchar, date, numeric, numeric, numeric) FROM PUBLIC;
@@ -9693,7 +9764,9 @@ BEGIN
     SELECT fn_no_department_key(), fn_absence_group_members(p_company, fn_no_department_key(), p_month), true)
   SELECT count(*) FILTER (WHERE t.members > 0 AND x.team_id IS NULL) AS missing,
          COALESCE(sum(t.members) FILTER (WHERE x.team_id IS NOT NULL AND t.members < fn_privacy_min_n('regular')), 0) AS small_members,
-         sum(x.sickness_days) AS sick, sum(x.unplanned_absence_days) AS unplanned,
+         -- J-272 B / J-276: per team, the manual sickness combined with the HR-entered sick days (only teams with a row)
+         sum(fn_combined_sickness_days(x.sickness_days, fn_hr_sick_days(p_company, t.team, p_month)))
+           FILTER (WHERE x.team_id IS NOT NULL) AS sick, sum(x.unplanned_absence_days) AS unplanned,
          sum(x.unapproved_early_leave_days) AS early, count(x.team_id) FILTER (WHERE NOT t.no_dept) AS teams, count(x.team_id) AS rows_in
     INTO r
     FROM teams t LEFT JOIN team_absence_input x

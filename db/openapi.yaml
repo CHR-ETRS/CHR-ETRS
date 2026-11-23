@@ -3362,13 +3362,17 @@ paths:
       tags:
       - rpc
       summary: 'vp_hr: record ONE day of sick leave or other HR absence for one employee (J-263 B)'
-      description: 'v1.6.21 J-263 B (Karin 23.11). Only an active vp_hr of p_company_id (else 403 insufficient_privilege,
-        J-270); the employee must be an active employee of that company (else 403 access_denied, no existence hint). No
-        kind, reason or medical field — the day is not labelled sickness or other absence (J-267). Any date (no range
-        set, J-273). One row per employee per day: an active day is left as it is; a cancelled day is re-opened
-        (pending_coordination). Audited (action, company, date). The direct manager sees the day only as a uniform
-        "לא זמינה" row of /manager_unavailability_v; the employee reads her own rows (J-269). Retention: לא הוגדר (J-271).
-        Not counted in the J-80 / J-53 team or board totals (J-272).'
+      description: 'v1.6.21 J-263 B + J-267 C (Karin 23.11). Only an active vp_hr of p_company_id (else 403 insufficient_privilege,
+        J-270); the employee must be an active employee of that company (else 403 access_denied, no existence hint).
+        p_absence_kind is REQUIRED: sick | other (else 400 invalid_absence_kind) — HEALTH DATA. No reason, diagnosis
+        or free-text field. Any date (no range set, J-273). One row per employee per day: an active day keeps its
+        coordination and takes the new kind (correction, J-279); a cancelled day is re-opened (pending_coordination).
+        Audited (action, company, date — never the kind, J-280). The kind is readable only by the company''s vp_hr
+        (/rpc/rpc_hr_absence_list) and by the employee herself (own rows, J-269 A); the direct manager sees the day only
+        as a uniform "לא זמינה" row of /manager_unavailability_v, identical for sick and other. Sick days (not cancelled)
+        feed the J-80 / J-53 team and board sickness totals as an aggregate, deduplicated per employee-day and combined
+        with the vp_hr manual monthly number as the larger of the two (J-272 B / J-276); all thresholds unchanged.
+        Retention: לא הוגדר (J-271 B).'
       requestBody:
         required: true
         content:
@@ -3379,6 +3383,7 @@ paths:
               - p_company_id
               - p_user_id
               - p_absence_date
+              - p_absence_kind
               properties:
                 p_company_id:
                   type: string
@@ -3389,9 +3394,15 @@ paths:
                 p_absence_date:
                   type: string
                   format: date
+                p_absence_kind:
+                  type: string
+                  enum:
+                  - sick
+                  - other
+                  description: J-267 C — health data; never returned to the manager or any other role.
       responses:
         '200':
-          description: Saved (no person field)
+          description: Saved (no person field, no kind)
           content:
             application/json:
               schema:
@@ -3408,11 +3419,68 @@ paths:
                     enum:
                     - saved
         '400':
-          description: invalid_requested_date (no date)
+          description: invalid_requested_date (no date) | invalid_absence_kind (missing or not sick / other)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_list:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: read the HR absence days of ONE employee, with the kind (J-267 C)'
+      description: 'v1.6.21 J-267 C (Karin 23.11). Same checks as /rpc/rpc_hr_absence_put (active vp_hr of the company,
+        else 403 insufficient_privilege; an active employee of that company, else 403 access_denied). Every call is
+        audited (hr_absence_read, company, the employee as subject; the kind is never in the audit row, J-280). One
+        employee per call — no company-wide list of health data. Cancelled days are included (cancelled = true).
+        No person field in the rows. The employee reads her own days (with the kind) through her own-rows policy
+        (J-269 A); no other role (manager, cfo, board, legal_ethics, owner_shareholder) can call this.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: The employee's HR days, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    entry_id:
+                      type: string
+                      format: uuid
+                    absence_date:
+                      type: string
+                      format: date
+                    absence_kind:
+                      type: string
+                      enum:
+                      - sick
+                      - other
+                    coordination_status:
+                      type: string
+                      enum:
+                      - pending_coordination
+                      - coordinated
+                    cancelled:
+                      type: boolean
         '403':
           $ref: '#/components/responses/BusinessError403'
   /rpc/rpc_hr_absence_cancel:
@@ -3890,7 +3958,10 @@ paths:
         (sickness + unplanned + unapproved early leave; approved / refresh / time benefits / vacation / pre-approved
         early leave not counted); month input missing → display_he "חסר: team_absence_input", used_in_risk false
         (the term is skipped, the other signals run unchanged); < 5 active employees → not shown. v1.6.20: definition_he
-        = Karin''s approved 3-line text (J-88, no טיוטה); p_team_id "ללא מחלקה" or blank → 400 invalid_team (J-92).'
+        = Karin''s approved 3-line text (J-88, no טיוטה); p_team_id "ללא מחלקה" or blank → 400 invalid_team (J-92).
+        v1.6.21 J-272 B (Karin 23.11): the sickness part = the LARGER of the manual sickness number and the HR-entered
+        sick days of the team (hr_absence_entry, kind sick, not cancelled, distinct employee-days — J-276); still
+        "חסר" without the month row (J-277); < 5 unchanged. The J-88 definition text is unchanged (J-281).'
       requestBody:
         required: true
         content:
@@ -4759,7 +4830,10 @@ paths:
       tags:
       - agents
       summary: v1.6.19-r3 (J-80 = A) — TOTAL absence days of one team month (vp_hr only)
-      description: 'The only absence source of the burnout agent and the board. Total days per team per month
+      description: 'v1.6.21 J-272 B (Karin 23.11): the stored sickness number is combined with the HR-entered sick days
+        of the team month (/rpc/rpc_hr_absence_put, kind sick, not cancelled, each employee-day once) as the LARGER of
+        the two in the burnout and board totals (J-276, flagged); the row stays required (J-277); thresholds
+        unchanged. The only manual absence source of the burnout agent and the board. Total days per team per month
         — sickness, unplanned absence, early leave that was NOT pre-approved (each ≥ 0, one decimal). Approved
         absences / refresh time, planned vacation, EverStore time benefits and pre-approved early leave are not
         counted and have no field. No employee, no name. The team must have active employees in the month (400

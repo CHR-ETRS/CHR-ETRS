@@ -1110,25 +1110,44 @@ ALTER TABLE early_leave_coordination FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE early_leave_coordination FROM PUBLIC, anon, authenticated;
 
 -- hr_absence_entry — v1.6.21 J-263 B (Karin 23.11): sick leave and other HR-entered absence of ONE employee on ONE
--- day, so the direct manager's uniform list shows the day as "לא זמינה" like every other source. Minimal safe design
--- (flagged J-267 – J-273): entered / cancelled only by an active vp_hr of the employee's company through
--- SECURITY DEFINER RPCs (audited); NO kind, reason or medical column — the row does not say whether it is sickness
--- or another absence (J-267; keeps J-53 "the system holds no sickness data" true); the employee reads her own rows
--- (J-269); one row per employee per day; a cancellation is a status, never a delete. Retention: לא הוגדר (J-271).
--- Not counted anywhere else: J-80 / J-53 team and board totals stay the manual vp_hr input (J-272).
+-- day, so the direct manager's uniform list shows the day as "לא זמינה" like every other source. Entered / cancelled
+-- only by an active vp_hr of the employee's company through SECURITY DEFINER RPCs (audited, J-270 A); one row per
+-- employee per day; a cancellation is a status, never a delete. Retention: לא הוגדר (J-271 B — no go-live block,
+-- no purge job).
+-- J-267 C (Karin 23.11): absence_kind 'sick' / 'other' — HEALTH DATA (a sick day). Required on every write; no
+-- reason, diagnosis or free text. Readable ONLY by the employee herself (own-rows policy below, J-269 A) and by an
+-- active vp_hr of the company through rpc_hr_absence_list (audited); never by the manager (the uniform list has no
+-- kind), cfo, board, legal_ethics or any view. J-53 "the system holds no sickness data" is superseded for
+-- HR-entered absence only. J-272 B: kind 'sick' days feed the J-80 / J-53 team and board sickness totals (combined
+-- with the manual input, J-276).
 CREATE TABLE IF NOT EXISTS hr_absence_entry (
     entry_id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id             uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     company_id          uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
     absence_date        date NOT NULL,
+    absence_kind        text NOT NULL CONSTRAINT chk_hr_absence_kind CHECK (absence_kind IN ('sick', 'other')),
     coordination_status text NOT NULL DEFAULT 'pending_coordination'
                         CHECK (coordination_status IN ('pending_coordination', 'coordinated')),
     entered_at          timestamptz NOT NULL DEFAULT clock_timestamp(),
     cancelled_at        timestamptz,
     CONSTRAINT uq_hr_absence_user_day UNIQUE (user_id, absence_date)
 );
+-- J-267 C upgrade (a database that has the table from the first J-263 B commit, without the kind): rows written
+-- then get 'other' (J-278 — not a sick day unless vp_hr re-records it as sick), then the column becomes required.
+ALTER TABLE hr_absence_entry ADD COLUMN IF NOT EXISTS absence_kind text;
+UPDATE hr_absence_entry SET absence_kind = 'other' WHERE absence_kind IS NULL;
+ALTER TABLE hr_absence_entry ALTER COLUMN absence_kind SET NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_hr_absence_kind'
+                                              AND conrelid = 'hr_absence_entry'::regclass) THEN
+    ALTER TABLE hr_absence_entry ADD CONSTRAINT chk_hr_absence_kind CHECK (absence_kind IN ('sick', 'other'));
+  END IF;
+END $$;
 COMMENT ON TABLE hr_absence_entry IS
-  'J-263 B: a day of sick leave or other HR-entered absence (vp_hr only, audited). No kind, reason or medical data. Retention: לא הוגדר.';
+  'J-263 B / J-267 C: a day of sick leave or other HR-entered absence (vp_hr only, audited). absence_kind sick / other is health data: own rows + vp_hr only, never the manager. No reason or diagnosis. Retention: לא הוגדר.';
+COMMENT ON COLUMN hr_absence_entry.absence_kind IS
+  'J-267 C: sick / other — health data. Readable by the employee (own rows) and the company vp_hr (rpc_hr_absence_list) only.';
 ALTER TABLE hr_absence_entry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hr_absence_entry FORCE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE hr_absence_entry FROM PUBLIC, anon, authenticated;
@@ -4805,6 +4824,7 @@ CREATE TABLE IF NOT EXISTS company_key_role_setting (
 CREATE INDEX IF NOT EXISTS idx_ckrs_company ON company_key_role_setting (company_id, set_at DESC);
 
 -- board_absence_input — v1.6.19-r2 (Karin 31.10, J-53): board absences = sickness + unplanned absence only, as
+-- [v1.6.21 J-267 C: "no sickness data" is SUPERSEDED for HR-entered absence only — hr_absence_entry.absence_kind]
 -- aggregate monthly day counts entered by cfo / vp_hr (the system holds no sickness / unplanned-absence data;
 -- planned vacation and EverStore time benefits are not counted and have no column here).
 -- v1.6.19-r3 (J-85): NO LONGER USED — the board total is the sum of team_absence_input rows; kept (rows not deleted).
