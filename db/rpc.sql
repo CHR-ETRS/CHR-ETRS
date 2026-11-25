@@ -2409,6 +2409,13 @@ GRANT EXECUTE ON FUNCTION rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_abs
 --     the accepted rows set-based with the put / cancel semantics (J-279 A) and writes one WORM audit row per write
 --     WITH the kind (J-302 A / J-280 B) plus one batch header row; a committed batch is final (409).
 --   * Size limit, batch size, file and staging retention: 'לא הוגדר' (nothing enforced).
+--   * Karin 25.11: J-329 C a row whose number and e-mail are two DIFFERENT employees is an 'exception'
+--     (identity_mismatch), never written; J-331 B the stage is audited (who / when / batch / rows, no kind);
+--     J-332 B the commit refuses (409 import_batch_changed) when what the dry run saw changed
+--     (fn_hr_import_fingerprint); J-333 A any active vp_hr of the company may commit; J-334 A every value
+--     case-insensitive, employee number included; J-335 A row limit = agent setting hr_import_max_rows (empty =
+--     'לא הוגדר' = no limit); J-336 B a dedicated employee-number reader; J-337 B a day both put and cancelled in
+--     one file with no stored row is an 'exception' (put_cancel_same_day); J-338 A the header keeps file name + hash.
 -- ---------------------------------------------------------------------------
 
 -- 409 helper (SQLSTATE 23505 → PostgREST 409), first used by the J-301 B import (import_batch_committed) and
@@ -2476,10 +2483,12 @@ AS $$
               WHEN p_action = 'put' AND p_kind IS NULL THEN 'invalid_kind' END
 $$;
 
--- J-300 B / J-303 B: match one row to an employee of p_company — employee_number when given, else e-mail
--- (case-insensitive). Returns the user (only for an active employee) and the code: NULL = matched, 'leaver' = an
--- own employee who has left (J-297 B: a future end date is still active), 'missing_key' = both keys empty,
--- 'unmatched' = everything else (another company, unknown, ambiguous e-mail, no employee profile — no hint).
+-- J-300 B / J-303 B / J-329 C / J-334 A: match one row to an employee of p_company — employee_number when given,
+-- else e-mail; both case-insensitive. Returns the user (only for an active employee) and the code: NULL = matched,
+-- 'identity_mismatch' = the number and the e-mail each name ONE employee of the company but not the same one
+-- (J-329 C — an exception, never written), 'leaver' = an own employee who has left (J-297 B: a future end date is
+-- still active), 'missing_key' = both keys empty, 'unmatched' = everything else (another company, unknown,
+-- ambiguous e-mail, no employee profile — no hint). An e-mail that names nobody does not block a number match.
 CREATE OR REPLACE FUNCTION fn_hr_import_match(p_company uuid, p_number text, p_email text)
 RETURNS TABLE (user_id uuid, code text)
 LANGUAGE plpgsql
@@ -2488,24 +2497,31 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_n     int;
-  v_user  users%ROWTYPE;
+  v_by_number uuid[];
+  v_by_email  uuid[];
+  v_id        uuid;
+  v_user      users%ROWTYPE;
 BEGIN
   IF p_number IS NULL AND p_email IS NULL THEN
     RETURN QUERY SELECT NULL::uuid, 'missing_key'::text;
     RETURN;
   END IF;
-  SELECT count(*) INTO v_n FROM users u
-   WHERE u.company_id = p_company
-     AND CASE WHEN p_number IS NOT NULL THEN u.employee_number = p_number ELSE lower(u.email) = lower(p_email) END;
-  IF v_n <> 1 THEN
-    RETURN QUERY SELECT NULL::uuid, 'unmatched'::text;
+  IF p_number IS NOT NULL THEN
+    SELECT array_agg(u.user_id) INTO v_by_number FROM users u
+     WHERE u.company_id = p_company AND lower(u.employee_number) = lower(p_number);
+  END IF;
+  IF p_email IS NOT NULL THEN
+    SELECT array_agg(u.user_id) INTO v_by_email FROM users u
+     WHERE u.company_id = p_company AND lower(u.email) = lower(p_email);
+  END IF;
+  IF cardinality(v_by_number) = 1 AND cardinality(v_by_email) = 1 AND v_by_number[1] <> v_by_email[1] THEN
+    RETURN QUERY SELECT NULL::uuid, 'identity_mismatch'::text;
     RETURN;
   END IF;
-  SELECT u.* INTO v_user FROM users u
-   WHERE u.company_id = p_company
-     AND CASE WHEN p_number IS NOT NULL THEN u.employee_number = p_number ELSE lower(u.email) = lower(p_email) END;
-  IF NOT v_user.has_employee_profile THEN
+  v_id := CASE WHEN p_number IS NOT NULL THEN CASE WHEN cardinality(v_by_number) = 1 THEN v_by_number[1] END
+               ELSE CASE WHEN cardinality(v_by_email) = 1 THEN v_by_email[1] END END;
+  SELECT u.* INTO v_user FROM users u WHERE u.user_id = v_id;
+  IF v_id IS NULL OR NOT v_user.has_employee_profile THEN
     RETURN QUERY SELECT NULL::uuid, 'unmatched'::text;
   ELSIF NOT fn_hr_employed_at(v_user.employment_ended_at, clock_timestamp()) THEN
     RETURN QUERY SELECT NULL::uuid, 'leaver'::text;
@@ -2513,6 +2529,18 @@ BEGIN
     RETURN QUERY SELECT v_user.user_id, NULL::text;
   END IF;
 END;
+$$;
+
+-- J-329 C / J-337 B: the outcome of a row code — NULL (still open) for no code, 'exception' for the codes vp_hr
+-- must look at (identity_mismatch, put_cancel_same_day), else 'rejected'. Pure.
+CREATE OR REPLACE FUNCTION fn_hr_import_outcome_of(p_code text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT CASE WHEN p_code IS NULL THEN NULL
+              WHEN p_code IN ('identity_mismatch', 'put_cancel_same_day') THEN 'exception'
+              ELSE 'rejected' END
 $$;
 
 -- Dry-run step 1: normalise every staged row (action, date, kind), match it, and set its format / match code.
@@ -2529,7 +2557,7 @@ AS $$
          absence_kind = n.absence_kind,
          user_id      = CASE WHEN n.fmt IS NULL THEN m.user_id END,
          code         = COALESCE(n.fmt, m.code),
-         outcome      = CASE WHEN COALESCE(n.fmt, m.code) IS NOT NULL THEN 'rejected' END,
+         outcome      = fn_hr_import_outcome_of(COALESCE(n.fmt, m.code)),
          winner_row_no = NULL
     FROM (SELECT x.batch_id, x.row_no, x.employee_number, x.email, x.action, x.absence_date, x.absence_kind,
                  fn_hr_import_format_code(x.action, x.absence_date, x.absence_kind, x.absence_kind_text) AS fmt
@@ -2543,7 +2571,9 @@ AS $$
    WHERE r.batch_id = n.batch_id AND r.row_no = n.row_no
 $$;
 
--- Dry-run step 2 (J-306 C): among the well-formed matched rows, the LAST file row of each employee + day wins;
+-- Dry-run step 2. First J-337 B: an employee + day that the file both puts AND cancels while no row of that day is
+-- stored yet → every row of that day is an 'exception' (put_cancel_same_day), in either order; nothing is written
+-- for it. Then J-306 C: among the remaining well-formed matched rows, the LAST file row of each employee + day wins;
 -- an earlier row with the same values is a 'duplicate' (collapsed), one with other values is 'superseded'
 -- (code 'conflict'). winner_row_no points at the winning row. For cancel the kind is ignored. Writes staging only.
 CREATE OR REPLACE FUNCTION fn_hr_import_resolve(p_batch uuid)
@@ -2552,6 +2582,15 @@ LANGUAGE sql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
+  UPDATE hr_absence_import_row r
+     SET outcome = 'exception', code = 'put_cancel_same_day', winner_row_no = NULL
+    FROM (SELECT r0.user_id, r0.absence_date FROM hr_absence_import_row r0
+           WHERE r0.batch_id = p_batch AND r0.code IS NULL
+           GROUP BY r0.user_id, r0.absence_date
+          HAVING count(DISTINCT r0.action) = 2
+             AND NOT EXISTS (SELECT 1 FROM hr_absence_entry h
+                              WHERE h.user_id = r0.user_id AND h.absence_date = r0.absence_date)) g
+   WHERE r.batch_id = p_batch AND r.code IS NULL AND r.user_id = g.user_id AND r.absence_date = g.absence_date;
   WITH ok AS (
     SELECT r.row_no, r.action, CASE WHEN r.action = 'put' THEN r.absence_kind END AS kind,
            max(r.row_no) OVER (PARTITION BY r.user_id, r.absence_date) AS winner
@@ -2619,7 +2658,8 @@ AS $$
                             'accepted', count(*) FILTER (WHERE outcome = 'accepted'),
                             'rejected', count(*) FILTER (WHERE outcome = 'rejected'),
                             'duplicate', count(*) FILTER (WHERE outcome = 'duplicate'),
-                            'superseded', count(*) FILTER (WHERE outcome = 'superseded'))
+                            'superseded', count(*) FILTER (WHERE outcome = 'superseded'),
+                            'exception', count(*) FILTER (WHERE outcome = 'exception'))
     FROM hr_absence_import_row WHERE batch_id = p_batch
 $$;
 
@@ -2634,8 +2674,61 @@ AS $$
                             'action', p_row.action_text)
 $$;
 
+-- J-329 C / J-337 B: the exceptions of a batch — one entry per identity_mismatch row, one per employee + day of a
+-- put_cancel_same_day group — each with its code and the file rows (row number + cells as typed). No user id.
+CREATE OR REPLACE FUNCTION fn_hr_import_exceptions(p_batch uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('code', g.code, 'rows', g.rows) ORDER BY g.first_row), '[]'::jsonb)
+    FROM (SELECT r.code, min(r.row_no) AS first_row,
+                 jsonb_agg(fn_hr_import_row_values(r) ORDER BY r.row_no) AS rows
+            FROM hr_absence_import_row r
+           WHERE r.batch_id = p_batch AND r.outcome = 'exception'
+           GROUP BY r.code, CASE WHEN r.code = 'put_cancel_same_day' THEN r.user_id::text || r.absence_date::text
+                                 ELSE r.row_no::text END) g
+$$;
+
+-- J-332 B: fingerprint of everything the dry run's result depends on — "changed" means any difference in:
+-- (1) the staged rows (row number, the five cells) and their dry-run result (matched user, outcome, code, winner);
+-- (2) the users of the company that any row's number or e-mail names (id, number, e-mail, employee profile,
+--     end of employment) — also a user who starts or stops matching a key;
+-- (3) the stored HR rows of every matched employee + day of the file (id, kind, review state, coordination,
+--     cancelled time, entered time).
+-- The commit re-runs the dry run and compares; a passed end date shows up in (1) (the outcome changes). Internal.
+CREATE OR REPLACE FUNCTION fn_hr_import_fingerprint(p_batch uuid, p_company uuid)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT md5(concat_ws(E'\n#\n',
+    (SELECT string_agg(concat_ws('|', r.row_no, r.employee_number, r.email, r.absence_date_text, r.absence_kind_text,
+                                 r.action_text, r.user_id, r.outcome, r.code, r.winner_row_no), E'\n' ORDER BY r.row_no)
+       FROM hr_absence_import_row r WHERE r.batch_id = p_batch),
+    (SELECT string_agg(concat_ws('|', u.user_id, u.employee_number, lower(u.email), u.has_employee_profile,
+                                 u.employment_ended_at), E'\n' ORDER BY u.user_id)
+       FROM users u
+      WHERE u.company_id = p_company
+        AND EXISTS (SELECT 1 FROM hr_absence_import_row r
+                     WHERE r.batch_id = p_batch AND (lower(u.employee_number) = lower(r.employee_number)
+                                                     OR lower(u.email) = lower(r.email)))),
+    (SELECT string_agg(concat_ws('|', h.entry_id, h.absence_kind, h.kind_review_status, h.coordination_status,
+                                 h.cancelled_at, h.entered_at), E'\n' ORDER BY h.entry_id)
+       FROM hr_absence_entry h
+      WHERE h.company_id = p_company
+        AND EXISTS (SELECT 1 FROM hr_absence_import_row r
+                     WHERE r.batch_id = p_batch AND r.user_id = h.user_id AND r.absence_date = h.absence_date))))
+$$;
+
 -- The result of a batch for its vp_hr: status, counts, one entry per row (row_no, outcome, code, winner_row_no —
--- never a user id or name) and every conflict with BOTH rows and their file values (J-306 C).
+-- never a user id or name), every conflict with BOTH rows and their file values (J-306 C), and — J-329 C / J-337 B —
+-- the ALERT: requires_attention (true when any row is an exception) and the exceptions with their file rows. The
+-- report is the alert: it goes to the vp_hr who ran the dry run; no other channel is used (see ADR_GAPS J-347).
 CREATE OR REPLACE FUNCTION fn_hr_import_result(p_batch uuid)
 RETURNS jsonb
 LANGUAGE sql
@@ -2655,7 +2748,9 @@ AS $$
                                                                'winner', fn_hr_import_row_values(w)) ORDER BY l.row_no)
                              FROM hr_absence_import_row l
                              JOIN hr_absence_import_row w ON w.batch_id = l.batch_id AND w.row_no = l.winner_row_no
-                            WHERE l.batch_id = b.batch_id AND l.outcome = 'superseded'), '[]'::jsonb))
+                            WHERE l.batch_id = b.batch_id AND l.outcome = 'superseded'), '[]'::jsonb),
+    'requires_attention', EXISTS (SELECT 1 FROM hr_absence_import_row r WHERE r.batch_id = b.batch_id AND r.outcome = 'exception'),
+    'exceptions', fn_hr_import_exceptions(b.batch_id))
     FROM hr_absence_import_batch b WHERE b.batch_id = p_batch
 $$;
 
@@ -2683,8 +2778,10 @@ $$;
 
 -- vp_hr stages ONE CSV file (J-307 C) as a new batch: p_rows = the parsed rows in file order (row_no = position,
 -- 1-based), optional source file name and SHA-256 (hex). 400 invalid_import_rows (not a non-empty array of
--- objects with CSV columns only) / invalid_source_sha256. Writes staging only — no audit (J-301 B). Returns the
--- batch id, status and row count.
+-- objects with CSV columns only) / invalid_source_sha256. J-335 A: more rows than the company's
+-- hr_import_max_rows → 422 import_too_many_rows; unset (לא הוגדר) = no limit. J-331 B: writes ONE audit row
+-- 'hr_absence_import_stage' (who = viewer, when = created_at; company, batch, row count — no kind, no cells).
+-- Returns the batch id, status, row count and the row limit in effect (a number or 'לא הוגדר').
 CREATE OR REPLACE FUNCTION rpc_hr_absence_import_stage(p_company_id uuid, p_rows jsonb,
                                                        p_source_filename text DEFAULT NULL,
                                                        p_source_sha256 text DEFAULT NULL)
@@ -2696,10 +2793,14 @@ AS $$
 DECLARE
   v_batch uuid;
   v_sha   text := lower(NULLIF(btrim(p_source_sha256), ''));
+  v_limit numeric := fn_agent_setting_num(p_company_id, 'hr_import_max_rows');
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
   IF NOT fn_hr_import_rows_valid(p_rows) THEN
     PERFORM fn_raise_bad_request('invalid_import_rows');
+  END IF;
+  IF v_limit IS NOT NULL AND jsonb_array_length(p_rows) > v_limit THEN
+    PERFORM fn_raise_unprocessable('import_too_many_rows');
   END IF;
   IF v_sha IS NOT NULL AND v_sha !~ '^[0-9a-f]{64}$' THEN
     PERFORM fn_raise_bad_request('invalid_source_sha256');
@@ -2712,12 +2813,16 @@ BEGIN
   SELECT v_batch, e.ord, fn_hr_import_cell(e.r, 'employee_number'), fn_hr_import_cell(e.r, 'email'),
          fn_hr_import_cell(e.r, 'absence_date'), fn_hr_import_cell(e.r, 'absence_kind'), fn_hr_import_cell(e.r, 'action')
     FROM jsonb_array_elements(p_rows) WITH ORDINALITY AS e(r, ord);
-  RETURN jsonb_build_object('batch_id', v_batch, 'status', 'staged', 'rows', jsonb_array_length(p_rows));
+  PERFORM fn_audit_view('hr_absence_import_stage', jsonb_build_object('company_id', p_company_id, 'import_batch_id', v_batch,
+                                                                     'rows', jsonb_array_length(p_rows)));
+  RETURN jsonb_build_object('batch_id', v_batch, 'status', 'staged', 'rows', jsonb_array_length(p_rows),
+                            'row_limit', CASE WHEN v_limit IS NULL THEN to_jsonb('לא הוגדר'::text) ELSE to_jsonb(v_limit) END);
 END;
 $$;
 
 -- J-301 B DRY RUN: validate a staged (or already validated) batch and return the report (fn_hr_import_result).
--- Writes nothing to hr_absence_entry and nothing to the audit — staging state only. Committed batch → 409.
+-- Writes nothing to hr_absence_entry and nothing to the audit — staging state only, plus the J-332 B fingerprint of
+-- what it saw. Committed batch → 409.
 CREATE OR REPLACE FUNCTION rpc_hr_absence_import_validate(p_company_id uuid, p_batch_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -2731,7 +2836,10 @@ BEGIN
     PERFORM fn_raise_conflict('import_batch_committed');
   END IF;
   PERFORM fn_hr_import_validate(p_batch_id, p_company_id);
-  UPDATE hr_absence_import_batch SET status = 'validated', validated_at = clock_timestamp() WHERE batch_id = p_batch_id;
+  UPDATE hr_absence_import_batch
+     SET status = 'validated', validated_at = clock_timestamp(),
+         validated_fingerprint = fn_hr_import_fingerprint(p_batch_id, p_company_id)   -- J-332 B
+   WHERE batch_id = p_batch_id;
   RETURN fn_hr_import_result(p_batch_id);
 END;
 $$;
@@ -2796,7 +2904,10 @@ $$;
 -- changed since — e.g. an employee left), then only the accepted rows are written (puts, then cancels), each with
 -- its audit row, plus ONE batch header audit row (company, batch, counts, source file name / hash — no kind, no
 -- person). Staged batch (no dry run yet) → 409 import_batch_not_validated; already committed → 409
--- import_batch_committed (the batch row is locked, so two commits cannot both pass). Returns the final report.
+-- import_batch_committed (the batch row is locked, so two commits cannot both pass). J-332 B: when the re-run dry
+-- run's fingerprint differs from the last dry run's (fn_hr_import_fingerprint — staged rows, results, the named
+-- users, the stored rows of the file's days) → 409 import_batch_changed, nothing written; a new dry run is needed.
+-- J-333 A: any active vp_hr of the company may commit, not only the uploader. Returns the final report.
 CREATE OR REPLACE FUNCTION rpc_hr_absence_import_commit(p_company_id uuid, p_batch_id uuid)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -2814,6 +2925,9 @@ BEGIN
     PERFORM fn_raise_conflict('import_batch_not_validated');
   END IF;
   PERFORM fn_hr_import_validate(p_batch_id, p_company_id);
+  IF fn_hr_import_fingerprint(p_batch_id, p_company_id) IS DISTINCT FROM v_batch.validated_fingerprint THEN
+    PERFORM fn_raise_conflict('import_batch_changed');
+  END IF;
   v_put := fn_hr_import_apply_puts(p_batch_id, p_company_id);
   v_cancel := fn_hr_import_apply_cancels(p_batch_id, p_company_id);
   PERFORM fn_audit_view('hr_absence_import_commit',
@@ -2831,7 +2945,7 @@ $$;
 
 -- J-300 B: the ONE writer of users.employee_number — an active vp_hr of the company sets (or clears with NULL) the
 -- number of a user of her own company. Another company's user or an unknown id → 403 access_denied; a number
--- already used in the company → 409 employee_number_taken; blank → 400 invalid_employee_number. Audited
+-- already used in the company (case-insensitive, J-334 A) → 409 employee_number_taken; blank → 400 invalid_employee_number. Audited
 -- ('employee_number_set', company only — the number itself is not logged).
 CREATE OR REPLACE FUNCTION rpc_hr_set_employee_number(p_company_id uuid, p_user_id uuid, p_employee_number text)
 RETURNS jsonb
@@ -2850,7 +2964,7 @@ BEGIN
     PERFORM fn_raise_business('access_denied');
   END IF;
   IF v_number IS NOT NULL AND EXISTS (SELECT 1 FROM users u WHERE u.company_id = p_company_id
-                                         AND u.employee_number = v_number AND u.user_id <> p_user_id) THEN
+                                         AND lower(u.employee_number) = lower(v_number) AND u.user_id <> p_user_id) THEN
     PERFORM fn_raise_conflict('employee_number_taken');
   END IF;
   UPDATE users SET employee_number = v_number WHERE user_id = p_user_id;
@@ -2859,6 +2973,31 @@ BEGIN
 END;
 $$;
 
+-- J-336 B (Karin 25.11): the dedicated employee-number reader — an active vp_hr of the company reads full name,
+-- e-mail and employee number (NULL = not set yet) of the company's ACTIVE employees (employee profile; a future end
+-- date still counts — J-297 B). No user id (no new person-id exception); not added to any other list. Not logged:
+-- vp_hr reads follow J-292 (no read audit).
+CREATE OR REPLACE FUNCTION rpc_hr_employee_numbers(p_company_id uuid)
+RETURNS TABLE (full_name text, email text, employee_number text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_assert_vp_hr(p_company_id);
+  RETURN QUERY
+    SELECT u.full_name::text, u.email::text, u.employee_number
+      FROM users u
+     WHERE u.company_id = p_company_id AND u.has_employee_profile
+       AND fn_hr_employed_at(u.employment_ended_at, clock_timestamp())
+     ORDER BY u.full_name, u.email;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_hr_import_outcome_of(text), fn_hr_import_exceptions(uuid), fn_hr_import_fingerprint(uuid, uuid),
+  rpc_hr_employee_numbers(uuid) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION rpc_hr_employee_numbers(uuid) TO authenticated;
 REVOKE ALL ON FUNCTION fn_raise_conflict(text), fn_hr_import_cell(jsonb, text), fn_hr_import_rows_valid(jsonb),
   fn_hr_import_parse_date(text), fn_hr_import_format_code(text, date, text, text), fn_hr_import_match(uuid, text, text),
   fn_hr_import_normalise(uuid, uuid), fn_hr_import_resolve(uuid), fn_hr_import_check_targets(uuid, uuid),
@@ -6579,6 +6718,11 @@ BEGIN
   END IF;
   PERFORM fn_validate_agent_setting(v_def.value_kind, p_value_numeric, p_value_text);
   IF p_setting_key = 'score_range_coefficient' AND p_value_numeric IS NOT NULL AND p_value_numeric <= 0 THEN
+    PERFORM fn_raise_bad_request('invalid_setting_value');
+  END IF;
+  -- J-335 A: the HR import row limit is a whole number ≥ 1 (or reset to לא הוגדר with NULL).
+  IF p_setting_key = 'hr_import_max_rows' AND p_value_numeric IS NOT NULL
+     AND (p_value_numeric < 1 OR p_value_numeric <> trunc(p_value_numeric)) THEN
     PERFORM fn_raise_bad_request('invalid_setting_value');
   END IF;
 

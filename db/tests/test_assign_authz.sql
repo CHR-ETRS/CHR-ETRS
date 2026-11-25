@@ -1270,7 +1270,7 @@ SELECT t_assert('J-300 B: vp_hr sets employee numbers of her company (unique per
   AND (SELECT employee_number IS NULL FROM users WHERE user_id = t_u('imp_b'))
   AND (SELECT count(*) = 6 AND bool_and(scope = jsonb_build_object('company_id', company_id)) FROM access_audit_log WHERE action = 'employee_number_set')
   AND NOT has_column_privilege('authenticated', 'users', 'employee_number', 'SELECT')
-  AND (SELECT indisunique FROM pg_index WHERE indexrelid = 'uq_users_company_employee_number'::regclass)
+  AND (SELECT indisunique FROM pg_index WHERE indexrelid = 'uq_users_company_employee_number_ci'::regclass)
   AND to_regclass('idx_users_company_lower_email') IS NOT NULL);
 
 -- Who may import: only an active vp_hr of the same company. Every other role (and another company's vp_hr) → 403
@@ -1304,9 +1304,9 @@ SELECT t_assert('J-301 B: no client grant on the staging tables (RLS forced, no 
   AND (SELECT bool_and(c.relrowsecurity AND c.relforcerowsecurity) FROM pg_class c WHERE c.relname IN ('hr_absence_import_batch', 'hr_absence_import_row'))
   AND NOT EXISTS (SELECT 1 FROM pg_policy WHERE polrelid IN ('hr_absence_import_batch'::regclass, 'hr_absence_import_row'::regclass))
   AND (SELECT array_agg(p.proname::text ORDER BY p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-        WHERE n.nspname = 'public' AND (p.proname LIKE 'fn_hr_import%' OR p.proname LIKE 'rpc_hr_absence_import%' OR p.proname = 'rpc_hr_set_employee_number')
+        WHERE n.nspname = 'public' AND (p.proname LIKE 'fn_hr_import%' OR p.proname LIKE 'rpc_hr_absence_import%' OR p.proname IN ('rpc_hr_set_employee_number', 'rpc_hr_employee_numbers'))
           AND has_function_privilege('authenticated', p.oid, 'EXECUTE'))
-      = ARRAY['rpc_hr_absence_import_commit', 'rpc_hr_absence_import_stage', 'rpc_hr_absence_import_validate', 'rpc_hr_set_employee_number']);
+      = ARRAY['rpc_hr_absence_import_commit', 'rpc_hr_absence_import_stage', 'rpc_hr_absence_import_validate', 'rpc_hr_employee_numbers', 'rpc_hr_set_employee_number']);
 
 -- Input checks of the stage (400) — J-307 C: CSV columns only, no reason / free-text column (J-267 C).
 SELECT t_as(t_u('vp_u'));
@@ -1322,10 +1322,11 @@ SELECT t_assert('J-307 C: the stage refuses an empty / non-array / non-object in
   AND NOT EXISTS (SELECT 1 FROM hr_absence_import_batch));
 
 -- Stage + dry run of the main file.
-CREATE TEMP TABLE t_imp_fp0 AS SELECT t_imp_fp() AS fp;
 SELECT t_as(t_u('vp_u'));
 SET ROLE authenticated;
 INSERT INTO t_imp SELECT 'stage', rpc_hr_absence_import_stage('00000000-0000-0000-0000-0000000a5c01', t_imp_file(), 'absences_nov.csv', repeat('ab', 32));
+-- J-331 B: the stage writes its own audit row, so the "dry run writes nothing" fingerprint is taken after it.
+INSERT INTO t_imp SELECT 'fp0', to_jsonb(t_imp_fp());
 INSERT INTO t_imp SELECT 'commit before dry run', t_err_sig(format('SELECT rpc_hr_absence_import_commit(%L, %L)', '00000000-0000-0000-0000-0000000a5c01', (SELECT j->>'batch_id' FROM t_imp WHERE label = 'stage')));
 INSERT INTO t_imp SELECT 'dry', rpc_hr_absence_import_validate('00000000-0000-0000-0000-0000000a5c01', (SELECT (j->>'batch_id')::uuid FROM t_imp WHERE label = 'stage'));
 INSERT INTO t_imp SELECT 'dry again', rpc_hr_absence_import_validate('00000000-0000-0000-0000-0000000a5c01', (SELECT (j->>'batch_id')::uuid FROM t_imp WHERE label = 'stage'));
@@ -1340,7 +1341,7 @@ SELECT t_assert('J-301 B: the stage returns the batch (23 rows, staged); a commi
   (SELECT j->>'status' = 'staged' AND (j->>'rows')::int = 23 FROM t_imp WHERE label = 'stage')
   AND (SELECT j->>'message' = 'import_batch_not_validated' AND j->>'details' = 'http_hint=409;code=import_batch_not_validated' FROM t_imp WHERE label = 'commit before dry run'));
 SELECT t_assert('J-301 B: the DRY RUN writes nothing to hr_absence_entry and nothing to the audit (fingerprint + audit count unchanged, twice); it is repeatable (same report)',
-  t_imp_fp() = (SELECT fp FROM t_imp_fp0)
+  t_imp_fp() = (SELECT j #>> '{}' FROM t_imp WHERE label = 'fp0')
   AND (SELECT j FROM t_imp WHERE label = 'dry') = (SELECT j FROM t_imp WHERE label = 'dry again'));
 SELECT t_assert('J-300 B: matched by employee number (rows 5–7), by e-mail when the number is empty — case-insensitive and trimmed (row 3 = imp_a in capitals, row 4 = imp_b); codes are case-insensitive (row 22 PUT / Sick); any date, also far in the future (row 21, J-304 A)',
   t_imp_code('dry', 3) = 'accepted/-' AND t_imp_code('dry', 4) = 'accepted/-' AND t_imp_code('dry', 5) = 'accepted/-'
@@ -1364,7 +1365,7 @@ SELECT t_assert('J-306 C: imp_a on the same day 3 times (rows 1–3, by number a
               AND j->'conflicts'->0->'winner' = jsonb_build_object('row_no', 3, 'employee_number', NULL, 'email', 'IMP_A@AUTHZ.TEST', 'absence_date', (CURRENT_DATE - 201)::text, 'absence_kind', 'other', 'action', 'put')
          FROM t_imp WHERE label = 'dry'));
 SELECT t_assert('J-301 B: the report counts (23 rows: 8 accepted, 13 rejected, 1 duplicate, 1 superseded) and carries no user id, name or other person data',
-  (SELECT j->'counts' = '{"rows": 23, "accepted": 8, "rejected": 13, "duplicate": 1, "superseded": 1}'::jsonb
+  (SELECT j->'counts' = '{"rows": 23, "accepted": 8, "rejected": 13, "duplicate": 1, "superseded": 1, "exception": 0}'::jsonb
           AND j->>'status' = 'validated' AND NOT (j::text ~* '(user_id|full_name|Fixture|imp_b@|s_imp)') FROM t_imp WHERE label = 'dry'));
 
 -- Another company's vp_hr cannot see, validate or commit the batch.
@@ -1437,4 +1438,179 @@ SELECT t_assert('J-284 / J-308 A: no function outside the HR-absence family (fn_
                  AND p.prosrc ~* '(hr_absence_import|fn_hr_import)')
   AND NOT EXISTS (SELECT 1 FROM pg_views v WHERE v.schemaname = 'public' AND v.definition ~* 'hr_absence_import')
   AND (SELECT bool_and(p.prosrc ~ 'fn_assert_vp_hr\(p_company_id\)|fn_hr_import_batch_of\(p_company_id')
-         FROM pg_proc p WHERE p.proname IN ('rpc_hr_absence_import_stage', 'rpc_hr_absence_import_validate', 'rpc_hr_absence_import_commit', 'rpc_hr_set_employee_number')));
+         FROM pg_proc p WHERE p.proname IN ('rpc_hr_absence_import_stage', 'rpc_hr_absence_import_validate', 'rpc_hr_absence_import_commit', 'rpc_hr_set_employee_number', 'rpc_hr_employee_numbers')));
+
+-- ============ 17. Karin 25.11 — import J-329 C, J-331 B, J-332 B, J-333 A, J-334 A, J-335 A, J-336 B, J-337 B, J-338 A ============
+SELECT FROM t_mk('vp_u2', 'HR', 'vp_hr', 'employee');
+-- Stage + dry run as one vp_hr; returns the stage result and the report (helper, client rights).
+CREATE OR REPLACE FUNCTION t_imp_run(p_label text, p_rows jsonb) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE v_stage jsonb;
+BEGIN
+  v_stage := rpc_hr_absence_import_stage('00000000-0000-0000-0000-0000000a5c01', p_rows);
+  INSERT INTO t_imp VALUES (p_label || ' stage', v_stage);
+  INSERT INTO t_imp VALUES (p_label, rpc_hr_absence_import_validate('00000000-0000-0000-0000-0000000a5c01', (v_stage->>'batch_id')::uuid));
+END $$;
+-- The batch id of a labelled stage.
+CREATE OR REPLACE FUNCTION t_imp_batch(p_label text) RETURNS uuid LANGUAGE sql AS $$
+  SELECT (j->>'batch_id')::uuid FROM t_imp WHERE label = p_label || ' stage' $$;
+-- One CSV row object (empty strings are left out).
+CREATE OR REPLACE FUNCTION t_imp_csv(p_num text, p_email text, p_days int, p_kind text, p_action text) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT jsonb_strip_nulls(jsonb_build_object('employee_number', p_num, 'email', p_email,
+                                              'absence_date', (CURRENT_DATE - p_days)::text, 'absence_kind', p_kind, 'action', p_action)) $$;
+GRANT EXECUTE ON FUNCTION t_imp_run(text, jsonb), t_imp_batch(text), t_imp_csv(text, text, int, text, text), t_imp_row(text, int), t_imp_code(text, int) TO authenticated;
+
+-- J-335 A: the row limit starts EMPTY (לא הוגדר) — no limit; a configured limit is enforced (422), reset → empty again.
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'lim get', to_jsonb(g) FROM rpc_get_agent_settings('00000000-0000-0000-0000-0000000a5c01') g WHERE g.setting_key = 'hr_import_max_rows';
+SELECT t_imp_run('lim none', jsonb_build_array(t_imp_csv('E-100', NULL, 300, 'sick', 'put'), t_imp_csv('E-100', NULL, 299, 'sick', 'put'), t_imp_csv('E-100', NULL, 298, 'sick', 'put')));
+INSERT INTO t_imp SELECT 'lim bad ' || v, t_err_sig(format('SELECT rpc_put_agent_setting(%L, %L, %s)', '00000000-0000-0000-0000-0000000a5c01', 'hr_import_max_rows', v))
+  FROM unnest(ARRAY['0', '1.5']) v;
+SELECT FROM rpc_put_agent_setting('00000000-0000-0000-0000-0000000a5c01', 'hr_import_max_rows', 2);
+INSERT INTO t_imp SELECT 'lim over', t_err_sig(format('SELECT rpc_hr_absence_import_stage(%L, %L::jsonb)', '00000000-0000-0000-0000-0000000a5c01',
+  jsonb_build_array(t_imp_csv('E-100', NULL, 300, 'sick', 'put'), t_imp_csv('E-100', NULL, 299, 'sick', 'put'), t_imp_csv('E-100', NULL, 298, 'sick', 'put'))));
+INSERT INTO t_imp SELECT 'lim at', rpc_hr_absence_import_stage('00000000-0000-0000-0000-0000000a5c01',
+  jsonb_build_array(t_imp_csv('E-100', NULL, 300, 'sick', 'put'), t_imp_csv('E-100', NULL, 299, 'sick', 'put')));
+SELECT FROM rpc_put_agent_setting('00000000-0000-0000-0000-0000000a5c01', 'hr_import_max_rows', NULL);
+INSERT INTO t_imp SELECT 'lim reset', to_jsonb(g) FROM rpc_get_agent_settings('00000000-0000-0000-0000-0000000a5c01') g WHERE g.setting_key = 'hr_import_max_rows';
+RESET ROLE;
+SELECT t_assert('J-335 A: hr_import_max_rows starts empty (not_defined, no value — לא הוגדר) and then no limit is enforced (3 rows staged; the stage reports row_limit ''לא הוגדר''); 0 or 1.5 → 400; with 2 configured: 3 rows → 422 import_too_many_rows (nothing staged), 2 rows pass (row_limit 2); reset → empty again',
+  (SELECT j->>'value_status' = 'not_defined' AND j->>'value_numeric' IS NULL FROM t_imp WHERE label = 'lim get')
+  AND (SELECT value_status = 'not_defined' AND value_numeric IS NULL FROM agent_settings WHERE company_id IS NULL AND setting_key = 'hr_import_max_rows')
+  AND (SELECT (j->>'rows')::int = 3 AND j->>'row_limit' = 'לא הוגדר' FROM t_imp WHERE label = 'lim none stage')
+  AND (SELECT bool_and(j->>'message' = 'invalid_setting_value') AND count(*) = 2 FROM t_imp WHERE label LIKE 'lim bad %')
+  AND (SELECT j->>'message' = 'import_too_many_rows' AND j->>'details' = 'http_hint=422;code=import_too_many_rows' FROM t_imp WHERE label = 'lim over')
+  AND (SELECT (j->>'row_limit')::int = 2 AND (j->>'rows')::int = 2 FROM t_imp WHERE label = 'lim at')
+  AND (SELECT j->>'value_status' = 'not_defined' FROM t_imp WHERE label = 'lim reset')
+  AND (SELECT count(*) = 1 FROM hr_absence_import_batch b WHERE (SELECT count(*) FROM hr_absence_import_row r WHERE r.batch_id = b.batch_id) = 3
+                                                           AND b.batch_id = t_imp_batch('lim none')));
+
+-- J-331 B: every stage is audited — who (viewer) and when (created_at), company, batch, row count; no kind, no cell.
+SELECT t_assert('J-331 B: each stage writes ONE audit row hr_absence_import_stage (viewer = the vp_hr, created_at = when; scope = company, batch, rows only — no kind, no file cell); a refused stage (422) writes none',
+  (SELECT count(*) = 1 AND bool_and(viewer_id = t_u('vp_u') AND created_at IS NOT NULL AND subject_user_id IS NULL
+                                    AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(scope) k) = ARRAY['company_id', 'import_batch_id', 'rows']
+                                    AND (scope->>'rows')::int = 3)
+     FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'import_batch_id' = t_imp_batch('lim none')::text)
+  AND (SELECT count(*) FROM access_audit_log WHERE action = 'hr_absence_import_stage')
+      = (SELECT count(*) FROM hr_absence_import_batch)
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope::text ~* '(absence_kind|sick|other|E-100|@)'));
+
+-- J-329 C / J-334 A / J-337 B in one file.
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+SELECT t_imp_run('ex', jsonb_build_array(
+  t_imp_csv('e-100', NULL, 310, 'SICK', 'Put'),                  -- 1 lower-case number, upper-case values → imp_a
+  t_imp_csv('E-100', 'IMP_B@authz.test', 311, 'sick', 'put'),     -- 2 number = imp_a, e-mail = imp_b → identity_mismatch
+  t_imp_csv('E-100', 'Imp_A@Authz.Test', 312, 'sick', 'put'),     -- 3 both keys = imp_a → accepted
+  t_imp_csv('E-100', 'nobody@authz.test', 313, 'sick', 'put'),    -- 4 e-mail names nobody → number wins
+  t_imp_csv(NULL, 'imp_b@authz.test', 314, 'sick', 'put'),        -- 5 put …
+  t_imp_csv(NULL, 'imp_b@authz.test', 314, NULL, 'cancel'),       -- 6 … and cancel, no stored row → put_cancel_same_day
+  t_imp_csv(NULL, 'imp_b@authz.test', 315, NULL, 'cancel'),       -- 7 cancel then …
+  t_imp_csv(NULL, 'imp_b@authz.test', 315, 'other', 'put'),       -- 8 … put (other order), no stored row → exception
+  t_imp_csv('E-100', NULL, 205, 'sick', 'put'),                   -- 9 put …
+  t_imp_csv('E-100', NULL, 205, NULL, 'cancel')));                -- 10 … and cancel of a STORED day → last wins (conflict)
+INSERT INTO t_imp SELECT 'num case dup', t_err_sig(format('SELECT rpc_hr_set_employee_number(%L, %L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_u('imp_b'), 'e-100'));
+RESET ROLE;
+SELECT t_assert('J-334 A: values are case-insensitive — a lower-case employee number matches E-100, SICK / Put are accepted; the setter refuses e-100 for another employee (409, the number is unique case-insensitively)',
+  t_imp_code('ex', 1) = 'accepted/-' AND t_imp_code('ex', 3) = 'accepted/-' AND t_imp_code('ex', 4) = 'accepted/-'
+  AND (SELECT j->>'message' = 'employee_number_taken' FROM t_imp WHERE label = 'num case dup'));
+SELECT t_assert('J-329 C: number and e-mail naming two DIFFERENT employees → outcome ''exception'', code identity_mismatch; both keys naming the same employee, or an e-mail naming nobody, are accepted',
+  t_imp_code('ex', 2) = 'exception/identity_mismatch');
+SELECT t_assert('J-337 B: a day the file both puts and cancels with no stored row → every row of that day is an exception put_cancel_same_day, in either order (rows 5+6, 7+8); with a stored row the last row wins as before (rows 9–10: conflict)',
+  t_imp_code('ex', 5) = 'exception/put_cancel_same_day' AND t_imp_code('ex', 6) = 'exception/put_cancel_same_day'
+  AND t_imp_code('ex', 7) = 'exception/put_cancel_same_day' AND t_imp_code('ex', 8) = 'exception/put_cancel_same_day'
+  AND t_imp_code('ex', 9) = 'superseded/conflict' AND t_imp_code('ex', 10) = 'accepted/-');
+SELECT t_assert('J-329 C / J-337 B ALERT: the report says requires_attention = true, counts 5 exceptions and lists them — one identity_mismatch entry with its row, one entry per put+cancel day with BOTH rows (file values); no user id',
+  (SELECT (j->>'requires_attention')::boolean AND (j->'counts'->>'exception')::int = 5
+          AND jsonb_array_length(j->'exceptions') = 3
+          AND j->'exceptions'->0->>'code' = 'identity_mismatch' AND j->'exceptions'->0->'rows'->0->>'row_no' = '2'
+          AND j->'exceptions'->0->'rows'->0->>'email' = 'IMP_B@authz.test'
+          AND j->'exceptions'->1->>'code' = 'put_cancel_same_day'
+          AND (SELECT array_agg((e->>'row_no')::int ORDER BY (e->>'row_no')::int) FROM jsonb_array_elements(j->'exceptions'->1->'rows') e) = ARRAY[5, 6]
+          AND (SELECT array_agg((e->>'row_no')::int ORDER BY (e->>'row_no')::int) FROM jsonb_array_elements(j->'exceptions'->2->'rows') e) = ARRAY[7, 8]
+          AND NOT (j::text ~* '(user_id|full_name|Fixture)')
+     FROM t_imp WHERE label = 'ex')
+  AND (SELECT NOT (j->>'requires_attention')::boolean AND j->'exceptions' = '[]'::jsonb FROM t_imp WHERE label = 'lim none'));
+-- J-333 A: another vp_hr of the same company commits the batch vp_u staged; exceptions are never written.
+SELECT t_as(t_u('vp_u2'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'ex commit', rpc_hr_absence_import_commit('00000000-0000-0000-0000-0000000a5c01', t_imp_batch('ex'));
+RESET ROLE;
+SELECT t_assert('J-333 A: a second vp_hr of the company (not the uploader) commits the batch — created_by = vp_u, committed_by = vp_u2; J-329 C / J-337 B: the exception rows are not written (days 311, 314, 315), the accepted ones are (310, 312, 313, the 205 cancel)',
+  (SELECT created_by = t_u('vp_u') AND committed_by = t_u('vp_u2') AND status = 'committed' FROM hr_absence_import_batch WHERE batch_id = t_imp_batch('ex'))
+  AND (SELECT j->'written' = '{"put": 3, "cancel": 1}'::jsonb FROM t_imp WHERE label = 'ex commit')
+  AND (t_imp_entry('imp_a', 310)).absence_kind = 'sick' AND (t_imp_entry('imp_a', 312)).entry_id IS NOT NULL AND (t_imp_entry('imp_a', 313)).entry_id IS NOT NULL
+  AND (t_imp_entry('imp_a', 311)).entry_id IS NULL AND (t_imp_entry('imp_b', 311)).entry_id IS NULL
+  AND (t_imp_entry('imp_b', 314)).entry_id IS NULL AND (t_imp_entry('imp_b', 315)).entry_id IS NULL
+  AND (t_imp_entry('imp_a', 205)).cancelled_at IS NOT NULL);
+
+-- J-332 B: a change between dry run and commit stops the commit; a new dry run is required.
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+SELECT t_imp_run('chg row', jsonb_build_array(t_imp_csv('E-100', NULL, 320, 'sick', 'put')));
+SELECT t_imp_run('chg user', jsonb_build_array(t_imp_csv(NULL, 'imp_b@authz.test', 321, 'other', 'put')));
+SELECT t_imp_run('chg none', jsonb_build_array(t_imp_csv('E-FU', NULL, 322, 'other', 'put')));
+RESET ROLE;
+-- Between the dry run and the commit: a stored row appears on a file day (by hand) and imp_b gets a future end date.
+INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind) VALUES (t_u('imp_a'), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 320, 'other');
+-- (only the import's write actions are counted: a new end date fires the offboarding triggers, which audit themselves)
+CREATE TEMP TABLE t_imp_audit0 AS SELECT count(*) AS n FROM access_audit_log WHERE action IN ('hr_absence_put', 'hr_absence_cancel', 'hr_absence_import_commit');
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'chg row commit', t_err_sig(format('SELECT rpc_hr_absence_import_commit(%L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg row')));
+RESET ROLE;
+UPDATE users SET employment_ended_at = clock_timestamp() + interval '10 days' WHERE user_id = t_u('imp_b');
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'chg user commit', t_err_sig(format('SELECT rpc_hr_absence_import_commit(%L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg user')));
+INSERT INTO t_imp SELECT 'chg user commit2', t_err_sig(format('SELECT rpc_hr_absence_import_commit(%L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg user')));
+RESET ROLE;
+SELECT t_assert('J-332 B: a stored row that appeared on a file day, or a change to a named employee (a new end date — even one still in the future), makes the commit stop with 409 import_batch_changed — again on a retry — nothing written, no audit row',
+  (SELECT j->>'message' = 'import_batch_changed' AND j->>'details' = 'http_hint=409;code=import_batch_changed' FROM t_imp WHERE label = 'chg row commit')
+  AND (SELECT bool_and(j->>'message' = 'import_batch_changed') FROM t_imp WHERE label IN ('chg user commit', 'chg user commit2'))
+  AND (SELECT count(*) FROM access_audit_log WHERE action IN ('hr_absence_put', 'hr_absence_cancel', 'hr_absence_import_commit')) = (SELECT n FROM t_imp_audit0)
+  AND (t_imp_entry('imp_a', 320)).absence_kind = 'other' AND (t_imp_entry('imp_b', 321)).entry_id IS NULL
+  AND (SELECT bool_and(status = 'validated') FROM hr_absence_import_batch WHERE batch_id IN (t_imp_batch('chg row'), t_imp_batch('chg user'))));
+SELECT t_as(t_u('vp_u2'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'chg row dry2', rpc_hr_absence_import_validate('00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg row'));
+INSERT INTO t_imp SELECT 'chg row commit3', rpc_hr_absence_import_commit('00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg row'));
+INSERT INTO t_imp SELECT 'chg user dry2', rpc_hr_absence_import_validate('00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg user'));
+INSERT INTO t_imp SELECT 'chg user commit3', rpc_hr_absence_import_commit('00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg user'));
+INSERT INTO t_imp SELECT 'chg none commit', rpc_hr_absence_import_commit('00000000-0000-0000-0000-0000000a5c01', t_imp_batch('chg none'));
+RESET ROLE;
+SELECT t_assert('J-332 B / J-333 A: after a NEW dry run (by the other vp_hr) the commit passes — the stored day takes the file kind (J-279 re-put: other → sick), imp_b (end date in the future = still active) gets her day; a batch whose inputs did not change commits without a new dry run',
+  (SELECT j->>'status' = 'committed' FROM t_imp WHERE label = 'chg row commit3') AND (t_imp_entry('imp_a', 320)).absence_kind = 'sick'
+  AND (SELECT j->>'status' = 'committed' FROM t_imp WHERE label = 'chg user commit3') AND (t_imp_entry('imp_b', 321)).absence_kind = 'other'
+  AND (SELECT j->>'status' = 'committed' FROM t_imp WHERE label = 'chg none commit') AND (t_imp_entry('imp_fu', 322)).absence_kind = 'other');
+
+-- J-336 B: the dedicated employee-number reader.
+CREATE TEMP TABLE t_imp_audit1 AS SELECT count(*) AS n FROM access_audit_log;
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'numbers', jsonb_agg(to_jsonb(r)) FROM rpc_hr_employee_numbers('00000000-0000-0000-0000-0000000a5c01') r;
+RESET ROLE;
+SELECT t_as(t_u('vp_s'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'numbers vp_s', t_err_sig(format('SELECT * FROM rpc_hr_employee_numbers(%L)', '00000000-0000-0000-0000-0000000a5c01'));
+RESET ROLE;
+SELECT t_as(t_u('mgr_u'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'numbers mgr', t_err_sig(format('SELECT * FROM rpc_hr_employee_numbers(%L)', '00000000-0000-0000-0000-0000000a5c01'));
+RESET ROLE;
+SELECT t_assert('J-336 B: vp_hr of the company reads full name, e-mail and number of the ACTIVE employees (E-100 / E-FU set, imp_b NULL; the leaver E-LV and the no-profile E-NG are not listed; no user id); another company''s vp_hr and a manager → 403; the read is not logged (J-292); the company list still has no number',
+  (SELECT (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(j->0) k) = ARRAY['email', 'employee_number', 'full_name']
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE e->>'email' = 'imp_a@authz.test' AND e->>'employee_number' = 'E-100')
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE e->>'email' = 'imp_fu@authz.test' AND e->>'employee_number' = 'E-FU')
+          AND EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE e->>'email' = 'imp_b@authz.test' AND e->>'employee_number' IS NULL)
+          AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE e->>'employee_number' IN ('E-LV', 'E-NG'))
+     FROM t_imp WHERE label = 'numbers')
+  AND (SELECT j->>'message' = 'insufficient_privilege' FROM t_imp WHERE label = 'numbers vp_s')
+  AND (SELECT j->>'message' = 'insufficient_privilege' FROM t_imp WHERE label = 'numbers mgr')
+  AND (SELECT count(*) FROM access_audit_log) = (SELECT n FROM t_imp_audit1)
+  AND pg_get_function_result('rpc_hr_absence_list_company(uuid, boolean)'::regprocedure) NOT LIKE '%employee_number%');
+-- J-338 A: the header keeps both the file name and the SHA-256 (checked in section 16); the stage refuses a bad hash.
+SELECT t_assert('J-338 A: the WORM commit header of the main file keeps file name AND SHA-256; a malformed SHA-256 was refused at stage (400)',
+  (SELECT bool_and(scope->>'source_filename' = 'absences_nov.csv' AND scope->>'source_sha256' = repeat('ab', 32))
+     FROM access_audit_log WHERE action = 'hr_absence_import_commit' AND scope->>'source_filename' IS NOT NULL)
+  AND (SELECT j->>'message' = 'invalid_source_sha256' FROM t_imp WHERE label = 'stage bad sha'));

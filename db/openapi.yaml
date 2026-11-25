@@ -3440,7 +3440,7 @@ paths:
       - rpc
       summary: 'vp_hr: set or clear the per-company employee number of a user of her company (J-300 B)'
       description: 'v1.6.21 J-300 B (Karin 23.11). The import match key: unique per company (the same number may exist
-        in another company). The ONLY writer of users.employee_number — no HR sync writes it (the PR #13 directory
+        in another company), compared case-insensitively (J-334 A). The ONLY writer of users.employee_number — no HR sync writes it (the PR #13 directory
         sync matches by e-mail and writes shifts only). Only an active vp_hr of p_company_id (else 403
         insufficient_privilege); a user of another company or an unknown id → 403 access_denied (no existence hint);
         null clears it. Audited as employee_number_set (company only; the number itself is not logged).'
@@ -3491,6 +3491,46 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_hr_employee_numbers:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: read the employee numbers of the company''s active employees (J-336 B)'
+      description: 'v1.6.21 J-336 B (Karin 25.11). The dedicated reader — numbers are NOT added to any other list. Only
+        an active vp_hr of p_company_id (else 403 insufficient_privilege). Returns full name, e-mail and employee
+        number (null = not set) of every active employee of the company (employee profile; an end date in the future
+        still counts — J-297 B). No user id. Not logged (vp_hr reads, J-292).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: One row per active employee
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    full_name:
+                      type: string
+                    email:
+                      type: string
+                    employee_number:
+                      type: string
+                      nullable: true
+        '403':
+          $ref: '#/components/responses/BusinessError403'
   /rpc/rpc_hr_absence_import_stage:
     post:
       tags:
@@ -3501,8 +3541,11 @@ paths:
         employee_number, email, absence_date (YYYY-MM-DD), absence_kind (sick | other — HEALTH DATA), action (put |
         cancel). No reason or free-text column (J-267 C): any other key → 400 invalid_import_rows. Optional source
         file name and SHA-256 (hex) go to the commit header audit row. Only an active vp_hr of p_company_id (else 403
-        insufficient_privilege). Writes staging only (no HR row, no audit). Size limit, batch size and retention of
-        the staged rows: לא הוגדר.'
+        insufficient_privilege). Writes staging only (no HR row) plus ONE audit row hr_absence_import_stage (J-331 B,
+        Karin 25.11: who / when, company, batch, row count — no kind, no cell). Row limit (J-335 A): the agent setting
+        hr_import_max_rows — empty by default (לא הוגדר = no limit); when a company sets it, a longer file → 422
+        import_too_many_rows. The answer reports row_limit (the number, or ''לא הוגדר''). Batch size beyond that and
+        retention of the staged rows: לא הוגדר.'
       requestBody:
         required: true
         content:
@@ -3545,6 +3588,13 @@ paths:
                     - staged
                   rows:
                     type: integer
+                  row_limit:
+                    description: J-335 A — the row limit in effect, or the text 'לא הוגדר' (no limit)
+                    oneOf:
+                    - type: integer
+                    - type: string
+                      enum:
+                      - לא הוגדר
         '400':
           description: invalid_import_rows | invalid_source_sha256
           content:
@@ -3553,6 +3603,12 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           $ref: '#/components/responses/BusinessError403'
+        '422':
+          description: import_too_many_rows (more rows than the company's hr_import_max_rows)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
   /rpc/rpc_hr_absence_import_validate:
     post:
       tags:
@@ -3567,7 +3623,11 @@ paths:
         conflict (J-306 C: the LAST file row of an employee + day wins; conflicts list both rows with their file
         values). Any date (J-304 A). Only an active vp_hr of the batch''s company: not vp_hr of p_company_id → 403
         insufficient_privilege; a batch of another company or an unknown id → 403 access_denied. Committed batch →
-        409 import_batch_committed.'
+        409 import_batch_committed. Karin 25.11: identity_mismatch (J-329 C — number and e-mail name two different
+        employees) and put_cancel_same_day (J-337 B — a day both put and cancelled in the file with no stored row, in
+        either order) are outcome ''exception'': never written, listed in exceptions, and requires_attention = true —
+        the report is the alert to the vp_hr (no other channel). All cells are case-insensitive, the employee number
+        too (J-334 A). The dry run stores a fingerprint of what it saw (J-332 B).'
       requestBody:
         required: true
         content:
@@ -3600,8 +3660,11 @@ paths:
         re-opened; cancel is status only, never a delete). One WORM audit row per write WITH the kind (hr_absence_put
         / hr_absence_cancel, the single-RPC shape + import_batch_id — J-280 B), plus ONE header row
         hr_absence_import_commit (company, batch, counts, source file name / hash; no kind, no person). A staged batch
-        without a dry run → 409 import_batch_not_validated; a second commit → 409 import_batch_committed. Same access
-        rules as the dry run.'
+        without a dry run → 409 import_batch_not_validated; a second commit → 409 import_batch_committed. J-332 B
+        (Karin 25.11): when anything the dry run saw changed — the staged rows or their results, the employees of the
+        company named by a row''s number or e-mail (id, number, e-mail, employee profile, end of employment), or the
+        stored HR rows of the file''s employee-days — → 409 import_batch_changed, nothing written; run a new dry run.
+        J-333 A: any active vp_hr of the company may commit, not only the uploader. Same access rules as the dry run.'
       requestBody:
         required: true
         content:
@@ -3628,7 +3691,7 @@ paths:
         '403':
           $ref: '#/components/responses/BusinessError403'
         '409':
-          description: import_batch_not_validated | import_batch_committed
+          description: import_batch_not_validated | import_batch_committed | import_batch_changed (J-332 B — run a new dry run)
           content:
             application/json:
               schema:
@@ -5749,6 +5812,25 @@ components:
               type: integer
             superseded:
               type: integer
+            exception:
+              type: integer
+        requires_attention:
+          type: boolean
+          description: J-329 C / J-337 B — true when any row is an exception (the alert to the vp_hr)
+        exceptions:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                - identity_mismatch
+                - put_cancel_same_day
+              rows:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceImportFileRow'
         rows:
           type: array
           items:
@@ -5763,6 +5845,7 @@ components:
                 - rejected
                 - duplicate
                 - superseded
+                - exception
               code:
                 type: string
                 nullable: true
@@ -5776,6 +5859,8 @@ components:
                 - no_entry
                 - duplicate
                 - conflict
+                - identity_mismatch
+                - put_cancel_same_day
                 - null
               winner_row_no:
                 type: integer

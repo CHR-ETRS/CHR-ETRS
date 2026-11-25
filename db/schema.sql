@@ -1198,6 +1198,10 @@ DROP POLICY IF EXISTS hr_absence_own ON hr_absence_entry;
 --     and read only through the SECURITY DEFINER import RPCs of an active vp_hr of the same company; no client
 --     grant, RLS forced with no policy. The staged rows hold the kind (health data) as typed in the file.
 --     Retention of the file, the staging rows and their size limits: 'לא הוגדר'.
+--   * Karin 25.11 (J-329 C, J-332 B, J-334 A, J-335 A, J-337 B): the employee number is unique and matched
+--     case-insensitively (J-334 A); the dry run stores a fingerprint of what it saw (J-332 B); new outcome
+--     'exception' (identity_mismatch J-329 C, put_cancel_same_day J-337 B); the row limit per file is the agent
+--     setting hr_import_max_rows (empty = 'לא הוגדר' = no limit, J-335 A).
 -- ---------------------------------------------------------------------------
 ALTER TABLE users ADD COLUMN IF NOT EXISTS employee_number text;
 DO $$
@@ -1208,8 +1212,12 @@ BEGIN
   END IF;
 END $$;
 COMMENT ON COLUMN users.employee_number IS
-  'J-300 B: per-company employee number (the HR import match key; e-mail is the fallback). Unique per company; NULL until vp_hr sets it (rpc_hr_set_employee_number).';
-CREATE UNIQUE INDEX IF NOT EXISTS uq_users_company_employee_number ON users (company_id, employee_number)
+  'J-300 B: per-company employee number (the HR import match key; e-mail is the fallback). Unique per company, case-insensitive (J-334 A); NULL until vp_hr sets it (rpc_hr_set_employee_number).';
+-- J-334 A (Karin 25.11): unique per company CASE-INSENSITIVELY — replaces the case-sensitive index of 130bdca
+-- (dropped on upgrade). If an upgraded database holds two numbers of one company that differ only in case, the
+-- index creation fails and the pack stops: the duplicates must be resolved by vp_hr first (never merged silently).
+DROP INDEX IF EXISTS uq_users_company_employee_number;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_company_employee_number_ci ON users (company_id, lower(employee_number))
   WHERE employee_number IS NOT NULL;
 -- J-300 B fallback: e-mail match inside one company, case-insensitive (users.email is unique case-sensitively only).
 CREATE INDEX IF NOT EXISTS idx_users_company_lower_email ON users (company_id, lower(email));
@@ -1227,6 +1235,8 @@ CREATE TABLE IF NOT EXISTS hr_absence_import_batch (
     committed_by    uuid REFERENCES users(user_id) ON DELETE SET NULL,
     CONSTRAINT chk_hr_import_batch_committed CHECK ((status = 'committed') = (committed_at IS NOT NULL))
 );
+-- J-332 B (Karin 25.11): what the last dry run saw (fn_hr_import_fingerprint) — the commit refuses when it differs.
+ALTER TABLE hr_absence_import_batch ADD COLUMN IF NOT EXISTS validated_fingerprint text;
 CREATE INDEX IF NOT EXISTS idx_hr_import_batch_company ON hr_absence_import_batch (company_id, created_at DESC);
 
 -- One staged CSV row. The *_text columns keep the file values as typed (trimmed; empty → NULL); the normalised
@@ -1243,11 +1253,26 @@ CREATE TABLE IF NOT EXISTS hr_absence_import_row (
     absence_date      date,
     absence_kind      text CHECK (absence_kind IS NULL OR absence_kind IN ('sick', 'other')),
     action            text CHECK (action IS NULL OR action IN ('put', 'cancel')),
-    outcome           text CHECK (outcome IS NULL OR outcome IN ('accepted', 'rejected', 'duplicate', 'superseded')),
+    outcome           text CHECK (outcome IS NULL OR outcome IN ('accepted', 'rejected', 'duplicate', 'superseded', 'exception')),
     code              text,
     winner_row_no     int,
     PRIMARY KEY (batch_id, row_no)
 );
+-- Upgrade from 130bdca: add the 'exception' outcome (J-329 C / J-337 B) to the existing check, same constraint name.
+DO $$
+DECLARE
+  v_name text;
+BEGIN
+  SELECT conname INTO v_name FROM pg_constraint
+   WHERE conrelid = 'hr_absence_import_row'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%outcome%';
+  IF v_name IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = v_name
+                                          AND conrelid = 'hr_absence_import_row'::regclass
+                                          AND pg_get_constraintdef(oid) LIKE '%exception%') THEN
+    EXECUTE format('ALTER TABLE hr_absence_import_row DROP CONSTRAINT %I', v_name);
+    EXECUTE format($c$ALTER TABLE hr_absence_import_row ADD CONSTRAINT %I CHECK (outcome IS NULL OR outcome IN
+                     ('accepted', 'rejected', 'duplicate', 'superseded', 'exception'))$c$, v_name);
+  END IF;
+END $$;
 
 -- J-301 B: a committed batch is final — its header and rows can no longer change (a second commit is refused by the
 -- RPC as well). Trigger function for both tables; deletes are left to ON DELETE CASCADE of the company.
@@ -4442,7 +4467,10 @@ INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, 
   (NULL, 'movement_rate_multiplier',      'numeric', 1.5,  NULL, 'set',         true,  'Karin 30.10: 5th signal — team rate ≥ 1.5 × organization average'),
   (NULL, 'movement_min_events',           'numeric', 2,    NULL, 'set',         true,  'Karin 30.10: 5th signal — at least 2 events'),
   (NULL, 'movement_min_team_size',        'numeric', 10,   NULL, 'set',         true,  'Karin 30.10: 5th signal is SENSITIVE — shown only for teams of ≥ 10 employees'),
-  (NULL, 'movement_window_months',        'numeric', 3,    NULL, 'set',         true,  'Karin 30.10: events of the last 3 months ÷ employees in the team')
+  (NULL, 'movement_window_months',        'numeric', 3,    NULL, 'set',         true,  'Karin 30.10: events of the last 3 months ÷ employees in the team'),
+  -- J-335 A (Karin 25.11): row limit per HR absence import file — starts EMPTY (לא הוגדר = no limit enforced);
+  -- a company sets a whole number ≥ 1 with rpc_put_agent_setting.
+  (NULL, 'hr_import_max_rows',            'numeric', NULL, NULL, 'not_defined', false, 'J-335 A (Karin 25.11): rows per HR absence import file — לא הוגדר')
 ON CONFLICT ((COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid)), setting_key) DO UPDATE SET
   value_kind = EXCLUDED.value_kind, value_numeric = EXCLUDED.value_numeric, value_text = EXCLUDED.value_text,
   value_status = EXCLUDED.value_status, is_locked = EXCLUDED.is_locked, source_note = EXCLUDED.source_note;

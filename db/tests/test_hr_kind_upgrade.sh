@@ -55,7 +55,8 @@ rows() {
 # J-300 B / J-301 B: the import objects exist after an upgrade — employee_number + its per-company unique index,
 # the two staging tables with RLS forced, no policy and no client grant. $1 = label.
 import_objects() {
-  check "$1: J-300 B / J-301 B import objects (employee_number unique per company, staging closed to clients)" "$(psql -d "$DB" -qAt -c "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'employee_number')::text || '/' || (SELECT indisunique FROM pg_index WHERE indexrelid = 'uq_users_company_employee_number'::regclass)::text || '/' || (SELECT count(*) FROM pg_class WHERE relname IN ('hr_absence_import_batch', 'hr_absence_import_row') AND relrowsecurity AND relforcerowsecurity)::text || '/' || (SELECT count(*) FROM pg_policy WHERE polrelid IN ('hr_absence_import_batch'::regclass, 'hr_absence_import_row'::regclass))::text || '/' || has_table_privilege('authenticated', 'hr_absence_import_row', 'SELECT')::text")" "1/true/2/0/false"
+  check "$1: J-300 B / J-301 B import objects (employee_number unique per company case-insensitively, staging closed to clients)" "$(psql -d "$DB" -qAt -c "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'employee_number')::text || '/' || (SELECT indisunique FROM pg_index WHERE indexrelid = 'uq_users_company_employee_number_ci'::regclass)::text || '/' || (SELECT count(*) FROM pg_class WHERE relname IN ('hr_absence_import_batch', 'hr_absence_import_row') AND relrowsecurity AND relforcerowsecurity)::text || '/' || (SELECT count(*) FROM pg_policy WHERE polrelid IN ('hr_absence_import_batch'::regclass, 'hr_absence_import_row'::regclass))::text || '/' || has_table_privilege('authenticated', 'hr_absence_import_row', 'SELECT')::text")" "1/true/2/0/false"
+  check "$1: Karin 25.11 import objects (old case-sensitive index gone, 'exception' outcome, fingerprint column, empty row limit)" "$(psql -d "$DB" -qAt -c "SELECT (to_regclass('uq_users_company_employee_number') IS NULL)::text || '/' || (SELECT count(*) FROM pg_constraint WHERE conrelid = 'hr_absence_import_row'::regclass AND pg_get_constraintdef(oid) LIKE '%exception%')::text || '/' || (SELECT count(*) FROM information_schema.columns WHERE table_name = 'hr_absence_import_batch' AND column_name = 'validated_fingerprint')::text || '/' || (SELECT value_status FROM agent_settings WHERE company_id IS NULL AND setting_key = 'hr_import_max_rows')")" "true/1/1/not_defined"
 }
 
 # Upgrade checks after the current pack was applied over an old shape; $1 = label, $2 = expected rows.
@@ -110,6 +111,27 @@ if git cat-file -e "46a366f:db/schema.sql" 2>/dev/null; then
   rm -rf "$OLD"
 else
   echo "SKIP HRUP real 46a366f pack (git history not available)"
+fi
+# (4) Karin 25.11: upgrade from the seventh-round commit 130bdca WITH a staged import (old outcome check, old
+# case-sensitive number index) — the staged rows and the HR rows survive; the new objects are in place.
+if git cat-file -e "130bdca:db/schema.sql" 2>/dev/null; then
+  OLD=$(mktemp -d)
+  for f in ref_country_calendar.sql schema.sql rpc.sql; do git show "130bdca:db/$f" > "$OLD/$f"; done
+  fresh_db; apply_pack "$OLD"; add_rows kind
+  psql -d "$DB" -v ON_ERROR_STOP=1 -qAt >/dev/null <<SQL
+UPDATE users SET employee_number = 'N-1' WHERE user_id = '00000000-0000-0000-0000-00000000ab01';
+INSERT INTO hr_absence_import_batch (batch_id, company_id) VALUES ('00000000-0000-0000-0000-00000000ac01', '00000000-0000-0000-0000-00000000aa01');
+INSERT INTO hr_absence_import_row (batch_id, row_no, employee_number, absence_date_text, absence_kind_text, action_text, outcome, code)
+VALUES ('00000000-0000-0000-0000-00000000ac01', 1, 'N-1', '2026-01-05', 'sick', 'put', 'rejected', 'invalid_kind');
+SQL
+  BEFORE="$(rows)"
+  apply_pack .
+  check "real 130bdca pack: HR rows unchanged" "$(rows)" "$BEFORE"
+  check "real 130bdca pack: staged row and number kept" "$(psql -d "$DB" -qAt -c "SELECT (SELECT count(*) FROM hr_absence_import_row)::text || '/' || (SELECT employee_number FROM users WHERE user_id = '00000000-0000-0000-0000-00000000ab01')")" "1/N-1"
+  import_objects "real 130bdca pack"
+  rm -rf "$OLD"
+else
+  echo "SKIP HRUP real 130bdca pack (git history not available)"
 fi
 psql -qc "DROP DATABASE IF EXISTS $DB" postgres
 echo "HR KIND UPGRADE TESTS: $FAILS failed"
