@@ -3800,7 +3800,11 @@ paths:
         read is revoked, so a read cannot bypass the log. The reader is the signed-in user (auth.uid(), no parameter).
         Every call writes one access_audit_log row (action hr_absence_self_read, viewer = subject = herself, company
         in the scope) WITHOUT the kind, dates or count. Same row shape as /rpc/rpc_hr_absence_list. Not signed in → 403
-        access_denied.'
+        access_denied.
+        J-311 (Karin 27.11): each row also carries pending_hr_review — true while the row still waits for HR to set
+        its kind (kind_review_status needs_review; absence_kind is then null). A neutral flag only: no reason, no HR
+        note, no reviewer, no label text (wording open, ADR_GAPS J-367). Her own rows only; the manager list and the
+        vp_hr readers do not carry it.'
       requestBody:
         required: false
         content:
@@ -3815,7 +3819,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/HrAbsenceRow'
+                  $ref: '#/components/schemas/HrAbsenceSelfRow'
         '403':
           $ref: '#/components/responses/BusinessError403'
   /rpc/rpc_hr_absence_set_kind:
@@ -5910,6 +5914,19 @@ components:
                 $ref: '#/components/schemas/HrAbsenceImportFileRow'
               winner:
                 $ref: '#/components/schemas/HrAbsenceImportFileRow'
+    HrAbsenceSelfRow:
+      type: object
+      description: 'J-311 (Karin 27.11) — HrAbsenceRow + pending_hr_review for the employee''s OWN read: true while the row
+        waits for HR to set its kind (same fact as kind_review_status = needs_review, as a neutral flag). No reason, no HR
+        note, no reviewer identity.'
+      allOf:
+      - $ref: '#/components/schemas/HrAbsenceRow'
+      - type: object
+        required:
+        - pending_hr_review
+        properties:
+          pending_hr_review:
+            type: boolean
     HrAbsenceVpHrRow:
       type: object
       description: 'v1.6.21 J-296 B — HrAbsenceRow + reviewable for the vp_hr readers: true when vp_hr may set the kind

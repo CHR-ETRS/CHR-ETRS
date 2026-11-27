@@ -2372,10 +2372,16 @@ $$;
 -- J-291 B (Karin 23.11): the employee reads her OWN HR absence rows (with the kind, J-269 A) — the ONLY client read
 -- path of hr_absence_entry (the direct table read is revoked). The actor is the signed-in employee (auth.uid(),
 -- never a parameter); every call writes 'hr_absence_self_read' to access_audit_log (viewer = subject = herself,
--- company in the scope, NO kind, no count). Same row shape as rpc_hr_absence_list. Not signed in → 403 access_denied.
+-- company in the scope, NO kind, no count). Same row shape as rpc_hr_absence_list without the vp_hr action flag
+-- `reviewable` (J-311). J-311 (Karin 27.11): + pending_hr_review — a neutral boolean, true while the row still waits for
+-- HR to set its kind (kind_review_status = 'needs_review', e.g. a day entered before the kind column existed), so the
+-- employee sees THAT it waits. Nothing else: no reason, no HR note, no reviewer, no label text (the wording is open,
+-- ADR_GAPS J-367). Her own rows only; the manager's uniform list and the vp_hr readers do not get it. Not signed in →
+-- 403 access_denied.
+DROP FUNCTION IF EXISTS rpc_hr_absence_my_list();
 CREATE OR REPLACE FUNCTION rpc_hr_absence_my_list()
 RETURNS TABLE (entry_id uuid, absence_date date, absence_kind text, kind_review_status text,
-               coordination_status text, cancelled boolean)
+               coordination_status text, cancelled boolean, pending_hr_review boolean)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
@@ -2389,7 +2395,8 @@ BEGIN
     PERFORM fn_raise_business('access_denied');
   END IF;
   PERFORM fn_audit_view('hr_absence_self_read', jsonb_build_object('company_id', v_company), v_me);
-  RETURN QUERY SELECT r.entry_id, r.absence_date, r.absence_kind, r.kind_review_status, r.coordination_status, r.cancelled
+  RETURN QUERY SELECT r.entry_id, r.absence_date, r.absence_kind, r.kind_review_status, r.coordination_status, r.cancelled,
+                      r.kind_review_status = 'needs_review'
                  FROM fn_hr_absence_rows(v_company, v_me, false) r;
 END;
 $$;
