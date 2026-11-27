@@ -58,7 +58,7 @@ A split is **not designed here**. This archive, as specified, holds import-stagi
 - identity keys, until J-344 expiry: employee number and e-mail **as typed** in the file;
 - batch-level counts (rows, accepted, rejected, duplicate, superseded, exception, and the written put / cancel counts already on the header).
 
-The kind (`sick` / `other`) is **not** copied into the archive. It stays in the live `hr_absence_entry` for HR, and in the existing per-row WORM `access_audit_log` write rows (`hr_absence_put` / `hr_absence_cancel`, J-280 B). Rejected, exception and superseded file rows therefore leave **no kind** in the archive.
+The kind (`sick` / `other`) is **not** copied into the archive. It stays in the live `hr_absence_entry` for HR, and — since J-280 (Karin 27.11, replaced J-280 B) — NOT in the per-row WORM `access_audit_log` write rows (`hr_absence_put` / `hr_absence_cancel`) either: they record only that the kind was set (`kind_set`), who and when. Rejected, exception and superseded file rows therefore leave **no kind** in the archive.
 
 **J-338 header link.** The existing WORM header row `hr_absence_import_commit` already holds the source file name and the SHA-256, plus the counts (`rpc.sql` commit path; J-338 A). The archive **keys on the same `import_batch_id`** and does **not** repeat the file name or the hash — one place for them. A reader who is allowed the header fields reads them from that audit row (or a join on the batch id), not from a second copy.
 

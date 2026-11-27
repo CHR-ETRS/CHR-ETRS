@@ -3374,8 +3374,8 @@ paths:
         p_absence_kind is REQUIRED: sick | other (else 400 invalid_absence_kind) — HEALTH DATA. No reason, diagnosis
         or free-text field. Any date (no range set, J-273). One row per employee per day: an active day keeps its
         coordination and takes the new kind (correction, J-279); a cancelled day is re-opened (pending_coordination).
-        Audited WITH the kind (J-280 B, Karin 23.11 — health data kept for good in the WORM audit log: company, date,
-        kind, review state; the employee as the subject). A row that needs review (J-278 B) becomes reviewed. The
+        Audited WITHOUT the kind (J-280, Karin 27.11, replaced J-280 B — the WORM audit log records only THAT the kind was
+        set or changed: company, date, kind_set = true, who and when; no absence_kind, no kind_review_status; the employee as the subject). A row that needs review (J-278 B) becomes reviewed. The
         kind is readable only by the company''s vp_hr (/rpc/rpc_hr_absence_list, /rpc/rpc_hr_absence_list_company)
         and by the employee herself (/rpc/rpc_hr_absence_my_list, audited — J-269 A / J-291 B); the direct manager sees the day only
         as a uniform "לא זמינה" row of /manager_unavailability_v, identical for sick and other. Sick days (not cancelled)
@@ -3675,8 +3675,8 @@ paths:
       description: 'v1.6.21 J-301 B / J-302 A (Karin 23.11). Re-runs the dry run (the state may have changed), then
         writes the accepted rows only, set-based, with the put / cancel semantics (J-279 A: a re-put keeps the entry
         and its coordination status and takes the new kind; a needs_review day becomes reviewed; a cancelled day is
-        re-opened; cancel is status only, never a delete). One WORM audit row per write WITH the kind (hr_absence_put
-        / hr_absence_cancel, the single-RPC shape + import_batch_id — J-280 B), plus ONE header row
+        re-opened; cancel is status only, never a delete). One WORM audit row per write WITHOUT the kind (hr_absence_put
+        / hr_absence_cancel, the single-RPC shape + import_batch_id — J-280 / J-371; a put also carries kind_set = true), plus ONE header row
         hr_absence_import_commit (company, batch, counts, source file name / hash; no kind, no person). A staged batch
         without a dry run → 409 import_batch_not_validated; a second commit → 409 import_batch_committed. J-332 B
         (Karin 25.11): when anything the dry run saw changed — the staged rows or their results, the employees of the
@@ -3803,8 +3803,8 @@ paths:
         access_denied.
         J-311 (Karin 27.11): each row also carries pending_hr_review — true while the row still waits for HR to set
         its kind (kind_review_status needs_review; absence_kind is then null). A neutral flag only: no reason, no HR
-        note, no reviewer. J-367 (Karin 27.11): while it is true the row also carries pending_hr_review_label_he
-        (''ממתין לאישור'') and pending_hr_review_explain_he (''רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך
+        note, no reviewer. J-367 / J-369 (Karin 27.11): while it is true the row also carries pending_hr_review_label_he
+        (''בהשלמה'') and pending_hr_review_explain_he (''רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך
         בפעולה מצידך.''); both are null when the flag is false. Her own rows only; the manager list and the vp_hr readers
         do not carry them. J-368 (Karin 27.11): a CANCELLED day has pending_hr_review = false (label and explanation null)
         even if its kind_review_status is still needs_review, and carries cancelled_label_he (''בוטל''); the vp_hr
@@ -3835,8 +3835,8 @@ paths:
         a row of another company, an unknown id or (J-294 C, Karin 23.11) a row of an employee who is no longer active
         → the same 403 access_denied (no existence hint, no hint that she left); p_absence_kind sick | other
         (else 400 invalid_absence_kind — a kind is never guessed). The row becomes reviewed; coordination and
-        cancellation are unchanged; the manager list is unchanged. Audited as hr_absence_kind_set WITH the kind
-        (J-280 B), the employee as the subject. Active employees only (J-294 C replaced "any row"); J-297 B / J-313: an employee is active through the whole last day of her end date
+        cancellation are unchanged; the manager list is unchanged. Audited as hr_absence_kind_set with who, when and the marker
+        kind_set = true, WITHOUT the kind or the review state (J-280), the employee as the subject. Active employees only (J-294 C replaced "any row"); J-297 B / J-313: an employee is active through the whole last day of her end date
         (until 00:00 of the next day in the company time zone; the end timestamp is read as its company-local date).'
       requestBody:
         required: true
@@ -3892,7 +3892,7 @@ paths:
       - rpc
       summary: 'vp_hr: cancel the HR absence day of one employee (status only, never a delete; J-263 B)'
       description: 'Same checks as /rpc/rpc_hr_absence_put. Idempotent. A day without an entry → 400
-        invalid_requested_date. Audited WITH the kind of the row (J-280 B; null while it needs review). The day
+        invalid_requested_date. Audited with who and when and WITHOUT the kind (J-280 / J-371; company + date only; the employee does not see it). The day
         disappears from the manager list.'
       requestBody:
         required: true
@@ -5939,14 +5939,14 @@ components:
             nullable: true
             description: 'J-367 — exactly the text below while pending_hr_review is true; null when false'
             enum:
-            - ממתין לאישור
+            - בהשלמה
             - null
           pending_hr_review_explain_he:
             type: string
             nullable: true
             description: 'J-367 — exactly the text below while pending_hr_review is true; null when false'
             enum:
-            - רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך בפעולה מצידך.
+            - רשומה ישנה שמשאבי אנוש משלימים בה פרטים. אין צורך בפעולה מצידך.
             - null
           cancelled_label_he:
             type: string

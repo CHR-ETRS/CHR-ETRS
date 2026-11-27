@@ -770,15 +770,18 @@ SELECT t_assert('J-267 C: vp_hr reads the kind per day of the employee she names
   (SELECT jsonb_array_length(j) = 3 AND (SELECT bool_and(e->>'absence_kind' = 'sick') FROM jsonb_array_elements(j) e) FROM t_kind WHERE label = 'vp sk')
   AND (SELECT jsonb_array_length(j) = 2 AND (SELECT bool_and(e->>'absence_kind' = 'other') FROM jsonb_array_elements(j) e) FROM t_kind WHERE label = 'vp hr')
   AND (SELECT bool_and(NOT (j::text ~* '(user_id|person|pseudonym|full_name|email)')) FROM t_kind));
-SELECT t_assert('J-280 B / J-292: vp_hr reads write NO audit row (J-292, replaced the read logging); every put / cancel audit row RECORDS the kind and review state of the row (sick for emp_sk, other for the cancelled emp_hr day)',
+SELECT t_assert('J-280 / J-371 (Karin 27.11, replaced J-280 B): vp_hr reads write NO audit row (J-292); every put audit row has the actor, the time and the neutral marker kind_set = true and NO absence_kind / kind_review_status; the cancel row (emp_hr, exactly one) has the actor, the time, company + date only — no kind, no marker',
   NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_read')   -- J-292: vp_hr reads are not logged
-  AND (SELECT count(*) > 0 AND bool_and(scope ? 'absence_kind' AND scope->>'absence_kind' IN ('sick', 'other')
-                                        AND scope->>'kind_review_status' = 'reviewed')
+  AND (SELECT count(*) > 0 AND bool_and(NOT (scope ? 'absence_kind') AND NOT (scope ? 'kind_review_status')
+                                        AND viewer_id IS NOT NULL AND created_at IS NOT NULL AND subject_user_id IS NOT NULL
+                                        AND scope ? 'company_id' AND scope ? 'absence_date'
+                                        AND NOT (scope::text ~* '(absence_kind|kind_review_status|sick|other|needs_review|reviewed)'))
          FROM access_audit_log WHERE action IN ('hr_absence_put', 'hr_absence_cancel'))
-  AND (SELECT bool_and(scope->>'absence_kind' = 'sick') FROM access_audit_log
+  AND (SELECT count(*) > 0 AND bool_and(scope->>'kind_set' = 'true') FROM access_audit_log
         WHERE action = 'hr_absence_put' AND subject_user_id = t_u('emp_sk'))
-  AND (SELECT count(*) = 1 AND bool_and(scope->>'absence_kind' = 'other') FROM access_audit_log
-        WHERE action = 'hr_absence_cancel' AND subject_user_id = t_u('emp_hr')));
+  AND (SELECT count(*) = 1 AND bool_and(viewer_id = t_u('vp_u') AND NOT (scope ? 'kind_set')
+                                        AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(scope) k) = ARRAY['absence_date', 'company_id'])
+         FROM access_audit_log WHERE action = 'hr_absence_cancel' AND subject_user_id = t_u('emp_hr')));
 SELECT t_as(t_u('emp_sk'));
 SET ROLE authenticated;
 SELECT t_assert('J-269 A / J-291 B: the employee reads her OWN HR days WITH the kind (3 sick) through rpc_hr_absence_my_list, nothing of anyone else; no person field',
@@ -964,12 +967,14 @@ INSERT INTO t_rv SELECT 'review list after', COALESCE(jsonb_agg(to_jsonb(r)), '[
 SELECT t_as(t_u('mgr_u'));
 INSERT INTO t_rv SELECT 'mgr after', jsonb_agg(to_jsonb(v) ORDER BY v.entry_id) FROM manager_unavailability_v v;
 RESET ROLE;
-SELECT t_assert('J-278 B / J-280 B: vp_hr sets the kind → reviewed, nothing left to review; audited as hr_absence_kind_set WITH the kind (sick, reviewed), the employee as subject; the manager list is byte-identical before and after',
+SELECT t_assert('J-278 B / J-280 B: vp_hr sets the kind → reviewed, nothing left to review; audited as hr_absence_kind_set with the actor, the time and the marker kind_set, NO kind and NO review state, the employee as subject; the manager list is byte-identical before and after',
   (SELECT j->>'status' = 'reviewed' AND NOT (j::text ~* '(user_id|absence_kind|sick)') FROM t_rv WHERE label = 'set')
   AND (SELECT absence_kind = 'sick' AND kind_review_status = 'reviewed' FROM hr_absence_entry WHERE user_id = t_u('emp_nr'))
   AND (SELECT jsonb_array_length(j) = 0 FROM t_rv WHERE label = 'review list after')
-  AND (SELECT count(*) = 1 AND bool_and(subject_user_id = t_u('emp_nr') AND scope->>'absence_kind' = 'sick'
-                                        AND scope->>'kind_review_status' = 'reviewed')
+  AND (SELECT count(*) = 1 AND bool_and(subject_user_id = t_u('emp_nr') AND viewer_id = t_u('vp_u') AND created_at IS NOT NULL
+                                        AND scope->>'kind_set' = 'true'
+                                        AND NOT (scope ? 'absence_kind') AND NOT (scope ? 'kind_review_status')
+                                        AND NOT (scope::text ~* '(sick|other|needs_review|reviewed)'))
          FROM access_audit_log WHERE action = 'hr_absence_kind_set')
   AND (SELECT j FROM t_rv WHERE label = 'mgr before') = (SELECT j FROM t_rv WHERE label = 'mgr after'));
 -- J-289: a needs_review day is NOT a sick day in the totals until vp_hr sets the kind.
@@ -1038,12 +1043,12 @@ SELECT t_as(t_u('mgr_u'));
 INSERT INTO t_j311 SELECT 'mgr_self', COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) FROM rpc_hr_absence_my_list() r;
 INSERT INTO t_j311 SELECT 'mgr_list', jsonb_agg(to_jsonb(v) ORDER BY v.entry_id) FROM manager_unavailability_v v;
 RESET ROLE;
-SELECT t_assert('J-311: the employee sees her needs_review row with pending_hr_review = true (kind null) and exactly the 10 fields entry_id, absence_date, absence_kind, kind_review_status, coordination_status, cancelled, pending_hr_review, pending_hr_review_label_he, pending_hr_review_explain_he, cancelled_label_he — no reason, note, reviewer or person field; J-367: on the pending row the two texts are EXACTLY Karin''s (ממתין לאישור / רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך בפעולה מצידך.) and on every reviewed row both are NULL',
+SELECT t_assert('J-311: the employee sees her needs_review row with pending_hr_review = true (kind null) and exactly the 10 fields entry_id, absence_date, absence_kind, kind_review_status, coordination_status, cancelled, pending_hr_review, pending_hr_review_label_he, pending_hr_review_explain_he, cancelled_label_he — no reason, note, reviewer or person field; J-367: on the pending row the two texts are EXACTLY Karin''s (בהשלמה / רשומה ישנה שמשאבי אנוש משלימים בה פרטים. אין צורך בפעולה מצידך.) and on every reviewed row both are NULL',
   (SELECT jsonb_array_length(j) >= 1 AND bool_and((SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(e) k)
         = ARRAY['absence_date', 'absence_kind', 'cancelled', 'cancelled_label_he', 'coordination_status', 'entry_id', 'kind_review_status', 'pending_hr_review', 'pending_hr_review_explain_he', 'pending_hr_review_label_he'])
           AND bool_and(CASE WHEN (e->>'pending_hr_review')::boolean
-                            THEN e->>'pending_hr_review_label_he' = 'ממתין לאישור'
-                             AND e->>'pending_hr_review_explain_he' = 'רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך בפעולה מצידך.'
+                            THEN e->>'pending_hr_review_label_he' = 'בהשלמה'
+                             AND e->>'pending_hr_review_explain_he' = 'רשומה ישנה שמשאבי אנוש משלימים בה פרטים. אין צורך בפעולה מצידך.'
                             ELSE e->'pending_hr_review_label_he' = 'null'::jsonb AND e->'pending_hr_review_explain_he' = 'null'::jsonb END)
           AND count(*) FILTER (WHERE NOT (e->>'pending_hr_review')::boolean) >= 1
           AND bool_and((e->>'pending_hr_review')::boolean = (e->>'kind_review_status' = 'needs_review' AND NOT (e->>'cancelled')::boolean))
@@ -1065,7 +1070,7 @@ SELECT t_assert('J-311: another employee sees only her own rows with pending_hr_
   (SELECT count(*) >= 1 AND bool_and(NOT (e->>'pending_hr_review')::boolean AND e->'pending_hr_review_label_he' = 'null'::jsonb AND e->'pending_hr_review_explain_he' = 'null'::jsonb) FROM t_j311, jsonb_array_elements(j) e WHERE label = 'emp_mx')
   AND (SELECT NOT EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE (e->>'pending_hr_review')::boolean) FROM t_j311 WHERE label = 'emp_mx')
   AND (SELECT jsonb_array_length(j) = 0 FROM t_j311 WHERE label = 'mgr_self')
-  AND (SELECT NOT (j::text ~* '(pending_hr_review|cancelled_label_he|kind_review_status|absence_kind|needs_review|sick|other|ממתין לאישור|אין צורך בפעולה|בוטל)') FROM t_j311 WHERE label = 'mgr_list')
+  AND (SELECT NOT (j::text ~* '(pending_hr_review|cancelled_label_he|kind_review_status|absence_kind|needs_review|sick|other|בהשלמה|אין צורך בפעולה|בוטל)') FROM t_j311 WHERE label = 'mgr_list')
   AND (SELECT count(*) >= 1 FROM t_j311, jsonb_array_elements(j) e WHERE label = 'mgr_list' AND e->>'availability_he' = 'לא זמינה'));
 DELETE FROM hr_absence_entry WHERE user_id = t_u('emp_nr') AND absence_date IN (t_today('emp_nr') + 20, t_today('emp_nr') + 21);   -- fixture removed
 -- J-292 / J-280 B: vp_hr reads leave no row; writes keep logging WITH the kind.
@@ -1082,8 +1087,10 @@ SET ROLE authenticated;
 SELECT t_assert('J-292 fixture: vp_hr writes (put, cancel)', rpc_hr_absence_put('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 30, 'sick')->>'status' = 'saved'
   AND rpc_hr_absence_cancel('00000000-0000-0000-0000-0000000a5c01', t_u('emp_gh'), t_today('emp_gh') + 30)->>'status' = 'cancelled');
 RESET ROLE;
-SELECT t_assert('J-292 / J-280 B / J-274 A: writes still log — put and cancel rows WITH the kind (sick), the employee as subject; still no read row',
-  (SELECT count(*) = 2 AND bool_and(scope->>'absence_kind' = 'sick') FROM access_audit_log
+SELECT t_assert('J-292 / J-280 / J-371 / J-274 A: writes still log — one put row (actor, time, kind_set marker) and one cancel row (actor, time, no marker), neither with the kind, the employee as subject; still no read row',
+  (SELECT count(*) = 2 AND bool_and(NOT (scope ? 'absence_kind') AND NOT (scope::text ~* '(sick|other|reviewed)') AND viewer_id = t_u('vp_u')
+                                    AND CASE action WHEN 'hr_absence_put' THEN scope->>'kind_set' = 'true' ELSE NOT (scope ? 'kind_set') END)
+     FROM access_audit_log
     WHERE action IN ('hr_absence_put', 'hr_absence_cancel') AND subject_user_id = t_u('emp_gh')
       AND (scope->>'absence_date')::date = t_today('emp_gh') + 30)
   AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_read'));
@@ -1527,10 +1534,12 @@ SELECT t_assert('J-279 A: a re-put keeps the entry id and the coordination statu
   AND (SELECT e.entry_id = b.entry_id AND e.absence_kind = 'sick' AND e.cancelled_at IS NULL AND e.coordination_status = 'pending_coordination'
      FROM t_imp_before b, t_imp_entry('imp_a', 206) e WHERE b.d = 206)
   AND (SELECT e.entry_id = b.entry_id AND e.cancelled_at IS NOT NULL AND e.absence_kind = 'sick' FROM t_imp_before b, t_imp_entry('imp_a', 207) e WHERE b.d = 207));
-SELECT t_assert('J-302 A: one WORM audit row per write WITH the kind (put / cancel shape + import_batch_id; the employee is the subject) — 7 put rows, 1 cancel row — plus ONE header row (company, batch, counts, file name + hash; no kind, no person)',
-  (SELECT count(*) = 7 AND bool_and(scope ? 'absence_kind' AND scope->>'absence_kind' IN ('sick', 'other') AND subject_user_id IS NOT NULL AND viewer_id = t_u('vp_u'))
+SELECT t_assert('J-302 A as replaced by J-280 / J-371: one WORM audit row per write WITHOUT the kind (company, date, import_batch_id; puts also kind_set = true; the employee is the subject, the actor is the vp_hr, with a time) — 7 put rows, exactly 1 cancel row — plus ONE header row (company, batch, counts, file name + hash; no kind, no person)',
+  (SELECT count(*) = 7 AND bool_and(NOT (scope ? 'absence_kind') AND NOT (scope ? 'kind_review_status') AND scope->>'kind_set' = 'true' AND created_at IS NOT NULL
+                                    AND NOT (scope::text ~* '(sick|other|needs_review|reviewed)') AND subject_user_id IS NOT NULL AND viewer_id = t_u('vp_u'))
      FROM access_audit_log WHERE action = 'hr_absence_put' AND scope->>'import_batch_id' = (SELECT j->>'batch_id' FROM t_imp WHERE label = 'stage'))
-  AND (SELECT count(*) = 1 AND bool_and(scope->>'absence_kind' = 'sick' AND subject_user_id = t_u('imp_a'))
+  AND (SELECT count(*) = 1 AND bool_and(NOT (scope ? 'absence_kind') AND NOT (scope ? 'kind_set') AND NOT (scope::text ~* '(sick|other|needs_review|reviewed)')
+                                        AND viewer_id = t_u('vp_u') AND created_at IS NOT NULL AND subject_user_id = t_u('imp_a'))
      FROM access_audit_log WHERE action = 'hr_absence_cancel' AND scope->>'import_batch_id' = (SELECT j->>'batch_id' FROM t_imp WHERE label = 'stage'))
   AND (SELECT count(*) = 1 AND bool_and(subject_user_id IS NULL AND scope->>'source_filename' = 'absences_nov.csv' AND scope->>'source_sha256' = repeat('ab', 32)
                                          AND (scope->'counts'->>'put')::int = 7 AND (scope->'counts'->>'cancel')::int = 1 AND (scope->'counts'->>'rows')::int = 23
@@ -1772,3 +1781,15 @@ SELECT t_assert('J-354: a stage refused with HTTP 422 import_too_many_rows or HT
           AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(j) k) = ARRAY['batch_id', 'http_status', 'row_limit', 'rows', 'status']
           FROM t_imp WHERE label = 'stage ok')
   AND (SELECT count(*) = 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'import_batch_id' = (SELECT j->>'batch_id' FROM t_imp WHERE label = 'stage ok')));
+
+-- J-280 / J-371 (Karin 27.11): over the WHOLE run, no WORM row of ANY action holds the absence kind or its review state —
+-- not put, cancel, review, import put / cancel / header / stage, the refused-upload row, the J-352 reader row or the
+-- self-read row. Every HR-absence write row names the actor and the time.
+SELECT t_assert('J-280 / J-371: no access_audit_log row anywhere holds absence_kind / kind_review_status; every hr_absence_put / cancel / kind_set row has the actor and the time; the writes of the run left rows of all paths',
+  NOT EXISTS (SELECT 1 FROM access_audit_log WHERE scope ? 'absence_kind' OR scope ? 'kind_review_status')
+  AND (SELECT count(*) > 0 AND bool_and(viewer_id IS NOT NULL AND created_at IS NOT NULL)
+         FROM access_audit_log WHERE action IN ('hr_absence_put', 'hr_absence_cancel', 'hr_absence_kind_set'))
+  AND (SELECT count(DISTINCT action) = 3 FROM access_audit_log WHERE action IN ('hr_absence_put', 'hr_absence_cancel', 'hr_absence_kind_set'))
+  AND EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_self_read')
+  AND EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_employee_numbers_read')
+  AND EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage'));
