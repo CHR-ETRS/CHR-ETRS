@@ -1741,9 +1741,10 @@ paths:
         via /rpc/rpc_revert_offboarding within 30 days). v1.6.21 J-295 C (Karin 23.11): offboarding always succeeds and
         now returns OffboardResult — terminated_at plus hr_kind_review_pending (count + entries: entry_id, absence_date,
         kind_review_status, reviewable) of the employee''s HR absence days whose kind vp_hr has not set yet; never
-        the kind or a name. With a FUTURE p_terminated_at the employee stays active until then (J-297 B), so vp_hr
-        can still set the kind (reviewable = true); an immediate end makes them unreviewable (reviewable = false,
-        J-310). Callable by service_role only (no client grant, J-309); vp_hr sees the same days in
+        the kind or a name. J-313 (Karin 27.11): an end date is active THROUGH its whole last day — until just before 00:00 of
+        the next day in the company time zone (the end timestamp is read as its company-local date). So with a future
+        or an immediate p_terminated_at vp_hr can still set the kind that day (reviewable = true); from 00:00 of the
+        next company-local day the days are unreviewable (reviewable = false, J-310; earlier builds: at the end instant). Callable by service_role only (no client grant, J-309); vp_hr sees the same days in
         /rpc/rpc_hr_absence_list_company (p_needs_review_only, reviewable).'
       requestBody:
         required: true
@@ -3499,7 +3500,7 @@ paths:
       description: 'v1.6.21 J-336 B (Karin 25.11). The dedicated reader — numbers are NOT added to any other list. Only
         an active vp_hr of p_company_id (else 403 insufficient_privilege). Returns full name, e-mail and employee
         number (null = not set) of every active employee of the company (employee profile; an end date in the future
-        still counts — J-297 B). No user id. Every successful read is logged (J-352, Karin 27.11): action
+        still counts, through its whole last company-local day — J-297 B / J-313). No user id. Every successful read is logged (J-352, Karin 27.11): action
         hr_employee_numbers_read, who and when, company only — never the numbers.'
       requestBody:
         required: true
@@ -3634,7 +3635,7 @@ paths:
         to the HR rows and nothing to the audit (staging state only); repeatable. Match (J-300 B): employee_number in
         the company; only when it is empty, e-mail (case-insensitive). Row codes: invalid_action, invalid_date,
         invalid_kind, missing_key, unmatched (opaque — another company, unknown, ambiguous, no employee profile:
-        J-303 B), leaver (this company''s own leaver only; an end date in the future is still active — J-297 B),
+        J-303 B), leaver (this company''s own leaver only; an end date is active through its whole last company-local day — J-297 B, J-313),
         no_entry (cancel of a day with no stored row; nothing is cancelled implicitly — J-305 C), duplicate and
         conflict (J-306 C: the LAST file row of an employee + day wins; conflicts list both rows with their file
         values). Any date (J-304 A). Only an active vp_hr of the batch''s company: not vp_hr of p_company_id → 403
@@ -3827,8 +3828,8 @@ paths:
         → the same 403 access_denied (no existence hint, no hint that she left); p_absence_kind sick | other
         (else 400 invalid_absence_kind — a kind is never guessed). The row becomes reviewed; coordination and
         cancellation are unchanged; the manager list is unchanged. Audited as hr_absence_kind_set WITH the kind
-        (J-280 B), the employee as the subject. Active employees only (J-294 C replaced "any row"); J-297 B: an employee with a FUTURE end date is
-        still active until that instant (at the end instant she has left).'
+        (J-280 B), the employee as the subject. Active employees only (J-294 C replaced "any row"); J-297 B / J-313: an employee is active through the whole last day of her end date
+        (until 00:00 of the next day in the company time zone; the end timestamp is read as its company-local date).'
       requestBody:
         required: true
         content:

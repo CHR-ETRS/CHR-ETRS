@@ -1094,16 +1094,52 @@ SELECT t_assert('J-156 A / J-267 C: the manager list is still uniform — every 
   AND NOT EXISTS (SELECT 1 FROM t_mgr14 WHERE j->>'display_pseudonym' = (SELECT display_pseudonym FROM users WHERE user_id = t_u('emp_lv'))));
 
 -- ============ 15. J-295 C / J-296 B / J-297 B (Karin 23.11) · offboarding pending list, reviewable, future end date ============
--- J-297 B boundary: employed while now < employment_ended_at; AT the end instant she has left (strict).
-SELECT t_assert('J-297 B boundary: no end → employed; end in the future → employed; end == now → LEFT (strict <); end in the past → left',
-  fn_hr_employed_at(NULL, now()) AND fn_hr_employed_at(now() + interval '1 second', now())
-  AND NOT fn_hr_employed_at(now(), now()) AND NOT fn_hr_employed_at(now() - interval '1 second', now()));
--- Fixtures (team Gov, no manager): emp_fu leaves in 3 days, emp_pa left a second ago; each has one needs_review day.
+-- J-313 (Karin 27.11, replaces the strict J-297 B instant rule): an end date is active THROUGH its whole last day —
+-- until just before 00:00 of the next day in the COMPANY's time zone. The end timestamp is read as the company-local
+-- date of that instant. Explicit instants, three non-UTC and one UTC zone, DST days; no company zone → the old strict rule.
+INSERT INTO companies (company_id, company_name, country, week_start_dow, last_workday_dow, timezone)
+VALUES ('00000000-0000-0000-0000-0000000a5c03', 'ZoneLA', 'IL', 0, 4, 'America/Los_Angeles'),
+       ('00000000-0000-0000-0000-0000000a5c04', 'ZoneUTC', 'IL', 0, 4, 'UTC');
+CREATE OR REPLACE FUNCTION t_act(p_end text, p_at text, p_company text) RETURNS boolean LANGUAGE sql AS $$
+  SELECT fn_active_through_end_day(p_end::timestamptz, p_at::timestamptz, p_company::uuid) $$;
+SELECT t_assert('J-313: Asia/Jerusalem company — end 31.12 10:00 local: active at 00:00 and 23:59:59 of the last day, INACTIVE at 00:00:00 the next day; no end → active; the same end given as a UTC instant gives the same local day',
+  t_act('2026-12-31 10:00+02', '2026-12-31 00:00:00+02', '00000000-0000-0000-0000-0000000a5c01')
+  AND t_act('2026-12-31 10:00+02', '2026-12-31 23:59:59+02', '00000000-0000-0000-0000-0000000a5c01')
+  AND NOT t_act('2026-12-31 10:00+02', '2027-01-01 00:00:00+02', '00000000-0000-0000-0000-0000000a5c01')
+  AND NOT t_act('2026-12-31 10:00+02', '2027-01-01 00:00:01+02', '00000000-0000-0000-0000-0000000a5c01')
+  AND fn_active_through_end_day(NULL, now(), '00000000-0000-0000-0000-0000000a5c01')
+  AND t_act('2026-12-31 08:00+00', '2026-12-31 21:59:59+00', '00000000-0000-0000-0000-0000000a5c01')
+  AND NOT t_act('2026-12-31 08:00+00', '2026-12-31 22:00:00+00', '00000000-0000-0000-0000-0000000a5c01'));
+SELECT t_assert('J-313: America/Los_Angeles company — active at 23:59:59 local on the last day, inactive at 00:00:00 local next day; an instant that is already 1.1 in UTC but still 31.12 in Los Angeles is ACTIVE there and inactive for a UTC company (the company zone decides, not UTC)',
+  t_act('2026-12-31 08:00-08', '2026-12-31 23:59:59-08', '00000000-0000-0000-0000-0000000a5c03')
+  AND NOT t_act('2026-12-31 08:00-08', '2027-01-01 00:00:00-08', '00000000-0000-0000-0000-0000000a5c03')
+  AND t_act('2026-12-31 08:00-08', '2027-01-01 03:00:00+00', '00000000-0000-0000-0000-0000000a5c03')
+  AND NOT t_act('2026-12-31 08:00+00', '2027-01-01 03:00:00+00', '00000000-0000-0000-0000-0000000a5c04')
+  AND t_act('2026-12-31 08:00+00', '2026-12-31 23:59:59+00', '00000000-0000-0000-0000-0000000a5c04')
+  AND NOT t_act('2026-12-31 08:00+00', '2027-01-01 00:00:00+00', '00000000-0000-0000-0000-0000000a5c04'));
+SELECT t_assert('J-313: DST days keep the rule — Jerusalem spring forward (27.03.2026), Jerusalem fall back (25.10.2026), Los Angeles spring forward (08.03.2026): last-day 23:59:59 active, 00:00:00 next day inactive',
+  t_act('2026-03-27 12:00+03', '2026-03-27 23:59:59+03', '00000000-0000-0000-0000-0000000a5c01')
+  AND NOT t_act('2026-03-27 12:00+03', '2026-03-28 00:00:00+03', '00000000-0000-0000-0000-0000000a5c01')
+  AND t_act('2026-10-25 12:00+02', '2026-10-25 23:59:59+02', '00000000-0000-0000-0000-0000000a5c01')
+  AND NOT t_act('2026-10-25 12:00+02', '2026-10-26 00:00:00+02', '00000000-0000-0000-0000-0000000a5c01')
+  AND t_act('2026-03-08 12:00-07', '2026-03-08 23:59:59-07', '00000000-0000-0000-0000-0000000a5c03')
+  AND NOT t_act('2026-03-08 12:00-07', '2026-03-09 00:00:00-07', '00000000-0000-0000-0000-0000000a5c03'));
+SELECT t_assert('J-313: no company zone at all (unknown company) → no zone is invented (not UTC): the previous strict instant rule applies',
+  t_act('2026-12-31 08:00+00', '2026-12-31 07:59:59+00', '00000000-0000-0000-0000-0000000a5cff')
+  AND NOT t_act('2026-12-31 08:00+00', '2026-12-31 08:00:00+00', '00000000-0000-0000-0000-0000000a5cff'));
+-- Fixtures (team Gov, no manager): emp_fu leaves in 3 days, emp_pa left two days ago; each has one needs_review day.
 SELECT count(t_mk(k, 'Gov', 'employee', 'employee')) = 2 AS j297_ok FROM unnest(ARRAY['emp_fu', 'emp_pa']) k;
 INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind, kind_review_status)
 SELECT t_u(k), '00000000-0000-0000-0000-0000000a5c01', CURRENT_DATE - 50, NULL, 'needs_review' FROM unnest(ARRAY['emp_fu', 'emp_pa']) k;
 UPDATE users SET employment_ended_at = clock_timestamp() + interval '3 days' WHERE user_id = t_u('emp_fu');
-UPDATE users SET employment_ended_at = clock_timestamp() - interval '1 second' WHERE user_id = t_u('emp_pa');
+UPDATE users SET employment_ended_at = clock_timestamp() - interval '2 days' WHERE user_id = t_u('emp_pa');
+-- J-313 on the real clock: an employee whose end is RIGHT NOW (earlier today, company-local) is still active today —
+-- the HR-absence target check accepts her; she leaves only at 00:00 of the next company-local day.
+SELECT count(t_mk('emp_td', 'Gov', 'employee', 'employee')) = 1 AS j313_ok;
+UPDATE users SET employment_ended_at = clock_timestamp() WHERE user_id = t_u('emp_td');
+SELECT t_assert('J-313: an employee whose end timestamp is now (same company-local day) is still active — the HR-absence target check accepts her; one whose end was two days ago is refused 403',
+  t_err_sig(format('SELECT fn_assert_hr_absence_target(%L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_u('emp_td')))->>'no_error' = 'true'
+  AND (SELECT t_err_sig(format('SELECT fn_assert_hr_absence_target(%L, %L)', '00000000-0000-0000-0000-0000000a5c01', t_u('emp_pa')))->>'message') = 'access_denied');
 CREATE TEMP TABLE t_j297 (label text, j jsonb);
 GRANT SELECT, INSERT ON t_j297 TO authenticated;
 -- Test helper: the entry id of a fixture's day 50 days ago, read as the superuser (no client table read since J-291 B).
@@ -1163,8 +1199,8 @@ SELECT t_assert('J-295 C / J-297 B: until the future end date vp_hr sets the kin
   rpc_hr_absence_set_kind('00000000-0000-0000-0000-0000000a5c01',
     ((SELECT j FROM t_j295 WHERE label = 'future')->'hr_kind_review_pending'->'entries'->0->>'entry_id')::uuid, 'sick')->>'status' = 'reviewed');
 RESET ROLE;
-SELECT t_assert('J-295 C / J-310: an IMMEDIATE offboarding still succeeds; its pending day is listed with reviewable = false (vp_hr can no longer set it); no pending days → count 0, empty list',
-  (SELECT (j->'hr_kind_review_pending'->>'count')::int = 1 AND NOT (j->'hr_kind_review_pending'->'entries'->0->>'reviewable')::boolean
+SELECT t_assert('J-295 C / J-310: an IMMEDIATE offboarding still succeeds; J-313: its pending day is listed with reviewable = TRUE (she is active through the whole last company-local day, so vp_hr can still set it today); no pending days → count 0, empty list',
+  (SELECT (j->'hr_kind_review_pending'->>'count')::int = 1 AND (j->'hr_kind_review_pending'->'entries'->0->>'reviewable')::boolean
      FROM t_j295 WHERE label = 'immediate')
   AND (SELECT (j->'hr_kind_review_pending'->>'count')::int = 0 AND j->'hr_kind_review_pending'->'entries' = '[]'::jsonb
      FROM t_j295 WHERE label = 'none'));
@@ -1173,7 +1209,8 @@ SELECT t_assert('J-295 C: nothing reaches anyone else — only service_role may 
   AND NOT has_function_privilege('anon', 'rpc_offboard_employee(uuid, timestamptz)', 'EXECUTE')
   AND has_function_privilege('service_role', 'rpc_offboard_employee(uuid, timestamptz)', 'EXECUTE')
   AND NOT has_function_privilege('authenticated', 'fn_hr_offboarding_pending(uuid)', 'EXECUTE')
-  AND NOT has_function_privilege('authenticated', 'fn_hr_employed_at(timestamptz, timestamptz)', 'EXECUTE')
+  AND NOT has_function_privilege('authenticated', 'fn_active_through_end_day(timestamptz, timestamptz, uuid)', 'EXECUTE')
+  AND to_regproc('fn_hr_employed_at') IS NULL
   AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'employee_offboarded'
                    AND subject_user_id IN (t_u('emp_ob'), t_u('emp_oi')) AND scope::text ~* '(pending|entries|kind|sick)'));
 SELECT t_as(t_u('vp_u'));

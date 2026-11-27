@@ -2110,18 +2110,33 @@ GRANT SELECT ON TABLE manager_unavailability_v, early_leave_manager_v, approved_
 -- approved exception to the no-person-id rule, vp_hr of the same company only). Other outputs hold no person id.
 -- ---------------------------------------------------------------------------
 
--- J-297 B (Karin 23.11): the ONE "still employed at p_at" rule of the HR-absence RPCs — no end of employment, or an
--- end that is still in the FUTURE. Boundary: AT the end instant itself the employee has left (p_at < p_ended,
--- strict). Used only by the HR-absence checks (fn_assert_hr_absence_target, fn_hr_kind_settable); other parts of the
--- system keep "employment_ended_at IS NULL" (J-297 change list in ADR_GAPS). Pure, internal.
-CREATE OR REPLACE FUNCTION fn_hr_employed_at(p_ended timestamptz, p_at timestamptz)
+-- J-313 (Karin 27.11; replaces the strict J-297 B instant rule): the ONE "still employed at p_at" rule of the
+-- HR-absence RPCs. An end date is active THROUGH its whole last day: active until just before 00:00 at the start of the
+-- following day, in the company's time zone. The end timestamp is read as a date — the company-local calendar date of
+-- the instant p_end (the same reading as fn_exit_redemption_deadline) — so p_at is employed while its company-local
+-- date <= that date: 23:59:59 on the last day is active, 00:00:00 the next day is not. No end → employed. The zone is
+-- the company's: the agent setting company_timezone, else companies.timezone (same precedence as fn_agent_company_tz,
+-- but NO default zone is invented: with no zone at all — a legacy company not yet backfilled — the previous strict rule
+-- "p_at < p_end" is kept, never UTC). Used only by the HR-absence checks (fn_assert_hr_absence_target,
+-- fn_hr_kind_settable, the import match, rpc_hr_employee_numbers); other parts of the system keep
+-- "employment_ended_at IS NULL" (J-312). Stable (reads the zone), internal.
+DROP FUNCTION IF EXISTS fn_active_through_end_day(timestamptz, timestamptz, uuid);
+CREATE OR REPLACE FUNCTION fn_active_through_end_day(p_end timestamptz, p_at timestamptz, p_company uuid)
 RETURNS boolean
 LANGUAGE sql
-IMMUTABLE
-AS $$ SELECT p_ended IS NULL OR p_at < p_ended $$;
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT p_end IS NULL
+      OR CASE WHEN z.tz IS NULL THEN p_at < p_end
+              ELSE (p_at AT TIME ZONE z.tz)::date <= (p_end AT TIME ZONE z.tz)::date END
+    FROM (SELECT COALESCE(fn_agent_setting_text(p_company, 'company_timezone'),
+                          (SELECT c.timezone FROM companies c WHERE c.company_id = p_company)) AS tz) z
+$$;
 
 -- Internal: the target must be an active employee (with an employee profile) of the company — J-297 B: a future end
--- date still counts as active until that instant; else 403 access_denied (no existence hint). Returns nothing.
+-- date still counts as active through its whole last day (J-313); else 403 access_denied (no existence hint). Returns nothing.
 CREATE OR REPLACE FUNCTION fn_assert_hr_absence_target(p_company uuid, p_user uuid)
 RETURNS void
 LANGUAGE plpgsql
@@ -2132,7 +2147,7 @@ AS $$
 BEGIN
   IF p_user IS NULL OR NOT EXISTS (SELECT 1 FROM users u
                                     WHERE u.user_id = p_user AND u.company_id = p_company
-                                      AND fn_hr_employed_at(u.employment_ended_at, clock_timestamp())   -- J-297 B
+                                      AND fn_active_through_end_day(u.employment_ended_at, clock_timestamp(), p_company)   -- J-313
                                       AND u.has_employee_profile) THEN
     PERFORM fn_raise_business('access_denied');
   END IF;
@@ -2224,7 +2239,7 @@ $$;
 
 -- J-294 C GUARD (Karin 23.11, chosen wording: active only) — the ONE rule deciding which HR rows vp_hr may set the
 -- kind of: a row of p_company whose employee is still ACTIVE (employee profile; J-297 B: no employment end or one
--- still in the future — fn_hr_employed_at). false for a
+-- still in the future — J-313: active through its whole last company-local day, fn_active_through_end_day). false for a
 -- leaver's row, another company's row or an unknown id (the caller turns every false into the same neutral 403).
 -- To switch rules (e.g. ADR option B "needs_review rows only"), change only this function. Internal, no grant.
 CREATE OR REPLACE FUNCTION fn_hr_kind_settable(p_company uuid, p_entry uuid)
@@ -2236,7 +2251,7 @@ SET search_path = pg_catalog, public
 AS $$
   SELECT EXISTS (SELECT 1 FROM hr_absence_entry h JOIN users u ON u.user_id = h.user_id
                   WHERE h.entry_id = p_entry AND h.company_id = p_company AND u.company_id = p_company
-                    AND fn_hr_employed_at(u.employment_ended_at, clock_timestamp()) AND u.has_employee_profile)
+                    AND fn_active_through_end_day(u.employment_ended_at, clock_timestamp(), p_company) AND u.has_employee_profile)
 $$;
 
 -- The one row source of every HR-absence reader: the employee's user id (INTERNAL — only the J-293 company reader
@@ -2379,14 +2394,17 @@ BEGIN
 END;
 $$;
 
+-- J-313: the strict instant helper of J-297 B is gone (every caller above now uses fn_active_through_end_day).
+DROP FUNCTION IF EXISTS fn_hr_employed_at(timestamptz, timestamptz);
+
 REVOKE ALL ON FUNCTION fn_assert_hr_absence_target(uuid, uuid), fn_hr_absence_kind_valid(text),
   fn_hr_absence_audit_scope(hr_absence_entry), fn_hr_absence_rows(uuid, uuid, boolean), fn_hr_kind_settable(uuid, uuid),
-  fn_hr_employed_at(timestamptz, timestamptz), fn_hr_offboarding_pending(uuid),
+  fn_active_through_end_day(timestamptz, timestamptz, uuid), fn_hr_offboarding_pending(uuid),
   rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_absence_cancel(uuid, uuid, date),
   rpc_hr_absence_list(uuid, uuid), rpc_hr_absence_list_company(uuid, boolean),
   rpc_hr_absence_set_kind(uuid, uuid, text), rpc_hr_absence_my_list() FROM PUBLIC, anon;
 REVOKE ALL ON FUNCTION fn_hr_absence_audit_scope(hr_absence_entry), fn_hr_absence_rows(uuid, uuid, boolean),
-  fn_hr_kind_settable(uuid, uuid), fn_hr_employed_at(timestamptz, timestamptz), fn_hr_offboarding_pending(uuid)
+  fn_hr_kind_settable(uuid, uuid), fn_active_through_end_day(timestamptz, timestamptz, uuid), fn_hr_offboarding_pending(uuid)
   FROM authenticated;
 GRANT EXECUTE ON FUNCTION rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_absence_cancel(uuid, uuid, date),
   rpc_hr_absence_list(uuid, uuid), rpc_hr_absence_list_company(uuid, boolean),
@@ -2401,7 +2419,7 @@ GRANT EXECUTE ON FUNCTION rpc_hr_absence_put(uuid, uuid, date, text), rpc_hr_abs
 --     to CSV outside the DB. The client sends the parsed rows as a jsonb array (file order = row number).
 --   * Match (J-300 B): employee_number in the company; only when it is empty, e-mail (case-insensitive).
 --     Report codes (J-303 B): 'leaver' only for this company's own leavers (J-294 C / J-297 B,
---     fn_hr_employed_at); anything else that does not match an active employee → opaque 'unmatched'.
+--     fn_active_through_end_day); anything else that does not match an active employee → opaque 'unmatched'.
 --   * Same employee + day twice (J-306 C): the LAST file row wins; the others are 'duplicate' (same values,
 --     collapsed) or 'superseded' with code 'conflict' — the report shows both rows with their values.
 --   * Explicit action per row (J-305 C) — nothing is cancelled implicitly; any date (J-304 A / J-273 A).
@@ -2523,7 +2541,7 @@ BEGIN
   SELECT u.* INTO v_user FROM users u WHERE u.user_id = v_id;
   IF v_id IS NULL OR NOT v_user.has_employee_profile THEN
     RETURN QUERY SELECT NULL::uuid, 'unmatched'::text;
-  ELSIF NOT fn_hr_employed_at(v_user.employment_ended_at, clock_timestamp()) THEN
+  ELSIF NOT fn_active_through_end_day(v_user.employment_ended_at, clock_timestamp(), p_company) THEN
     RETURN QUERY SELECT NULL::uuid, 'leaver'::text;
   ELSE
     RETURN QUERY SELECT v_user.user_id, NULL::text;
@@ -3048,7 +3066,7 @@ BEGIN
     SELECT u.full_name::text, u.email::text, u.employee_number
       FROM users u
      WHERE u.company_id = p_company_id AND u.has_employee_profile
-       AND fn_hr_employed_at(u.employment_ended_at, clock_timestamp())
+       AND fn_active_through_end_day(u.employment_ended_at, clock_timestamp(), p_company_id)
      ORDER BY u.full_name, u.email;
 END;
 $$;
