@@ -1019,9 +1019,12 @@ SELECT t_assert('J-291 B: the empty read is logged too; anon cannot call the sel
 -- no label text. Another employee sees only her own rows (flag false); the manager's own self-read shows only her own
 -- rows and the manager's uniform list of the team does not change shape (no review flag, no kind).
 CREATE TEMP TABLE t_j311 (label text, j jsonb);
--- Fixture (superuser, as the upgrade leaves a row from before the kind column): emp_nr gets a day WITHOUT a kind, needs_review.
+-- Fixture (superuser, as the upgrade leaves a row from before the kind column): emp_nr gets a day WITHOUT a kind, needs_review,
+-- and a second such day that is CANCELLED (J-368).
 INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind, kind_review_status)
 VALUES (t_u('emp_nr'), '00000000-0000-0000-0000-0000000a5c01', t_today('emp_nr') + 20, NULL, 'needs_review');
+INSERT INTO hr_absence_entry (user_id, company_id, absence_date, absence_kind, kind_review_status, cancelled_at)
+VALUES (t_u('emp_nr'), '00000000-0000-0000-0000-0000000a5c01', t_today('emp_nr') + 21, NULL, 'needs_review', clock_timestamp());
 GRANT SELECT, INSERT ON t_j311 TO authenticated;
 SELECT t_as(t_u('emp_nr'));
 SET ROLE authenticated;
@@ -1029,23 +1032,42 @@ INSERT INTO t_j311 SELECT 'emp_nr', jsonb_agg(to_jsonb(r)) FROM rpc_hr_absence_m
 SELECT t_as(t_u('emp_mx'));
 INSERT INTO t_j311 SELECT 'emp_mx', jsonb_agg(to_jsonb(r)) FROM rpc_hr_absence_my_list() r;
 SELECT t_as(t_u('mgr_u'));
+SELECT t_as(t_u('vp_u'));
+INSERT INTO t_j311 SELECT 'vp_queue', jsonb_agg(to_jsonb(r)) FROM rpc_hr_absence_list_company('00000000-0000-0000-0000-0000000a5c01', true) r;
+SELECT t_as(t_u('mgr_u'));
 INSERT INTO t_j311 SELECT 'mgr_self', COALESCE(jsonb_agg(to_jsonb(r)), '[]'::jsonb) FROM rpc_hr_absence_my_list() r;
 INSERT INTO t_j311 SELECT 'mgr_list', jsonb_agg(to_jsonb(v) ORDER BY v.entry_id) FROM manager_unavailability_v v;
 RESET ROLE;
-SELECT t_assert('J-311: the employee sees her needs_review row with pending_hr_review = true (kind null) and exactly the 7 fields entry_id, absence_date, absence_kind, kind_review_status, coordination_status, cancelled, pending_hr_review — no reason, note, reviewer, label or person field',
+SELECT t_assert('J-311: the employee sees her needs_review row with pending_hr_review = true (kind null) and exactly the 10 fields entry_id, absence_date, absence_kind, kind_review_status, coordination_status, cancelled, pending_hr_review, pending_hr_review_label_he, pending_hr_review_explain_he, cancelled_label_he — no reason, note, reviewer or person field; J-367: on the pending row the two texts are EXACTLY Karin''s (ממתין לאישור / רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך בפעולה מצידך.) and on every reviewed row both are NULL',
   (SELECT jsonb_array_length(j) >= 1 AND bool_and((SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(e) k)
-        = ARRAY['absence_date', 'absence_kind', 'cancelled', 'coordination_status', 'entry_id', 'kind_review_status', 'pending_hr_review'])
-          AND bool_and((e->>'pending_hr_review')::boolean = (e->>'kind_review_status' = 'needs_review'))
-          AND count(*) FILTER (WHERE (e->>'pending_hr_review')::boolean AND e->'absence_kind' = 'null'::jsonb) = 1
-          AND NOT (j::text ~* '(reason|note|reviewer|reviewed_by|label|user_id|full_name|pseudonym|_he)')
+        = ARRAY['absence_date', 'absence_kind', 'cancelled', 'cancelled_label_he', 'coordination_status', 'entry_id', 'kind_review_status', 'pending_hr_review', 'pending_hr_review_explain_he', 'pending_hr_review_label_he'])
+          AND bool_and(CASE WHEN (e->>'pending_hr_review')::boolean
+                            THEN e->>'pending_hr_review_label_he' = 'ממתין לאישור'
+                             AND e->>'pending_hr_review_explain_he' = 'רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך בפעולה מצידך.'
+                            ELSE e->'pending_hr_review_label_he' = 'null'::jsonb AND e->'pending_hr_review_explain_he' = 'null'::jsonb END)
+          AND count(*) FILTER (WHERE NOT (e->>'pending_hr_review')::boolean) >= 1
+          AND bool_and((e->>'pending_hr_review')::boolean = (e->>'kind_review_status' = 'needs_review' AND NOT (e->>'cancelled')::boolean))
+          AND count(*) FILTER (WHERE (e->>'pending_hr_review')::boolean AND e->'absence_kind' = 'null'::jsonb AND e->'cancelled_label_he' = 'null'::jsonb) = 1
+          AND NOT (j::text ~* '(reason|note|reviewer|reviewed_by|user_id|full_name|pseudonym)')
      FROM t_j311, jsonb_array_elements(j) e WHERE label = 'emp_nr' GROUP BY j));
+SELECT t_assert('J-368: a CANCELLED day of hers that is still needs_review shows cancelled_label_he = בוטל, pending_hr_review = false and NULL label and explanation; a non-cancelled row has cancelled_label_he NULL; the vp_hr review queue still lists the cancelled row as needing review (nothing deleted, shape unchanged: no cancelled_label_he, no pending texts)',
+  (SELECT count(*) = 1 AND bool_and(e->>'cancelled_label_he' = 'בוטל' AND NOT (e->>'pending_hr_review')::boolean AND (e->>'cancelled')::boolean
+                                    AND e->>'kind_review_status' = 'needs_review'
+                                    AND e->'pending_hr_review_label_he' = 'null'::jsonb AND e->'pending_hr_review_explain_he' = 'null'::jsonb)
+     FROM t_j311, jsonb_array_elements(j) e WHERE label = 'emp_nr' AND (e->>'cancelled')::boolean)
+  AND (SELECT count(*) >= 1 AND bool_and(NOT (e->>'cancelled')::boolean AND e->'cancelled_label_he' = 'null'::jsonb)
+     FROM t_j311, jsonb_array_elements(j) e WHERE label = 'emp_nr' AND NOT (e->>'cancelled')::boolean)
+  AND (SELECT count(*) = 1 FROM t_j311, jsonb_array_elements(j) e
+        WHERE label = 'vp_queue' AND (e->>'cancelled')::boolean AND e->>'kind_review_status' = 'needs_review'
+          AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(e) k) @> ARRAY['reviewable']
+          AND NOT (e::text ~* '(cancelled_label_he|pending_hr_review|בוטל)')));
 SELECT t_assert('J-311: another employee sees only her own rows with pending_hr_review = false (never emp_nr''s pending day); a manager''s own self-read holds only her own rows; the manager''s team list keeps its uniform shape with no kind, review state or pending flag, and emp_nr''s day there is still just "לא זמינה"',
-  (SELECT count(*) >= 1 AND bool_and(NOT (e->>'pending_hr_review')::boolean) FROM t_j311, jsonb_array_elements(j) e WHERE label = 'emp_mx')
+  (SELECT count(*) >= 1 AND bool_and(NOT (e->>'pending_hr_review')::boolean AND e->'pending_hr_review_label_he' = 'null'::jsonb AND e->'pending_hr_review_explain_he' = 'null'::jsonb) FROM t_j311, jsonb_array_elements(j) e WHERE label = 'emp_mx')
   AND (SELECT NOT EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE (e->>'pending_hr_review')::boolean) FROM t_j311 WHERE label = 'emp_mx')
   AND (SELECT jsonb_array_length(j) = 0 FROM t_j311 WHERE label = 'mgr_self')
-  AND (SELECT NOT (j::text ~* '(pending_hr_review|kind_review_status|absence_kind|needs_review|sick|other)') FROM t_j311 WHERE label = 'mgr_list')
+  AND (SELECT NOT (j::text ~* '(pending_hr_review|cancelled_label_he|kind_review_status|absence_kind|needs_review|sick|other|ממתין לאישור|אין צורך בפעולה|בוטל)') FROM t_j311 WHERE label = 'mgr_list')
   AND (SELECT count(*) >= 1 FROM t_j311, jsonb_array_elements(j) e WHERE label = 'mgr_list' AND e->>'availability_he' = 'לא זמינה'));
-DELETE FROM hr_absence_entry WHERE user_id = t_u('emp_nr') AND absence_date = t_today('emp_nr') + 20;   -- fixture removed
+DELETE FROM hr_absence_entry WHERE user_id = t_u('emp_nr') AND absence_date IN (t_today('emp_nr') + 20, t_today('emp_nr') + 21);   -- fixture removed
 -- J-292 / J-280 B: vp_hr reads leave no row; writes keep logging WITH the kind.
 CREATE TEMP TABLE t_j292 AS SELECT count(*) AS n FROM access_audit_log;
 GRANT SELECT ON t_j292 TO authenticated;

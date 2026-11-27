@@ -2375,13 +2375,41 @@ $$;
 -- company in the scope, NO kind, no count). Same row shape as rpc_hr_absence_list without the vp_hr action flag
 -- `reviewable` (J-311). J-311 (Karin 27.11): + pending_hr_review — a neutral boolean, true while the row still waits for
 -- HR to set its kind (kind_review_status = 'needs_review', e.g. a day entered before the kind column existed), so the
--- employee sees THAT it waits. Nothing else: no reason, no HR note, no reviewer, no label text (the wording is open,
--- ADR_GAPS J-367). Her own rows only; the manager's uniform list and the vp_hr readers do not get it. Not signed in →
+-- employee sees THAT it waits (a cancelled day never counts as waiting, J-368). J-367 (Karin 27.11): while it is true the row also carries Karin's two texts,
+-- pending_hr_review_label_he and pending_hr_review_explain_he (letter for letter, from the two label functions below);
+-- both are NULL when the flag is false. J-368 (Karin 27.11): a CANCELLED day shows cancelled_label_he = 'בוטל' and
+-- pending_hr_review = false (so no label and no explanation) even while its kind_review_status is still needs_review;
+-- the vp_hr readers do not change (the row stays in the review queue until HR closes it; nothing is deleted).
+-- Nothing else: no reason, no HR note, no reviewer. Her own rows only; the manager's uniform list and the vp_hr readers do not get it. Not signed in →
 -- 403 access_denied.
+-- J-367 (Karin 27.11): the two texts of a row that waits for HR review, one place each (the label_he pattern; masculine
+-- form as decided, letter for letter). Internal — read only through rpc_hr_absence_my_list.
+CREATE OR REPLACE FUNCTION fn_hr_pending_review_label_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'ממתין לאישור'::text $$;
+
+CREATE OR REPLACE FUNCTION fn_hr_pending_review_explain_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך בפעולה מצידך.'::text $$;
+-- J-368 (Karin 27.11): the status text of a cancelled day on the self-read (the existing state is the boolean `cancelled`;
+-- it had no label, so this one follows the same label_he pattern).
+CREATE OR REPLACE FUNCTION fn_hr_cancelled_label_he()
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT 'בוטל'::text $$;
+REVOKE ALL ON FUNCTION fn_hr_pending_review_label_he(), fn_hr_pending_review_explain_he(), fn_hr_cancelled_label_he()
+  FROM PUBLIC, anon, authenticated;
+
 DROP FUNCTION IF EXISTS rpc_hr_absence_my_list();
 CREATE OR REPLACE FUNCTION rpc_hr_absence_my_list()
 RETURNS TABLE (entry_id uuid, absence_date date, absence_kind text, kind_review_status text,
-               coordination_status text, cancelled boolean, pending_hr_review boolean)
+               coordination_status text, cancelled boolean, pending_hr_review boolean,
+               pending_hr_review_label_he text, pending_hr_review_explain_he text, cancelled_label_he text)
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
@@ -2396,7 +2424,10 @@ BEGIN
   END IF;
   PERFORM fn_audit_view('hr_absence_self_read', jsonb_build_object('company_id', v_company), v_me);
   RETURN QUERY SELECT r.entry_id, r.absence_date, r.absence_kind, r.kind_review_status, r.coordination_status, r.cancelled,
-                      r.kind_review_status = 'needs_review'
+                      r.kind_review_status = 'needs_review' AND NOT r.cancelled,
+                      CASE WHEN r.kind_review_status = 'needs_review' AND NOT r.cancelled THEN fn_hr_pending_review_label_he() END,
+                      CASE WHEN r.kind_review_status = 'needs_review' AND NOT r.cancelled THEN fn_hr_pending_review_explain_he() END,
+                      CASE WHEN r.cancelled THEN fn_hr_cancelled_label_he() END
                  FROM fn_hr_absence_rows(v_company, v_me, false) r;
 END;
 $$;

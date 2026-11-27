@@ -3803,8 +3803,12 @@ paths:
         access_denied.
         J-311 (Karin 27.11): each row also carries pending_hr_review — true while the row still waits for HR to set
         its kind (kind_review_status needs_review; absence_kind is then null). A neutral flag only: no reason, no HR
-        note, no reviewer, no label text (wording open, ADR_GAPS J-367). Her own rows only; the manager list and the
-        vp_hr readers do not carry it.'
+        note, no reviewer. J-367 (Karin 27.11): while it is true the row also carries pending_hr_review_label_he
+        (''ממתין לאישור'') and pending_hr_review_explain_he (''רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך
+        בפעולה מצידך.''); both are null when the flag is false. Her own rows only; the manager list and the vp_hr readers
+        do not carry them. J-368 (Karin 27.11): a CANCELLED day has pending_hr_review = false (label and explanation null)
+        even if its kind_review_status is still needs_review, and carries cancelled_label_he (''בוטל''); the vp_hr
+        readers are unchanged (the row stays in the review queue until HR closes it).'
       requestBody:
         required: false
         content:
@@ -5916,17 +5920,41 @@ components:
                 $ref: '#/components/schemas/HrAbsenceImportFileRow'
     HrAbsenceSelfRow:
       type: object
-      description: 'J-311 (Karin 27.11) — HrAbsenceRow + pending_hr_review for the employee''s OWN read: true while the row
-        waits for HR to set its kind (same fact as kind_review_status = needs_review, as a neutral flag). No reason, no HR
-        note, no reviewer identity.'
+      description: 'J-311 / J-367 (Karin 27.11) — HrAbsenceRow + pending_hr_review for the employee''s OWN read: true while
+        the row waits for HR to set its kind (same fact as kind_review_status = needs_review, as a neutral flag), with
+        Karin''s two Hebrew texts while true and null otherwise (a cancelled day is never pending and carries the text בוטל, J-368). No reason, no HR note, no reviewer identity.'
       allOf:
       - $ref: '#/components/schemas/HrAbsenceRow'
       - type: object
         required:
         - pending_hr_review
+        - pending_hr_review_label_he
+        - pending_hr_review_explain_he
+        - cancelled_label_he
         properties:
           pending_hr_review:
             type: boolean
+          pending_hr_review_label_he:
+            type: string
+            nullable: true
+            description: 'J-367 — exactly the text below while pending_hr_review is true; null when false'
+            enum:
+            - ממתין לאישור
+            - null
+          pending_hr_review_explain_he:
+            type: string
+            nullable: true
+            description: 'J-367 — exactly the text below while pending_hr_review is true; null when false'
+            enum:
+            - רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך בפעולה מצידך.
+            - null
+          cancelled_label_he:
+            type: string
+            nullable: true
+            description: 'J-368 — exactly this text while cancelled is true; null otherwise'
+            enum:
+            - בוטל
+            - null
     HrAbsenceVpHrRow:
       type: object
       description: 'v1.6.21 J-296 B — HrAbsenceRow + reviewable for the vp_hr readers: true when vp_hr may set the kind
