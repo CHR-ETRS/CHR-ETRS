@@ -2725,10 +2725,37 @@ AS $$
                      WHERE r.batch_id = p_batch AND r.user_id = h.user_id AND r.absence_date = h.absence_date))))
 $$;
 
+-- J-346 (Karin 27.11): warnings — not exceptions — when a given e-mail names nobody in the company. The row is
+-- still processed by number (or unmatched if the number also misses). One entry, code email_unmatched, with the
+-- file rows (row number + cells as typed). No user id. Internal.
+CREATE OR REPLACE FUNCTION fn_hr_import_warnings(p_batch uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT CASE WHEN count(*) FILTER (WHERE r.email IS NOT NULL AND NOT EXISTS (
+                  SELECT 1 FROM users u
+                   WHERE u.company_id = b.company_id AND lower(u.email) = lower(r.email))) = 0
+              THEN '[]'::jsonb
+              ELSE jsonb_build_array(jsonb_build_object(
+                     'code', 'email_unmatched',
+                     'rows', jsonb_agg(fn_hr_import_row_values(r) ORDER BY r.row_no)
+                             FILTER (WHERE r.email IS NOT NULL AND NOT EXISTS (
+                                SELECT 1 FROM users u
+                                 WHERE u.company_id = b.company_id AND lower(u.email) = lower(r.email)))))
+         END
+    FROM hr_absence_import_row r
+    JOIN hr_absence_import_batch b ON b.batch_id = r.batch_id
+   WHERE r.batch_id = p_batch
+$$;
+
 -- The result of a batch for its vp_hr: status, counts, one entry per row (row_no, outcome, code, winner_row_no —
 -- never a user id or name), every conflict with BOTH rows and their file values (J-306 C), and — J-329 C / J-337 B —
 -- the ALERT: requires_attention (true when any row is an exception) and the exceptions with their file rows. The
--- report is the alert: it goes to the vp_hr who ran the dry run; no other channel is used (see ADR_GAPS J-347).
+-- report is the alert: it goes to the vp_hr who ran the dry run; no other channel is used (see ADR_GAPS J-347,
+-- follow-up J-357). J-346: warnings (email_unmatched) sit beside the exceptions and do not set requires_attention.
 CREATE OR REPLACE FUNCTION fn_hr_import_result(p_batch uuid)
 RETURNS jsonb
 LANGUAGE sql
@@ -2750,7 +2777,8 @@ AS $$
                              JOIN hr_absence_import_row w ON w.batch_id = l.batch_id AND w.row_no = l.winner_row_no
                             WHERE l.batch_id = b.batch_id AND l.outcome = 'superseded'), '[]'::jsonb),
     'requires_attention', EXISTS (SELECT 1 FROM hr_absence_import_row r WHERE r.batch_id = b.batch_id AND r.outcome = 'exception'),
-    'exceptions', fn_hr_import_exceptions(b.batch_id))
+    'exceptions', fn_hr_import_exceptions(b.batch_id),
+    'warnings', fn_hr_import_warnings(b.batch_id))
     FROM hr_absence_import_batch b WHERE b.batch_id = p_batch
 $$;
 
@@ -2779,9 +2807,12 @@ $$;
 -- vp_hr stages ONE CSV file (J-307 C) as a new batch: p_rows = the parsed rows in file order (row_no = position,
 -- 1-based), optional source file name and SHA-256 (hex). 400 invalid_import_rows (not a non-empty array of
 -- objects with CSV columns only) / invalid_source_sha256. J-335 A: more rows than the company's
--- hr_import_max_rows → 422 import_too_many_rows; unset (לא הוגדר) = no limit. J-331 B: writes ONE audit row
--- 'hr_absence_import_stage' (who = viewer, when = created_at; company, batch, row count — no kind, no cells).
--- Returns the batch id, status, row count and the row limit in effect (a number or 'לא הוגדר').
+-- hr_import_max_rows → 422 import_too_many_rows; unset (לא הוגדר) = no limit. J-331 B: a successful stage writes
+-- ONE audit row 'hr_absence_import_stage' (who = viewer, when = created_at; company, batch, row count — no kind,
+-- no cells). J-354 (Karin 27.11): a refused stage (400 invalid_import_rows / invalid_source_sha256, or 422
+-- import_too_many_rows) is also logged, with who, when, company and the rejection reason — no file content —
+-- via fn_audit_view_committed so the row survives the caller's rollback. Returns the batch id, status, row
+-- count and the row limit in effect (a number or 'לא הוגדר').
 CREATE OR REPLACE FUNCTION rpc_hr_absence_import_stage(p_company_id uuid, p_rows jsonb,
                                                        p_source_filename text DEFAULT NULL,
                                                        p_source_sha256 text DEFAULT NULL)
@@ -2797,12 +2828,21 @@ DECLARE
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
   IF NOT fn_hr_import_rows_valid(p_rows) THEN
+    PERFORM fn_audit_view_committed('hr_absence_import_stage',
+      jsonb_build_object('company_id', p_company_id, 'reason', 'invalid_import_rows'),
+      auth.uid(), p_company_id);
     PERFORM fn_raise_bad_request('invalid_import_rows');
   END IF;
   IF v_limit IS NOT NULL AND jsonb_array_length(p_rows) > v_limit THEN
+    PERFORM fn_audit_view_committed('hr_absence_import_stage',
+      jsonb_build_object('company_id', p_company_id, 'reason', 'import_too_many_rows'),
+      auth.uid(), p_company_id);
     PERFORM fn_raise_unprocessable('import_too_many_rows');
   END IF;
   IF v_sha IS NOT NULL AND v_sha !~ '^[0-9a-f]{64}$' THEN
+    PERFORM fn_audit_view_committed('hr_absence_import_stage',
+      jsonb_build_object('company_id', p_company_id, 'reason', 'invalid_source_sha256'),
+      auth.uid(), p_company_id);
     PERFORM fn_raise_bad_request('invalid_source_sha256');
   END IF;
   INSERT INTO hr_absence_import_batch (company_id, created_by, source_filename, source_sha256)
@@ -2975,17 +3015,19 @@ $$;
 
 -- J-336 B (Karin 25.11): the dedicated employee-number reader — an active vp_hr of the company reads full name,
 -- e-mail and employee number (NULL = not set yet) of the company's ACTIVE employees (employee profile; a future end
--- date still counts — J-297 B). No user id (no new person-id exception); not added to any other list. Not logged:
--- vp_hr reads follow J-292 (no read audit).
+-- date still counts — J-297 B). No user id (no new person-id exception); not added to any other list.
+-- J-352 (Karin 27.11): EVERY successful read is logged — action hr_employee_numbers_read, who and when,
+-- scope = company only, never the numbers. (Replaces the earlier "not logged / J-292" reading.)
 CREATE OR REPLACE FUNCTION rpc_hr_employee_numbers(p_company_id uuid)
 RETURNS TABLE (full_name text, email text, employee_number text)
 LANGUAGE plpgsql
-STABLE
+VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
+  PERFORM fn_audit_view('hr_employee_numbers_read', jsonb_build_object('company_id', p_company_id));
   RETURN QUERY
     SELECT u.full_name::text, u.email::text, u.employee_number
       FROM users u
@@ -2996,6 +3038,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION fn_hr_import_outcome_of(text), fn_hr_import_exceptions(uuid), fn_hr_import_fingerprint(uuid, uuid),
+  fn_hr_import_warnings(uuid), fn_audit_view_committed(text, jsonb, uuid, uuid),
   rpc_hr_employee_numbers(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION rpc_hr_employee_numbers(uuid) TO authenticated;
 REVOKE ALL ON FUNCTION fn_raise_conflict(text), fn_hr_import_cell(jsonb, text), fn_hr_import_rows_valid(jsonb),

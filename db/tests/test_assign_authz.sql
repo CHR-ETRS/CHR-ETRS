@@ -1364,9 +1364,14 @@ SELECT t_assert('J-306 C: imp_a on the same day 3 times (rows 1–3, by number a
               AND j->'conflicts'->0->'superseded' = jsonb_build_object('row_no', 1, 'employee_number', 'E-100', 'email', NULL, 'absence_date', (CURRENT_DATE - 201)::text, 'absence_kind', 'sick', 'action', 'put')
               AND j->'conflicts'->0->'winner' = jsonb_build_object('row_no', 3, 'employee_number', NULL, 'email', 'IMP_A@AUTHZ.TEST', 'absence_date', (CURRENT_DATE - 201)::text, 'absence_kind', 'other', 'action', 'put')
          FROM t_imp WHERE label = 'dry'));
-SELECT t_assert('J-301 B: the report counts (23 rows: 8 accepted, 13 rejected, 1 duplicate, 1 superseded) and carries no user id, name or other person data',
+SELECT t_assert('J-301 B: the report counts (23 rows: 8 accepted, 13 rejected, 1 duplicate, 1 superseded) and carries no user id or name; J-346: the other-company e-mail (row 12) is a warning email_unmatched — still rejected unmatched, not an exception',
   (SELECT j->'counts' = '{"rows": 23, "accepted": 8, "rejected": 13, "duplicate": 1, "superseded": 1, "exception": 0}'::jsonb
-          AND j->>'status' = 'validated' AND NOT (j::text ~* '(user_id|full_name|Fixture|imp_b@|s_imp)') FROM t_imp WHERE label = 'dry'));
+          AND j->>'status' = 'validated' AND NOT (j::text ~* '(user_id|full_name|Fixture)')
+          AND j->'warnings'->0->>'code' = 'email_unmatched'
+          AND j->'warnings'->0->'rows'->0->>'row_no' = '12'
+          AND j->'warnings'->0->'rows'->0->>'email' = 's_imp2@sick.test'
+          AND t_imp_code('dry', 12) = 'rejected/unmatched'
+     FROM t_imp WHERE label = 'dry'));
 
 -- Another company's vp_hr cannot see, validate or commit the batch.
 SELECT t_as(t_u('vp_s'));
@@ -1440,7 +1445,7 @@ SELECT t_assert('J-284 / J-308 A: no function outside the HR-absence family (fn_
   AND (SELECT bool_and(p.prosrc ~ 'fn_assert_vp_hr\(p_company_id\)|fn_hr_import_batch_of\(p_company_id')
          FROM pg_proc p WHERE p.proname IN ('rpc_hr_absence_import_stage', 'rpc_hr_absence_import_validate', 'rpc_hr_absence_import_commit', 'rpc_hr_set_employee_number', 'rpc_hr_employee_numbers')));
 
--- ============ 17. Karin 25.11 — import J-329 C, J-331 B, J-332 B, J-333 A, J-334 A, J-335 A, J-336 B, J-337 B, J-338 A ============
+-- ============ 17. Karin 25.11 + 27.11 — import J-329 C, J-331 B, J-332 B, J-333 A, J-334 A, J-335 A, J-336 B, J-337 B, J-338 A, J-346, J-352, J-354 ============
 SELECT FROM t_mk('vp_u2', 'HR', 'vp_hr', 'employee');
 -- Stage + dry run as one vp_hr; returns the stage result and the report (helper, client rights).
 CREATE OR REPLACE FUNCTION t_imp_run(p_label text, p_rows jsonb) RETURNS void LANGUAGE plpgsql AS $$
@@ -1486,14 +1491,14 @@ SELECT t_assert('J-335 A: hr_import_max_rows starts empty (not_defined, no value
                                                            AND b.batch_id = t_imp_batch('lim none')));
 
 -- J-331 B: every stage is audited — who (viewer) and when (created_at), company, batch, row count; no kind, no cell.
-SELECT t_assert('J-331 B: each stage writes ONE audit row hr_absence_import_stage (viewer = the vp_hr, created_at = when; scope = company, batch, rows only — no kind, no file cell); a refused stage (422) writes none',
+SELECT t_assert('J-331 B: each successful stage writes ONE audit row hr_absence_import_stage (viewer = the vp_hr, created_at = when; scope = company, batch, rows only — no kind, no file cell); refused stages are J-354',
   (SELECT count(*) = 1 AND bool_and(viewer_id = t_u('vp_u') AND created_at IS NOT NULL AND subject_user_id IS NULL
                                     AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(scope) k) = ARRAY['company_id', 'import_batch_id', 'rows']
                                     AND (scope->>'rows')::int = 3)
      FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'import_batch_id' = t_imp_batch('lim none')::text)
-  AND (SELECT count(*) FROM access_audit_log WHERE action = 'hr_absence_import_stage')
+  AND (SELECT count(*) FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope ? 'import_batch_id')
       = (SELECT count(*) FROM hr_absence_import_batch)
-  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope::text ~* '(absence_kind|sick|other|E-100|@)'));
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope::text ~* '(absence_kind|E-100|@)'));
 
 -- J-329 C / J-334 A / J-337 B in one file.
 SELECT t_as(t_u('vp_u'));
@@ -1516,6 +1521,17 @@ SELECT t_assert('J-334 A: values are case-insensitive — a lower-case employee 
   AND (SELECT j->>'message' = 'employee_number_taken' FROM t_imp WHERE label = 'num case dup'));
 SELECT t_assert('J-329 C: number and e-mail naming two DIFFERENT employees → outcome ''exception'', code identity_mismatch; both keys naming the same employee, or an e-mail naming nobody, are accepted',
   t_imp_code('ex', 2) = 'exception/identity_mismatch');
+SELECT t_assert('J-346: a given e-mail that matches nobody is a warning (code email_unmatched, the file row) — not an exception; the row is still processed by number (row 4 accepted and later written); a file with no such e-mail has an empty warnings list',
+  (SELECT t_imp_code('ex', 4) = 'accepted/-'
+          AND jsonb_array_length(j->'warnings') = 1
+          AND j->'warnings'->0->>'code' = 'email_unmatched'
+          AND jsonb_array_length(j->'warnings'->0->'rows') = 1
+          AND j->'warnings'->0->'rows'->0->>'row_no' = '4'
+          AND j->'warnings'->0->'rows'->0->>'email' = 'nobody@authz.test'
+          AND j->'warnings'->0->'rows'->0->>'employee_number' = 'E-100'
+          AND (j->>'requires_attention')::boolean   -- still from the exceptions, not from the warning
+     FROM t_imp WHERE label = 'ex')
+  AND (SELECT j->'warnings' = '[]'::jsonb FROM t_imp WHERE label = 'lim none'));
 SELECT t_assert('J-337 B: a day the file both puts and cancels with no stored row → every row of that day is an exception put_cancel_same_day, in either order (rows 5+6, 7+8); with a stored row the last row wins as before (rows 9–10: conflict)',
   t_imp_code('ex', 5) = 'exception/put_cancel_same_day' AND t_imp_code('ex', 6) = 'exception/put_cancel_same_day'
   AND t_imp_code('ex', 7) = 'exception/put_cancel_same_day' AND t_imp_code('ex', 8) = 'exception/put_cancel_same_day'
@@ -1589,6 +1605,7 @@ CREATE TEMP TABLE t_imp_audit1 AS SELECT count(*) AS n FROM access_audit_log;
 SELECT t_as(t_u('vp_u'));
 SET ROLE authenticated;
 INSERT INTO t_imp SELECT 'numbers', jsonb_agg(to_jsonb(r)) FROM rpc_hr_employee_numbers('00000000-0000-0000-0000-0000000a5c01') r;
+INSERT INTO t_imp SELECT 'numbers 2', jsonb_agg(to_jsonb(r)) FROM rpc_hr_employee_numbers('00000000-0000-0000-0000-0000000a5c01') r;
 RESET ROLE;
 SELECT t_as(t_u('vp_s'));
 SET ROLE authenticated;
@@ -1598,7 +1615,7 @@ SELECT t_as(t_u('mgr_u'));
 SET ROLE authenticated;
 INSERT INTO t_imp SELECT 'numbers mgr', t_err_sig(format('SELECT * FROM rpc_hr_employee_numbers(%L)', '00000000-0000-0000-0000-0000000a5c01'));
 RESET ROLE;
-SELECT t_assert('J-336 B: vp_hr of the company reads full name, e-mail and number of the ACTIVE employees (E-100 / E-FU set, imp_b NULL; the leaver E-LV and the no-profile E-NG are not listed; no user id); another company''s vp_hr and a manager → 403; the read is not logged (J-292); the company list still has no number',
+SELECT t_assert('J-336 B: vp_hr of the company reads full name, e-mail and number of the ACTIVE employees (E-100 / E-FU set, imp_b NULL; the leaver E-LV and the no-profile E-NG are not listed; no user id); another company''s vp_hr and a manager → 403; the company list still has no number',
   (SELECT (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(j->0) k) = ARRAY['email', 'employee_number', 'full_name']
           AND EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE e->>'email' = 'imp_a@authz.test' AND e->>'employee_number' = 'E-100')
           AND EXISTS (SELECT 1 FROM jsonb_array_elements(j) e WHERE e->>'email' = 'imp_fu@authz.test' AND e->>'employee_number' = 'E-FU')
@@ -1607,10 +1624,30 @@ SELECT t_assert('J-336 B: vp_hr of the company reads full name, e-mail and numbe
      FROM t_imp WHERE label = 'numbers')
   AND (SELECT j->>'message' = 'insufficient_privilege' FROM t_imp WHERE label = 'numbers vp_s')
   AND (SELECT j->>'message' = 'insufficient_privilege' FROM t_imp WHERE label = 'numbers mgr')
-  AND (SELECT count(*) FROM access_audit_log) = (SELECT n FROM t_imp_audit1)
   AND pg_get_function_result('rpc_hr_absence_list_company(uuid, boolean)'::regprocedure) NOT LIKE '%employee_number%');
+SELECT t_assert('J-352: every successful read of rpc_hr_employee_numbers writes one audit row hr_employee_numbers_read (who, when, company) — never the numbers; a second read adds a second row; a refused call is not a read',
+  (SELECT count(*) = 2 AND bool_and(viewer_id = t_u('vp_u') AND created_at IS NOT NULL AND subject_user_id IS NULL
+                                    AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(scope) k) = ARRAY['company_id']
+                                    AND scope->>'company_id' = '00000000-0000-0000-0000-0000000a5c01')
+     FROM access_audit_log WHERE action = 'hr_employee_numbers_read')
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_employee_numbers_read'
+                    AND scope::text ~* '(E-100|E-FU|E-LV|E-NG|employee_number|@)')
+  AND (SELECT count(*) FROM access_audit_log) = (SELECT n FROM t_imp_audit1) + 2);
 -- J-338 A: the header keeps both the file name and the SHA-256 (checked in section 16); the stage refuses a bad hash.
 SELECT t_assert('J-338 A: the WORM commit header of the main file keeps file name AND SHA-256; a malformed SHA-256 was refused at stage (400)',
   (SELECT bool_and(scope->>'source_filename' = 'absences_nov.csv' AND scope->>'source_sha256' = repeat('ab', 32))
      FROM access_audit_log WHERE action = 'hr_absence_import_commit' AND scope->>'source_filename' IS NOT NULL)
   AND (SELECT j->>'message' = 'invalid_source_sha256' FROM t_imp WHERE label = 'stage bad sha'));
+SELECT t_assert('J-354: a stage refused with 422 import_too_many_rows or 400 (invalid_import_rows, invalid_source_sha256) is logged — who, when, company, reason; no file content, no batch, nothing staged for those calls',
+  (SELECT count(*) = 1 AND bool_and(viewer_id = t_u('vp_u') AND created_at IS NOT NULL AND subject_user_id IS NULL
+                                    AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(scope) k) = ARRAY['company_id', 'reason']
+                                    AND scope->>'reason' = 'import_too_many_rows'
+                                    AND scope->>'company_id' = '00000000-0000-0000-0000-0000000a5c01')
+     FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'reason' = 'import_too_many_rows')
+  AND (SELECT count(*) = 4 AND bool_and(viewer_id = t_u('vp_u') AND scope->>'reason' = 'invalid_import_rows'
+                                        AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(scope) k) = ARRAY['company_id', 'reason'])
+     FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'reason' = 'invalid_import_rows')
+  AND (SELECT count(*) = 1 AND bool_and(viewer_id = t_u('vp_u') AND scope->>'reason' = 'invalid_source_sha256')
+     FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'reason' = 'invalid_source_sha256')
+  AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope ? 'reason'
+                    AND scope::text ~* '(absence_kind|E-100|@|absences_nov|employee_number)'));

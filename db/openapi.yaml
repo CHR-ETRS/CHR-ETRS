@@ -3499,7 +3499,8 @@ paths:
       description: 'v1.6.21 J-336 B (Karin 25.11). The dedicated reader — numbers are NOT added to any other list. Only
         an active vp_hr of p_company_id (else 403 insufficient_privilege). Returns full name, e-mail and employee
         number (null = not set) of every active employee of the company (employee profile; an end date in the future
-        still counts — J-297 B). No user id. Not logged (vp_hr reads, J-292).'
+        still counts — J-297 B). No user id. Every successful read is logged (J-352, Karin 27.11): action
+        hr_employee_numbers_read, who and when, company only — never the numbers.'
       requestBody:
         required: true
         content:
@@ -3542,7 +3543,9 @@ paths:
         cancel). No reason or free-text column (J-267 C): any other key → 400 invalid_import_rows. Optional source
         file name and SHA-256 (hex) go to the commit header audit row. Only an active vp_hr of p_company_id (else 403
         insufficient_privilege). Writes staging only (no HR row) plus ONE audit row hr_absence_import_stage (J-331 B,
-        Karin 25.11: who / when, company, batch, row count — no kind, no cell). Row limit (J-335 A): the agent setting
+        Karin 25.11: who / when, company, batch, row count — no kind, no cell). J-354 (Karin 27.11): a refusal (400
+        invalid_import_rows / invalid_source_sha256, or 422 import_too_many_rows) is also logged — who, when, company
+        and the rejection reason, no file content. Row limit (J-335 A): the agent setting
         hr_import_max_rows — empty by default (לא הוגדר = no limit); when a company sets it, a longer file → 422
         import_too_many_rows. The answer reports row_limit (the number, or ''לא הוגדר''). Batch size beyond that and
         retention of the staged rows: לא הוגדר.'
@@ -3596,7 +3599,7 @@ paths:
                       enum:
                       - לא הוגדר
         '400':
-          description: invalid_import_rows | invalid_source_sha256
+          description: invalid_import_rows | invalid_source_sha256 (J-354 — the refusal is audited, no file content)
           content:
             application/json:
               schema:
@@ -3604,7 +3607,7 @@ paths:
         '403':
           $ref: '#/components/responses/BusinessError403'
         '422':
-          description: import_too_many_rows (more rows than the company's hr_import_max_rows)
+          description: import_too_many_rows (more rows than the company's hr_import_max_rows; J-354 — the refusal is audited, no file content)
           content:
             application/json:
               schema:
@@ -3626,7 +3629,8 @@ paths:
         409 import_batch_committed. Karin 25.11: identity_mismatch (J-329 C — number and e-mail name two different
         employees) and put_cancel_same_day (J-337 B — a day both put and cancelled in the file with no stored row, in
         either order) are outcome ''exception'': never written, listed in exceptions, and requires_attention = true —
-        the report is the alert to the vp_hr (no other channel). All cells are case-insensitive, the employee number
+        the report is the alert to the vp_hr (no other channel; J-347, follow-up J-357). J-346: a given e-mail that
+        names nobody is a warning (email_unmatched) — not an exception; the row is still processed by number. All cells are case-insensitive, the employee number
         too (J-334 A). The dry run stores a fingerprint of what it saw (J-332 B).'
       requestBody:
         required: true
@@ -5827,6 +5831,20 @@ components:
                 enum:
                 - identity_mismatch
                 - put_cancel_same_day
+              rows:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceImportFileRow'
+        warnings:
+          type: array
+          description: J-346 — not exceptions; a given e-mail that matches nobody (the row is still processed by number)
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                - email_unmatched
               rows:
                 type: array
                 items:

@@ -176,6 +176,27 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
+-- J-354 (Karin 27.11): a refused stage (400 / 422) must leave an audit row after the caller's
+-- transaction rolls back. A short-lived loopback via dblink writes that row in its own
+-- transaction. The extension lives in chr_internal so it does not appear in the public catalog
+-- snapshot. No client grant. Creating the extension needs a superuser; when the pack is
+-- applied by a non-superuser (managed / nosuper path) and dblink is not yet installed, the
+-- pack still applies and fn_audit_view_committed tells the operator to install it.
+CREATE SCHEMA IF NOT EXISTS chr_internal;
+REVOKE ALL ON SCHEMA chr_internal FROM PUBLIC;
+DO $ext$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink') THEN
+    NULL;
+  ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolsuper) THEN
+    EXECUTE 'CREATE EXTENSION dblink SCHEMA chr_internal';
+    EXECUTE 'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA chr_internal FROM PUBLIC';
+  ELSE
+    RAISE NOTICE 'J-354: dblink is not installed and the current user is not a superuser. A superuser should run: CREATE SCHEMA IF NOT EXISTS chr_internal; CREATE EXTENSION dblink SCHEMA chr_internal; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA chr_internal FROM PUBLIC;';
+  END IF;
+END
+$ext$;
+
 -- ---------------------------------------------------------------------------
 -- Auth / role stubs (no-op when Supabase already provides them)
 -- ---------------------------------------------------------------------------
@@ -2975,6 +2996,33 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION fn_audit_view(text, jsonb, uuid, text) FROM PUBLIC;
+
+-- J-354: write one access_audit_log row that survives the caller's rollback (loopback dblink).
+-- p_viewer / p_company are passed in: the other session has no auth.uid(). Internal; no client grant.
+CREATE OR REPLACE FUNCTION fn_audit_view_committed(p_action text, p_scope jsonb,
+                                                   p_viewer uuid, p_company uuid)
+RETURNS void
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink') THEN
+    RAISE EXCEPTION 'J-354: dblink is not installed (fn_audit_view_committed). A superuser should run: CREATE SCHEMA IF NOT EXISTS chr_internal; CREATE EXTENSION dblink SCHEMA chr_internal; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA chr_internal FROM PUBLIC;'
+      USING ERRCODE = 'feature_not_supported';
+  END IF;
+  PERFORM chr_internal.dblink_exec(
+    format('dbname=%L user=%L host=%L port=%s',
+           current_database(), current_user,
+           btrim(split_part(current_setting('unix_socket_directories'), ',', 1)),
+           current_setting('port')),
+    format('INSERT INTO public.access_audit_log (viewer_id, company_id, action, scope) VALUES (%L::uuid, %L::uuid, %L, %L::jsonb)',
+           p_viewer, p_company, p_action, COALESCE(p_scope, '{}'::jsonb)::text));
+END;
+$$;
+
+REVOKE ALL ON FUNCTION fn_audit_view_committed(text, jsonb, uuid, uuid) FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
 -- Notifications (no PII columns at all: recipients read details through scoped RPCs).
