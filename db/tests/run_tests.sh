@@ -31,6 +31,19 @@ psql -qc "DROP DATABASE IF EXISTS ${DB}_authz" postgres
 psql -qc "CREATE DATABASE ${DB}_authz" postgres
 psql -d "${DB}_authz" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql
 psql -d "${DB}_authz" -v ON_ERROR_STOP=1 -qAt -f tests/test_assign_authz.sql
+# J-354 (Karin 27.11, no extension): the SAME authz tests (incl. the refused-upload contract: 400 / 422 returned bodies,
+# one audit row each, no staged rows, valid upload unchanged) on a pack applied by a NON-superuser owner (chr_app_owner,
+# like a managed Supabase owner; the tests themselves run as the admin connection). The PASS lines are re-labelled
+# "PASS NOSUPER" so the "WARNING:  PASS" total of the superuser run stays comparable.
+if [ "$(psql -qAt -c "SELECT count(*) FROM pg_roles WHERE rolname = 'chr_app_owner'" postgres)" = 0 ]; then
+  psql -qc "CREATE ROLE chr_app_owner LOGIN CREATEDB CREATEROLE BYPASSRLS NOSUPERUSER" postgres
+else
+  psql -qc "ALTER ROLE chr_app_owner LOGIN CREATEDB CREATEROLE BYPASSRLS NOSUPERUSER" postgres
+fi
+psql -qc "DROP DATABASE IF EXISTS ${DB}_authz_ns WITH (FORCE)" postgres
+psql -qc "CREATE DATABASE ${DB}_authz_ns OWNER chr_app_owner" postgres
+psql -U chr_app_owner -d "${DB}_authz_ns" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql
+psql -d "${DB}_authz_ns" -v ON_ERROR_STOP=1 -qAt -f tests/test_assign_authz.sql 2>&1 | sed 's/WARNING:  PASS/PASS NOSUPER/'
 # Sensitive-RPC authorization (Karin 04.11, J-147 – J-150): reset spoons / value asset / ledger on a fresh DB
 psql -qc "DROP DATABASE IF EXISTS ${DB}_sens" postgres
 psql -qc "CREATE DATABASE ${DB}_sens" postgres

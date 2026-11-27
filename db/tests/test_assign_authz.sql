@@ -1308,17 +1308,34 @@ SELECT t_assert('J-301 B: no client grant on the staging tables (RLS forced, no 
           AND has_function_privilege('authenticated', p.oid, 'EXECUTE'))
       = ARRAY['rpc_hr_absence_import_commit', 'rpc_hr_absence_import_stage', 'rpc_hr_absence_import_validate', 'rpc_hr_employee_numbers', 'rpc_hr_set_employee_number']);
 
+-- J-354 (Karin 27.11): a REFUSED upload is not raised — the stage returns the Error Contract body and sets the
+-- transaction-local PostgREST setting response.status (so PostgREST answers 400 / 422 with that body while the
+-- audit row commits). This helper makes one stage call and reports body + the status the HTTP layer would use
+-- ('http_status', JSON null when none is set = a normal 200). A direct SQL caller sees a returned jsonb, no error.
+CREATE OR REPLACE FUNCTION t_stage_call(p_rows jsonb, p_fname text DEFAULT NULL, p_sha text DEFAULT NULL) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE v jsonb;
+BEGIN
+  PERFORM set_config('response.status', '', true);
+  v := rpc_hr_absence_import_stage('00000000-0000-0000-0000-0000000a5c01', p_rows, p_fname, p_sha);
+  RETURN v || jsonb_build_object('http_status', NULLIF(current_setting('response.status', true), ''));
+END $$;
+GRANT EXECUTE ON FUNCTION t_stage_call(jsonb, text, text) TO authenticated;
+
 -- Input checks of the stage (400) — J-307 C: CSV columns only, no reason / free-text column (J-267 C).
 SELECT t_as(t_u('vp_u'));
 SET ROLE authenticated;
-INSERT INTO t_imp SELECT 'stage ' || l, t_err_sig(format('SELECT rpc_hr_absence_import_stage(%L, %L::jsonb, NULL, %L)', '00000000-0000-0000-0000-0000000a5c01', r, sha))
+INSERT INTO t_imp SELECT 'stage ' || l, t_stage_call(r::jsonb, NULL, sha)
   FROM (VALUES ('empty', '[]', NULL), ('not array', '{"employee_number":"E-100"}', NULL), ('scalar row', '["E-100"]', NULL),
                ('reason column', '[{"employee_number":"E-100","absence_date":"2026-01-05","absence_kind":"sick","action":"put","reason":"x"}]', NULL),
                ('bad sha', '[{"employee_number":"E-100","absence_date":"2026-01-05","absence_kind":"sick","action":"put"}]', 'abc')) v(l, r, sha);
 RESET ROLE;
-SELECT t_assert('J-307 C: the stage refuses an empty / non-array / non-object input and any column outside the 5 CSV columns (a reason column) → 400 invalid_import_rows; a malformed SHA-256 → 400 invalid_source_sha256; nothing staged',
-  (SELECT bool_and(j->>'code' = '22023' AND j->>'message' = 'invalid_import_rows') AND count(*) = 4 FROM t_imp WHERE label IN ('stage empty', 'stage not array', 'stage scalar row', 'stage reason column'))
-  AND (SELECT j->>'message' = 'invalid_source_sha256' FROM t_imp WHERE label = 'stage bad sha')
+SELECT t_assert('J-307 C / J-354: the stage refuses an empty / non-array / non-object input and any column outside the 5 CSV columns (a reason column) → HTTP 400 invalid_import_rows; a malformed SHA-256 → HTTP 400 invalid_source_sha256; the answer is a RETURNED Error Contract body (code SQLSTATE 22023, message, details http_hint=400;code=…, hint), not an exception; nothing staged',
+  (SELECT bool_and(j->>'code' = '22023' AND j->>'message' = 'invalid_import_rows' AND j->>'http_status' = '400'
+                   AND j->>'details' = 'http_hint=400;code=invalid_import_rows' AND j->>'hint' = 'invalid_import_rows'
+                   AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(j) k) = ARRAY['code', 'details', 'hint', 'http_status', 'message'])
+          AND count(*) = 4 FROM t_imp WHERE label IN ('stage empty', 'stage not array', 'stage scalar row', 'stage reason column'))
+  AND (SELECT j->>'code' = '22023' AND j->>'message' = 'invalid_source_sha256' AND j->>'http_status' = '400'
+          AND j->>'details' = 'http_hint=400;code=invalid_source_sha256' FROM t_imp WHERE label = 'stage bad sha')
   AND NOT EXISTS (SELECT 1 FROM hr_absence_import_batch));
 
 -- Stage + dry run of the main file.
@@ -1472,8 +1489,8 @@ SELECT t_imp_run('lim none', jsonb_build_array(t_imp_csv('E-100', NULL, 300, 'si
 INSERT INTO t_imp SELECT 'lim bad ' || v, t_err_sig(format('SELECT rpc_put_agent_setting(%L, %L, %s)', '00000000-0000-0000-0000-0000000a5c01', 'hr_import_max_rows', v))
   FROM unnest(ARRAY['0', '1.5']) v;
 SELECT FROM rpc_put_agent_setting('00000000-0000-0000-0000-0000000a5c01', 'hr_import_max_rows', 2);
-INSERT INTO t_imp SELECT 'lim over', t_err_sig(format('SELECT rpc_hr_absence_import_stage(%L, %L::jsonb)', '00000000-0000-0000-0000-0000000a5c01',
-  jsonb_build_array(t_imp_csv('E-100', NULL, 300, 'sick', 'put'), t_imp_csv('E-100', NULL, 299, 'sick', 'put'), t_imp_csv('E-100', NULL, 298, 'sick', 'put'))));
+INSERT INTO t_imp SELECT 'lim over', t_stage_call(
+  jsonb_build_array(t_imp_csv('E-100', NULL, 300, 'sick', 'put'), t_imp_csv('E-100', NULL, 299, 'sick', 'put'), t_imp_csv('E-100', NULL, 298, 'sick', 'put')));
 INSERT INTO t_imp SELECT 'lim at', rpc_hr_absence_import_stage('00000000-0000-0000-0000-0000000a5c01',
   jsonb_build_array(t_imp_csv('E-100', NULL, 300, 'sick', 'put'), t_imp_csv('E-100', NULL, 299, 'sick', 'put')));
 SELECT FROM rpc_put_agent_setting('00000000-0000-0000-0000-0000000a5c01', 'hr_import_max_rows', NULL);
@@ -1484,7 +1501,8 @@ SELECT t_assert('J-335 A: hr_import_max_rows starts empty (not_defined, no value
   AND (SELECT value_status = 'not_defined' AND value_numeric IS NULL FROM agent_settings WHERE company_id IS NULL AND setting_key = 'hr_import_max_rows')
   AND (SELECT (j->>'rows')::int = 3 AND j->>'row_limit' = 'לא הוגדר' FROM t_imp WHERE label = 'lim none stage')
   AND (SELECT bool_and(j->>'message' = 'invalid_setting_value') AND count(*) = 2 FROM t_imp WHERE label LIKE 'lim bad %')
-  AND (SELECT j->>'message' = 'import_too_many_rows' AND j->>'details' = 'http_hint=422;code=import_too_many_rows' FROM t_imp WHERE label = 'lim over')
+  AND (SELECT j->>'code' = 'PT422' AND j->>'message' = 'import_too_many_rows' AND j->>'http_status' = '422'
+          AND j->>'details' = 'http_hint=422;code=import_too_many_rows' FROM t_imp WHERE label = 'lim over')
   AND (SELECT (j->>'row_limit')::int = 2 AND (j->>'rows')::int = 2 FROM t_imp WHERE label = 'lim at')
   AND (SELECT j->>'value_status' = 'not_defined' FROM t_imp WHERE label = 'lim reset')
   AND (SELECT count(*) = 1 FROM hr_absence_import_batch b WHERE (SELECT count(*) FROM hr_absence_import_row r WHERE r.batch_id = b.batch_id) = 3
@@ -1634,11 +1652,16 @@ SELECT t_assert('J-352: every successful read of rpc_hr_employee_numbers writes 
                     AND scope::text ~* '(E-100|E-FU|E-LV|E-NG|employee_number|@)')
   AND (SELECT count(*) FROM access_audit_log) = (SELECT n FROM t_imp_audit1) + 2);
 -- J-338 A: the header keeps both the file name and the SHA-256 (checked in section 16); the stage refuses a bad hash.
-SELECT t_assert('J-338 A: the WORM commit header of the main file keeps file name AND SHA-256; a malformed SHA-256 was refused at stage (400)',
+SELECT t_assert('J-338 A: the WORM commit header of the main file keeps file name AND SHA-256; a malformed SHA-256 was refused at stage (HTTP 400)',
   (SELECT bool_and(scope->>'source_filename' = 'absences_nov.csv' AND scope->>'source_sha256' = repeat('ab', 32))
      FROM access_audit_log WHERE action = 'hr_absence_import_commit' AND scope->>'source_filename' IS NOT NULL)
-  AND (SELECT j->>'message' = 'invalid_source_sha256' FROM t_imp WHERE label = 'stage bad sha'));
-SELECT t_assert('J-354: a stage refused with 422 import_too_many_rows or 400 (invalid_import_rows, invalid_source_sha256) is logged — who, when, company, reason; no file content, no batch, nothing staged for those calls',
+  AND (SELECT j->>'message' = 'invalid_source_sha256' AND j->>'http_status' = '400' FROM t_imp WHERE label = 'stage bad sha'));
+-- J-354: a valid upload is unchanged — a normal answer (no status override, the same four keys), staged rows kept.
+SELECT t_as(t_u('vp_u'));
+SET ROLE authenticated;
+INSERT INTO t_imp SELECT 'stage ok', t_stage_call(jsonb_build_array(t_imp_csv('E-100', NULL, 290, 'sick', 'put')), 'ok.csv', repeat('cd', 32));
+RESET ROLE;
+SELECT t_assert('J-354: a stage refused with HTTP 422 import_too_many_rows or HTTP 400 (invalid_import_rows ×4, invalid_source_sha256) writes exactly ONE audit row each — who, when, company, reason; no file content, no batch id; no batch and no staged row is left for a refused call (the audit row is the only write); a refusal by a non-vp_hr (403) is not logged; a VALID upload is unchanged (no status override, batch_id / status / rows / row_limit, its own audit row with the batch)',
   (SELECT count(*) = 1 AND bool_and(viewer_id = t_u('vp_u') AND created_at IS NOT NULL AND subject_user_id IS NULL
                                     AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(scope) k) = ARRAY['company_id', 'reason']
                                     AND scope->>'reason' = 'import_too_many_rows'
@@ -1650,4 +1673,11 @@ SELECT t_assert('J-354: a stage refused with 422 import_too_many_rows or 400 (in
   AND (SELECT count(*) = 1 AND bool_and(viewer_id = t_u('vp_u') AND scope->>'reason' = 'invalid_source_sha256')
      FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'reason' = 'invalid_source_sha256')
   AND NOT EXISTS (SELECT 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope ? 'reason'
-                    AND scope::text ~* '(absence_kind|E-100|@|absences_nov|employee_number)'));
+                    AND scope::text ~* '(absence_kind|E-100|@|absences_nov|employee_number|ok.csv)')
+  -- every stage audit row is either a refusal (6) or belongs to exactly one batch; nothing else (no 403 row, no orphan)
+  AND (SELECT count(*) FROM access_audit_log WHERE action = 'hr_absence_import_stage') = (SELECT count(*) FROM hr_absence_import_batch) + 6
+  AND (SELECT count(*) FROM hr_absence_import_batch b WHERE NOT EXISTS (SELECT 1 FROM hr_absence_import_row r WHERE r.batch_id = b.batch_id)) = 0
+  AND (SELECT j->>'http_status' IS NULL AND j->>'status' = 'staged' AND (j->>'rows')::int = 1 AND j->>'row_limit' = 'לא הוגדר'
+          AND (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(j) k) = ARRAY['batch_id', 'http_status', 'row_limit', 'rows', 'status']
+          FROM t_imp WHERE label = 'stage ok')
+  AND (SELECT count(*) = 1 FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'import_batch_id' = (SELECT j->>'batch_id' FROM t_imp WHERE label = 'stage ok')));

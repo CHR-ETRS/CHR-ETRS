@@ -3543,9 +3543,17 @@ paths:
         cancel). No reason or free-text column (J-267 C): any other key → 400 invalid_import_rows. Optional source
         file name and SHA-256 (hex) go to the commit header audit row. Only an active vp_hr of p_company_id (else 403
         insufficient_privilege). Writes staging only (no HR row) plus ONE audit row hr_absence_import_stage (J-331 B,
-        Karin 25.11: who / when, company, batch, row count — no kind, no cell). J-354 (Karin 27.11): a refusal (400
-        invalid_import_rows / invalid_source_sha256, or 422 import_too_many_rows) is also logged — who, when, company
-        and the rejection reason, no file content. Row limit (J-335 A): the agent setting
+        Karin 25.11: who / when, company, batch, row count — no kind, no cell). J-354 (Karin 27.11, no database
+        extension): a refused file (400 invalid_import_rows / invalid_source_sha256, or 422 import_too_many_rows) is
+        logged — ONE audit row with who, when, company and the rejection reason, no file content, no batch. To keep
+        that row, the refusal is not a raised error (a raise would roll the row back): the RPC sets the HTTP status
+        itself (PostgREST response.status, PostgREST 8.0 or newer) and returns the error body, so the client still
+        gets HTTP 400 / 422 with the Error Contract body {code (SQLSTATE 22023 or PT422), message (the business code),
+        details ''http_hint=<status>;code=<code>'', hint (the business code)} — see HrImportRefusalBody. Every
+        check runs before anything is staged, so a refused call writes nothing but its audit row. Not an upload and
+        not logged: 403 insufficient_privilege (not a vp_hr of the company). Caveats: a caller that sends
+        Prefer: tx=rollback (or a server with db-tx-end = rollback) rolls the audit row back too; a direct SQL
+        caller gets the body as the function result instead of an exception. Row limit (J-335 A): the agent setting
         hr_import_max_rows — empty by default (לא הוגדר = no limit); when a company sets it, a longer file → 422
         import_too_many_rows. The answer reports row_limit (the number, or ''לא הוגדר''). Batch size beyond that and
         retention of the staged rows: לא הוגדר.'
@@ -3599,19 +3607,24 @@ paths:
                       enum:
                       - לא הוגדר
         '400':
-          description: invalid_import_rows | invalid_source_sha256 (J-354 — the refusal is audited, no file content)
+          description: 'invalid_import_rows | invalid_source_sha256 — HTTP 400 set by the RPC (J-354); body
+            {code: ''22023'', message, details: ''http_hint=400;code=<message>'', hint: <message>}; the refusal is audited
+            (who, when, company, reason; no file content)'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorBody'
+                $ref: '#/components/schemas/HrImportRefusalBody'
         '403':
           $ref: '#/components/responses/BusinessError403'
         '422':
-          description: import_too_many_rows (more rows than the company's hr_import_max_rows; J-354 — the refusal is audited, no file content)
+          description: 'import_too_many_rows (more rows than the company''s hr_import_max_rows) — HTTP 422 set by the RPC
+            (J-354); body {code: ''PT422'', message: ''import_too_many_rows'', details:
+            ''http_hint=422;code=import_too_many_rows'', hint: ''import_too_many_rows''}; the refusal is audited (who,
+            when, company, reason; no file content)'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorBody'
+                $ref: '#/components/schemas/HrImportRefusalBody'
   /rpc/rpc_hr_absence_import_validate:
     post:
       tags:
@@ -5967,6 +5980,36 @@ components:
           - coordinated
         cancelled:
           type: boolean
+    HrImportRefusalBody:
+      type: object
+      description: 'J-354 (Karin 27.11): the body of a refused HR absence upload (rpc_hr_absence_import_stage), returned
+        with HTTP 400 or 422 set by the RPC itself (PostgREST response.status) — the same four fields PostgREST gives for a
+        raised error, so a client reads it like any other error. No file content, no batch id.'
+      required:
+      - code
+      - message
+      - details
+      - hint
+      properties:
+        code:
+          type: string
+          description: SQLSTATE — 22023 for HTTP 400, PT422 for HTTP 422
+          enum:
+          - '22023'
+          - PT422
+        message:
+          type: string
+          description: The business code
+          enum:
+          - invalid_import_rows
+          - invalid_source_sha256
+          - import_too_many_rows
+        details:
+          type: string
+          description: 'http_hint=<400|422>;code=<message>'
+        hint:
+          type: string
+          description: Equals message
     ErrorBody:
       type: object
       required:

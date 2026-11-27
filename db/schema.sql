@@ -176,26 +176,35 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- J-354 (Karin 27.11): a refused stage (400 / 422) must leave an audit row after the caller's
--- transaction rolls back. A short-lived loopback via dblink writes that row in its own
--- transaction. The extension lives in chr_internal so it does not appear in the public catalog
--- snapshot. No client grant. Creating the extension needs a superuser; when the pack is
--- applied by a non-superuser (managed / nosuper path) and dblink is not yet installed, the
--- pack still applies and fn_audit_view_committed tells the operator to install it.
-CREATE SCHEMA IF NOT EXISTS chr_internal;
-REVOKE ALL ON SCHEMA chr_internal FROM PUBLIC;
-DO $ext$
+-- J-354 (Karin 27.11, decided again 27.11): NO extension. An earlier build (d1bdc6f) wrote the refused-stage audit
+-- row through a dblink loopback (schema chr_internal, function fn_audit_view_committed). That is removed. This
+-- block cleans it up on an upgrade and is a no-op on a fresh database. It never touches audit data and never uses
+-- CASCADE: the helper function goes, the dblink extension only when it sits in chr_internal (installed by that
+-- build), the schema only when empty. A role without the right to drop leaves the object and says so.
+DO $cleanup$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink') THEN
-    NULL;
-  ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolsuper) THEN
-    EXECUTE 'CREATE EXTENSION dblink SCHEMA chr_internal';
-    EXECUTE 'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA chr_internal FROM PUBLIC';
-  ELSE
-    RAISE NOTICE 'J-354: dblink is not installed and the current user is not a superuser. A superuser should run: CREATE SCHEMA IF NOT EXISTS chr_internal; CREATE EXTENSION dblink SCHEMA chr_internal; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA chr_internal FROM PUBLIC;';
+  BEGIN
+    DROP FUNCTION IF EXISTS fn_audit_view_committed(text, jsonb, uuid, uuid);
+  EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'J-354: fn_audit_view_committed is no longer used; drop it with its owner: DROP FUNCTION fn_audit_view_committed(text, jsonb, uuid, uuid);';
+  END;
+  IF EXISTS (SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+              WHERE e.extname = 'dblink' AND n.nspname = 'chr_internal') THEN
+    BEGIN
+      DROP EXTENSION dblink;
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE NOTICE 'J-354: the dblink extension in chr_internal is no longer used; a superuser may drop it: DROP EXTENSION dblink; DROP SCHEMA chr_internal;';
+    END;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'chr_internal') THEN
+    BEGIN
+      DROP SCHEMA chr_internal;
+    EXCEPTION WHEN insufficient_privilege OR dependent_objects_still_exist THEN
+      RAISE NOTICE 'J-354: schema chr_internal is no longer used but is not empty or not droppable by this role; left as is.';
+    END;
   END IF;
 END
-$ext$;
+$cleanup$;
 
 -- ---------------------------------------------------------------------------
 -- Auth / role stubs (no-op when Supabase already provides them)
@@ -2996,33 +3005,6 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION fn_audit_view(text, jsonb, uuid, text) FROM PUBLIC;
-
--- J-354: write one access_audit_log row that survives the caller's rollback (loopback dblink).
--- p_viewer / p_company are passed in: the other session has no auth.uid(). Internal; no client grant.
-CREATE OR REPLACE FUNCTION fn_audit_view_committed(p_action text, p_scope jsonb,
-                                                   p_viewer uuid, p_company uuid)
-RETURNS void
-LANGUAGE plpgsql
-VOLATILE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'dblink') THEN
-    RAISE EXCEPTION 'J-354: dblink is not installed (fn_audit_view_committed). A superuser should run: CREATE SCHEMA IF NOT EXISTS chr_internal; CREATE EXTENSION dblink SCHEMA chr_internal; REVOKE ALL ON ALL FUNCTIONS IN SCHEMA chr_internal FROM PUBLIC;'
-      USING ERRCODE = 'feature_not_supported';
-  END IF;
-  PERFORM chr_internal.dblink_exec(
-    format('dbname=%L user=%L host=%L port=%s',
-           current_database(), current_user,
-           btrim(split_part(current_setting('unix_socket_directories'), ',', 1)),
-           current_setting('port')),
-    format('INSERT INTO public.access_audit_log (viewer_id, company_id, action, scope) VALUES (%L::uuid, %L::uuid, %L, %L::jsonb)',
-           p_viewer, p_company, p_action, COALESCE(p_scope, '{}'::jsonb)::text));
-END;
-$$;
-
-REVOKE ALL ON FUNCTION fn_audit_view_committed(text, jsonb, uuid, uuid) FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
 -- Notifications (no PII columns at all: recipients read details through scoped RPCs).

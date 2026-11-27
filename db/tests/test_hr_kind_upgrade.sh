@@ -15,15 +15,15 @@ check() {
   if [ "$2" = "$3" ]; then echo "PASS HRUP $1"; else echo "FAIL HRUP $1: got [$2] expected [$3]"; FAILS=$((FAILS + 1)); fi
 }
 
-# Create an empty database.
+# Create an empty database; $1 = optional owner role (a non-superuser owner for the nosuper checks).
 fresh_db() {
-  psql -qc "DROP DATABASE IF EXISTS $DB" postgres
-  psql -qc "CREATE DATABASE $DB" postgres
+  psql -qc "DROP DATABASE IF EXISTS $DB WITH (FORCE)" postgres
+  psql -qc "CREATE DATABASE $DB${1:+ OWNER $1}" postgres
 }
 
-# Apply a pack (reference + schema + rpc) from a directory.
+# Apply a pack (reference + schema + rpc) from a directory; APPLY_USER = optional role that applies it.
 apply_pack() {
-  (cd "$1" && psql -d "$DB" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql) >/dev/null 2>&1
+  (cd "$1" && psql ${APPLY_USER:+-U $APPLY_USER} -d "$DB" -v ON_ERROR_STOP=1 -q -f ref_country_calendar.sql -f schema.sql -f rpc.sql) >/dev/null 2>&1
 }
 
 # Insert one company, two employees and their HR rows; $1 = 'nokind' (c56d380) or 'kind' (8eade64).
@@ -56,6 +56,7 @@ rows() {
 # the two staging tables with RLS forced, no policy and no client grant. $1 = label.
 import_objects() {
   check "$1: J-300 B / J-301 B import objects (employee_number unique per company case-insensitively, staging closed to clients)" "$(psql -d "$DB" -qAt -c "SELECT (SELECT count(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'employee_number')::text || '/' || (SELECT indisunique FROM pg_index WHERE indexrelid = 'uq_users_company_employee_number_ci'::regclass)::text || '/' || (SELECT count(*) FROM pg_class WHERE relname IN ('hr_absence_import_batch', 'hr_absence_import_row') AND relrowsecurity AND relforcerowsecurity)::text || '/' || (SELECT count(*) FROM pg_policy WHERE polrelid IN ('hr_absence_import_batch'::regclass, 'hr_absence_import_row'::regclass))::text || '/' || has_table_privilege('authenticated', 'hr_absence_import_row', 'SELECT')::text")" "1/true/2/0/false"
+  check "$1: J-354 no extension (no dblink, no chr_internal schema, no fn_audit_view_committed, no fn_hr_import_refuse client grant)" "$(psql -d "$DB" -qAt -c "SELECT (to_regproc('fn_audit_view_committed') IS NULL)::text || '/' || (SELECT count(*) FROM pg_extension WHERE extname = 'dblink')::text || '/' || (SELECT count(*) FROM pg_namespace WHERE nspname = 'chr_internal')::text || '/' || has_function_privilege('authenticated', 'fn_hr_import_refuse(uuid, int, text)', 'EXECUTE')::text")" "true/0/0/false"
   check "$1: Karin 25.11 import objects (old case-sensitive index gone, 'exception' outcome, fingerprint column, empty row limit)" "$(psql -d "$DB" -qAt -c "SELECT (to_regclass('uq_users_company_employee_number') IS NULL)::text || '/' || (SELECT count(*) FROM pg_constraint WHERE conrelid = 'hr_absence_import_row'::regclass AND pg_get_constraintdef(oid) LIKE '%exception%')::text || '/' || (SELECT count(*) FROM information_schema.columns WHERE table_name = 'hr_absence_import_batch' AND column_name = 'validated_fingerprint')::text || '/' || (SELECT value_status FROM agent_settings WHERE company_id IS NULL AND setting_key = 'hr_import_max_rows')")" "true/1/1/not_defined"
 }
 
@@ -133,6 +134,36 @@ SQL
 else
   echo "SKIP HRUP real 130bdca pack (git history not available)"
 fi
-psql -qc "DROP DATABASE IF EXISTS $DB" postgres
+# (5) Karin 27.11 (J-354, no extension): upgrade from d1bdc6f, which created schema chr_internal, the dblink extension
+# (superuser apply only) and fn_audit_view_committed — all dropped cleanly, the audit data is never touched. Both ways:
+# applied by a SUPERUSER (the extension is dropped) and by a NON-superuser owner (the extension never existed; the empty
+# schema is dropped). A refusal audit row written by that build stays.
+if git cat-file -e "d1bdc6f:db/schema.sql" 2>/dev/null; then
+  OLD=$(mktemp -d)
+  for f in ref_country_calendar.sql schema.sql rpc.sql; do git show "d1bdc6f:db/$f" > "$OLD/$f"; done
+  if [ "$(psql -qAt -c "SELECT count(*) FROM pg_roles WHERE rolname = 'chr_app_owner'" postgres)" = 0 ]; then
+    psql -qc "CREATE ROLE chr_app_owner LOGIN CREATEDB CREATEROLE BYPASSRLS NOSUPERUSER" postgres
+  else
+    psql -qc "ALTER ROLE chr_app_owner LOGIN CREATEDB CREATEROLE BYPASSRLS NOSUPERUSER" postgres
+  fi
+  for mode in super nosuper; do
+    if [ "$mode" = super ]; then OWNER=""; APPLY_USER=""; else OWNER=chr_app_owner; APPLY_USER=chr_app_owner; fi
+    fresh_db "$OWNER"; export APPLY_USER; apply_pack "$OLD"; add_rows kind
+    check "real d1bdc6f pack ($mode): the old build had the schema and the helper (dblink only when applied by a superuser)" "$(psql -d "$DB" -qAt -c "SELECT (to_regproc('fn_audit_view_committed') IS NOT NULL)::text || '/' || (SELECT count(*) FROM pg_namespace WHERE nspname = 'chr_internal')::text || '/' || (SELECT count(*) FROM pg_extension WHERE extname = 'dblink')::text")" "$([ "$mode" = super ] && echo true/1/1 || echo true/1/0)"
+    psql -d "$DB" -v ON_ERROR_STOP=1 -qAt >/dev/null -c "INSERT INTO access_audit_log (viewer_id, company_id, action, scope) VALUES ('00000000-0000-0000-0000-00000000ab01', '00000000-0000-0000-0000-00000000aa01', 'hr_absence_import_stage', '{\"company_id\": \"00000000-0000-0000-0000-00000000aa01\", \"reason\": \"import_too_many_rows\"}')"
+    BEFORE="$(rows)"; AUDIT0="$(psql -d "$DB" -qAt -c "SELECT count(*) FROM access_audit_log")"
+    apply_pack .
+    check "real d1bdc6f pack ($mode): HR rows unchanged" "$(rows)" "$BEFORE"
+    check "real d1bdc6f pack ($mode): no audit row deleted, the refusal row of the old build stays" "$(psql -d "$DB" -qAt -c "SELECT (count(*) >= $AUDIT0)::text || '/' || (SELECT count(*) FROM access_audit_log WHERE action = 'hr_absence_import_stage' AND scope->>'reason' = 'import_too_many_rows')::text FROM access_audit_log")" "true/1"
+    import_objects "real d1bdc6f pack ($mode)"
+    apply_pack .
+    check "real d1bdc6f pack ($mode): a second apply changes nothing and still has no extension" "$(psql -d "$DB" -qAt -c "SELECT (SELECT count(*) FROM pg_extension WHERE extname = 'dblink')::text || '/' || (SELECT count(*) FROM pg_namespace WHERE nspname = 'chr_internal')::text")" "0/0"
+  done
+  unset APPLY_USER
+  rm -rf "$OLD"
+else
+  echo "SKIP HRUP real d1bdc6f pack (git history not available)"
+fi
+psql -qc "DROP DATABASE IF EXISTS $DB WITH (FORCE)" postgres
 echo "HR KIND UPGRADE TESTS: $FAILS failed"
 [ "$FAILS" = 0 ]

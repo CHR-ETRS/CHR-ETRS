@@ -2804,15 +2804,40 @@ BEGIN
 END;
 $$;
 
+-- J-354: a refused upload as a RETURNED error. Writes the ONE audit row hr_absence_import_stage (who = viewer,
+-- when = created_at; scope = company + the rejection reason only — no file content, no batch), sets the PostgREST
+-- transaction-local setting response.status (400 / 422; PostgREST >= 8.0) and returns the Error Contract body in the
+-- same shape PostgREST gives for a raised error: {code = SQLSTATE, message, details, hint}. Status 400 → SQLSTATE
+-- 22023, 422 → PT422, as fn_raise_bad_request / fn_raise_unprocessable. Internal; no client grant.
+CREATE OR REPLACE FUNCTION fn_hr_import_refuse(p_company uuid, p_status int, p_code text)
+RETURNS jsonb
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  PERFORM fn_audit_view('hr_absence_import_stage', jsonb_build_object('company_id', p_company, 'reason', p_code));
+  PERFORM set_config('response.status', p_status::text, true);
+  RETURN jsonb_build_object('code', CASE p_status WHEN 422 THEN 'PT422' ELSE '22023' END,
+                            'message', p_code,
+                            'details', format('http_hint=%s;code=%s', p_status, p_code),
+                            'hint', p_code);
+END;
+$$;
+
 -- vp_hr stages ONE CSV file (J-307 C) as a new batch: p_rows = the parsed rows in file order (row_no = position,
 -- 1-based), optional source file name and SHA-256 (hex). 400 invalid_import_rows (not a non-empty array of
 -- objects with CSV columns only) / invalid_source_sha256. J-335 A: more rows than the company's
 -- hr_import_max_rows → 422 import_too_many_rows; unset (לא הוגדר) = no limit. J-331 B: a successful stage writes
 -- ONE audit row 'hr_absence_import_stage' (who = viewer, when = created_at; company, batch, row count — no kind,
--- no cells). J-354 (Karin 27.11): a refused stage (400 invalid_import_rows / invalid_source_sha256, or 422
--- import_too_many_rows) is also logged, with who, when, company and the rejection reason — no file content —
--- via fn_audit_view_committed so the row survives the caller's rollback. Returns the batch id, status, row
--- count and the row limit in effect (a number or 'לא הוגדר').
+-- no cells. J-354 (Karin 27.11, no extension): a refused stage (400 invalid_import_rows / invalid_source_sha256, or
+-- 422 import_too_many_rows) is NOT raised: a raise would roll back its own audit row. Every check runs BEFORE any
+-- insert, then fn_hr_import_refuse writes the one audit row (who, when, company, reason — no file content), sets
+-- the HTTP status and RETURNS the Error Contract body, so the transaction commits with that audit row as its only
+-- write and the client still sees 400 / 422. A caller that is not a vp_hr of the company still gets the normal
+-- 403 exception (not an upload — nothing is logged). Returns the batch id, status, row count and the row limit in
+-- effect (a number or 'לא הוגדר').
 CREATE OR REPLACE FUNCTION rpc_hr_absence_import_stage(p_company_id uuid, p_rows jsonb,
                                                        p_source_filename text DEFAULT NULL,
                                                        p_source_sha256 text DEFAULT NULL)
@@ -2828,22 +2853,13 @@ DECLARE
 BEGIN
   PERFORM fn_assert_vp_hr(p_company_id);
   IF NOT fn_hr_import_rows_valid(p_rows) THEN
-    PERFORM fn_audit_view_committed('hr_absence_import_stage',
-      jsonb_build_object('company_id', p_company_id, 'reason', 'invalid_import_rows'),
-      auth.uid(), p_company_id);
-    PERFORM fn_raise_bad_request('invalid_import_rows');
+    RETURN fn_hr_import_refuse(p_company_id, 400, 'invalid_import_rows');
   END IF;
   IF v_limit IS NOT NULL AND jsonb_array_length(p_rows) > v_limit THEN
-    PERFORM fn_audit_view_committed('hr_absence_import_stage',
-      jsonb_build_object('company_id', p_company_id, 'reason', 'import_too_many_rows'),
-      auth.uid(), p_company_id);
-    PERFORM fn_raise_unprocessable('import_too_many_rows');
+    RETURN fn_hr_import_refuse(p_company_id, 422, 'import_too_many_rows');
   END IF;
   IF v_sha IS NOT NULL AND v_sha !~ '^[0-9a-f]{64}$' THEN
-    PERFORM fn_audit_view_committed('hr_absence_import_stage',
-      jsonb_build_object('company_id', p_company_id, 'reason', 'invalid_source_sha256'),
-      auth.uid(), p_company_id);
-    PERFORM fn_raise_bad_request('invalid_source_sha256');
+    RETURN fn_hr_import_refuse(p_company_id, 400, 'invalid_source_sha256');
   END IF;
   INSERT INTO hr_absence_import_batch (company_id, created_by, source_filename, source_sha256)
   VALUES (p_company_id, auth.uid(), NULLIF(btrim(p_source_filename), ''), v_sha)
@@ -3038,7 +3054,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION fn_hr_import_outcome_of(text), fn_hr_import_exceptions(uuid), fn_hr_import_fingerprint(uuid, uuid),
-  fn_hr_import_warnings(uuid), fn_audit_view_committed(text, jsonb, uuid, uuid),
+  fn_hr_import_warnings(uuid), fn_hr_import_refuse(uuid, int, text),
   rpc_hr_employee_numbers(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION rpc_hr_employee_numbers(uuid) TO authenticated;
 REVOKE ALL ON FUNCTION fn_raise_conflict(text), fn_hr_import_cell(jsonb, text), fn_hr_import_rows_valid(jsonb),
