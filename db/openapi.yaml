@@ -231,8 +231,9 @@ info:
     \ always `NULL`); `/rpc/rpc_convert_golden_to_chr` was active on the server in 1.6.13 (superseded in 1.6.16:\
     \ blocked, 422).\n- Time-benefit voucher redemption privacy (`נעילת הפרגוד`): purchasing/redeeming a `time_benefit`\
     \ item in EverStore automatically creates a standard HR approved absence / refresh time entry (`/approved_absence_entry`\
-    \ / `/approved_absence_manager_v`: `'זמן התרעננות / היעדרות מאושרת'`), so the direct manager coordinates the\
-    \ schedule (`/rpc/rpc_coordinate_approved_absence`) without ever seeing that the voucher came from EverStore,\
+    \ / `/approved_absence_manager_v`: `'זמן התרעננות / היעדרות מאושרת'`; since v1.6.21 J-156 A the manager sees only\
+    \ the uniform `/manager_unavailability_v` row), so the direct manager coordinates it (`/rpc/rpc_coordinate_approved_absence`)\
+    \ without ever seeing that the voucher came from EverStore,\
     \ while `/shop_purchase` remains strictly hidden from managers.\n- Cleaned up all resolved `TODO` comments across\
     \ the spec.\n\n**New in 1.6.12-mvp (2026-10-24, Karin + Chief of Drive):**\n- O-7: PCQ-12 answer scale locked\
     \ as 1–6 (Luthans original scale, 12 items, all required), converted linearly to 0–100 (`(mean - 1) / 5.0 *\
@@ -500,6 +501,12 @@ paths:
 
         Lazy reset also runs inside CB / assign paths.
 
+        Who may call (Karin 04.11): only the employee herself (p_user_id = her own id or omitted; active employment)
+        or a system process (J-148: identified only by the connection role — service_role / the server key or a
+        server-side session — never by a parameter, header or claim). Anyone else — the direct manager, any manager,
+        vp_hr, another company — → 403 `access_denied` before anything is read or written. No signed-in user (anonymous
+        client) → 403 `consent_required` (the existing code; J-160: also when a p_user_id is sent).
+
         '
       requestBody:
         required: false
@@ -520,7 +527,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/SpoonBudget'
         '403':
-          $ref: '#/components/responses/BusinessError403'
+          description: access_denied (not the employee herself and not a system process; no detail) | consent_required
+            (anonymous client) | anti_get_blocked (unchanged).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+              example:
+                code: access_denied
+                message: access_denied
   /rpc/rpc_daily_reset_spoons_job:
     post:
       tags:
@@ -556,7 +571,26 @@ paths:
         manager, the dotted line — → 403 `access_denied`, checked before the assignee''s spoons are read, so the
         answer is the same at any spoon level (never circuit_breaker_active / anti_get_blocked for a non-authorized
         caller) and nothing is written (no debit, no task, no early-leave entry). No signed-in user → 403
-        anti_get_blocked (unchanged).'
+        anti_get_blocked (unchanged).
+
+        J-146 A (Karin 04.11): who sees what when the call is refused. (1) The employee assigning to HERSELF sees
+        the exact reason, unchanged (403 circuit_breaker_active / anti_get_blocked, or the SQL error of a bad input).
+        (2) Her direct manager (assigning to someone else) gets ONE neutral answer for EVERY refusal after the
+        authorization check — Circuit Breaker at 4–5 (Fighting) or ≤3, too few spoons, a bad modifier, a missing or
+        too long task name: 403 `assignment_unavailable` (J-152 = A, Karin 04.11), SQLSTATE 42501,
+        message = hint = assignment_unavailable, details http_hint=403;code=assignment_unavailable — the same code,
+        body and fields in every case, raised from one handler. The Hebrew text for the screen comes from
+        /rpc/rpc_notification_message_he with p_kind assignment_unavailable. Nothing is written on a refusal (no
+        task row, no debit, no early-leave entry, no notification, no audit row). (3) Anyone else (J-153 = A, Karin)
+        → always the identical 403 access_denied, whatever the employee''s spoons. Timing: all refusals of (2)
+        evaluate the same checks in the same order (budget row, Circuit Breaker AND cost, then one raise); a
+        bad-input refusal ends earlier (it depends only on the manager''s own input), and lock waits / caching are
+        not equalized (no artificial delay).
+
+        J-260 A (Karin 23.11): the direct manager (assigning to someone else) is refused for EVERY task kind when the
+        employee has 5 spoons or fewer — Farming included — with the same neutral 403 assignment_unavailable, so
+        Farming-allowed / Fighting-refused no longer shows the 4–5 band. Above 5 unchanged. Self-assignment unchanged.
+        No cost refusal can occur above 5 (the cost is capped at 4).'
       requestBody:
         required: true
         content:
@@ -602,8 +636,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Task'
         '403':
-          description: access_denied (J-143 — caller is neither the assignee nor her direct manager; checked first),
-            circuit_breaker_active or anti_get_blocked
+          description: 'access_denied (J-143 / J-153 = A — caller is neither the assignee nor her direct manager;
+            checked first; identical at any spoon level); assignment_unavailable (J-146 A — the direct manager,
+            every refusal reason, one neutral answer); circuit_breaker_active or anti_get_blocked (self-assignment
+            only, unchanged).'
           content:
             application/json:
               schema:
@@ -765,7 +801,14 @@ paths:
         deprivation_tax_cost = system snapshot of the latest team deprivation_tax_amount. UPDATE/DELETE → 403 ledger_immutable.
 
         Shredded subject → 403 vault_sealed. O-13: one hash chain per company (org_id) with automatic GENESIS record;
-        broken chain writes audit alert and blocks writes (403 ledger_chain_broken).'
+        broken chain writes audit alert and blocks writes (403 ledger_chain_broken).
+
+        Who may call (Karin 04.11, J-147): only an active cfo of the ledger''s company (p_org_id, default = her own
+        company; p_subject_user_id, if sent, must be an employee of the same company). J-163 (Karin 04.11): no system
+        path — not granted to service_role (a service_role call is refused by PostgreSQL: 42501 permission denied),
+        and a server-side call without a signed-in cfo gets 403 `access_denied`. manager, vp_hr, legal_ethics and
+        every role of another company → 403 `access_denied` before anything is read or written, with no detail.
+        Anonymous client → 403 anti_get_blocked (unchanged).'
       requestBody:
         required: true
         content:
@@ -803,7 +846,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/ManagerLedger'
         '403':
-          description: ledger_immutable or anti_get_blocked
+          description: access_denied (not an active cfo of that company; no detail),
+            ledger_immutable, ledger_chain_broken, vault_sealed or anti_get_blocked (anonymous)
           content:
             application/json:
               schema:
@@ -1078,7 +1122,13 @@ paths:
       summary: 'Upsert EVA salary inputs and turnover tier (tier: vp_hr only)'
       description: 'No multiplier. The deprivation tax is a team/company figure. O-2 (Karin 24.10): turnover_tier
         defaults automatically from org_role.tier (1→junior, 2–3→mid, 4→senior, 5/outside→NULL excluded unless overridden),
-        with the CHRO (vp_hr) able to override per employee.'
+        with the CHRO (vp_hr) able to override per employee.
+
+        Who may call (Karin 04.11, J-149): only an active vp_hr or cfo of the SAME company as the employee — the
+        employee herself, managers, legal_ethics and other companies no longer write → 403 `access_denied` before
+        anything is read or written (also for an unknown p_user_id: no existence hint). The turnover tier stays vp_hr
+        only (a cfo sending p_turnover_tier → 403 anti_get_blocked, unchanged). Anonymous → 403 anti_get_blocked
+        (unchanged). No system path.'
       requestBody:
         required: true
         content:
@@ -1115,7 +1165,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/EmployeeValueAsset'
         '403':
-          $ref: '#/components/responses/BusinessError403'
+          description: access_denied (not an active vp_hr / cfo of the employee's company; no detail) or
+            anti_get_blocked (anonymous; turnover tier by a non-vp_hr)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+              example:
+                code: access_denied
+                message: access_denied
   /rpc/rpc_team_aggregate_refresh:
     post:
       tags:
@@ -1211,22 +1269,43 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/EarlyLeaveLog'
-  /early_leave_manager_v:
+  /manager_unavailability_v:
     get:
       tags:
       - reads
-      summary: Go-home notices for the direct manager — pseudonym + locked text + time
+      summary: 'Direct manager: one uniform list of who is unavailable (לא זמינה), today and future only'
+      description: "v1.6.21 J-156 A / J-169 / J-170 + J-255 A / J-262 A / J-263 B (Karin 23.11): ONE uniform list for the active direct manager — entry id, pseudonym, date, availability_he and coordination_status. Identical columns, text, statuses and order for every source (early leave / go-home, approved absence, EverStore time benefit, HR-entered sick leave / absence — /rpc/rpc_hr_absence_put). ONE row per employee per day (J-262 A): entry_id = the smallest id of the day's parts; coordination_status coordinated only when every part is. Today and future days only (the employee's own calendar day); no history, no cancelled entries, no ex-employees. availability_he is always 'לא זמינה' (J-255 A). Order: date, pseudonym, entry id (J-256). Never a time, spoons, type, source text, count or reason. Averages-only roles get no rows."
       parameters:
       - $ref: '#/components/parameters/select'
       responses:
         '200':
-          description: Go-home notices for the direct manager — pseudonym + locked text + time
+          description: Uniform unavailability rows of the caller's active direct reports
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/EarlyLeaveManagerView'
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
+  /early_leave_manager_v:
+    get:
+      tags:
+      - reads
+      summary: 'Deprecated alias (J-258 A — removed in the next version after this one) of /manager_unavailability_v — identical rows; no early-leave text or time'
+      description: 'Replaced in v1.6.21 (J-156 A): was pseudonym + ''יציאה מוקדמת מאושרת'' + left_at. Now returns
+        exactly /manager_unavailability_v (same columns, rows and order). Kept for THIS version only so existing clients
+        can move; removed in the next version after this one (J-258 A, Karin 23.11; no date set).'
+      deprecated: true
+      parameters:
+      - $ref: '#/components/parameters/select'
+      responses:
+        '200':
+          description: Same rows as /manager_unavailability_v
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
   /turnover_tier_config:
     get:
       tags:
@@ -1403,7 +1482,7 @@ paths:
       - rpc
       summary: v1.6.21-r4 (J-137 = A) Cron — vp_hr reminders for teams of ≥ 10 without a Shadow Balance row in the month
         that just closed (service_role)
-      description: v1.6.21-r5 (J-141 = A; J-142 open) — closed months only; one 'team_not_calculated' notification per vp_hr, team and month (re-runs and rebuilt reports never add a second; the pack runs it too).
+      description: v1.6.21-r5 (J-141 = A; J-142 = A — one reminder per team per month per vp_hr) — closed months only; one 'team_not_calculated' notification per vp_hr, team and month (re-runs and rebuilt reports never add a second; the pack runs it too).
         The text comes from /rpc/rpc_notification_message_he (team name only). Returns the number of notices added.
       responses:
         '200':
@@ -1659,7 +1738,14 @@ paths:
         crypto-shred (O-14)'
       description: 'O-14 (Karin 24.10): sets users.employment_ended_at and consent_vault = false, wipes manager
         vault entries immediately, and schedules pseudonym_key crypto-shredding for terminated_at + 30 days (cancellable
-        via /rpc/rpc_revert_offboarding within 30 days).'
+        via /rpc/rpc_revert_offboarding within 30 days). v1.6.21 J-295 C (Karin 23.11): offboarding always succeeds and
+        now returns OffboardResult — terminated_at plus hr_kind_review_pending (count + entries: entry_id, absence_date,
+        kind_review_status, reviewable) of the employee''s HR absence days whose kind vp_hr has not set yet; never
+        the kind or a name. J-313 (Karin 27.11): an end date is active THROUGH its whole last day — until just before 00:00 of
+        the next day in the company time zone (the end timestamp is read as its company-local date). So with a future
+        or an immediate p_terminated_at vp_hr can still set the kind that day (reviewable = true); from 00:00 of the
+        next company-local day the days are unreviewable (reviewable = false, J-310; earlier builds: at the end instant). Callable by service_role only (no client grant, J-309); vp_hr sees the same days in
+        /rpc/rpc_hr_absence_list_company (p_needs_review_only, reviewable).'
       requestBody:
         required: true
         content:
@@ -1681,7 +1767,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PseudonymKeyStatus'
+                $ref: '#/components/schemas/OffboardResult'
         '403':
           $ref: '#/components/responses/BusinessError403'
   /org_role:
@@ -3192,20 +3278,21 @@ paths:
     get:
       tags:
       - reads
-      summary: Direct manager view of approved absence / refresh time entries — pseudonym + locked text only (נעילת
-        הפרגוד)
-      description: 'v1.6.13 (Karin 25.10, נעילת הפרגוד): shows display_pseudonym, requested_date, entry_type (approved_absence),
-        entry_text (זמן התרעננות / היעדרות מאושרת), and schedule_status for direct reports. Contains zero reference
-        to EverStore, item_id, or Golden Spoons.'
+      summary: 'Deprecated alias (J-258 A — removed in the next version after this one) of /manager_unavailability_v — identical rows; no type or source text'
+      description: 'Replaced in v1.6.21 (J-156 A / J-170): was display_pseudonym, requested_date, entry_type, entry_text,
+        schedule_status and created_at of all dates (v1.6.13 נעילת הפרגוד). Now returns exactly /manager_unavailability_v
+        (same columns, rows and order; today and future only). Still zero reference to EverStore, item_id or Golden
+        Spoons. Kept for THIS version only; removed in the next version after this one (J-258 A, Karin 23.11; no date set).'
+      deprecated: true
       responses:
         '200':
-          description: Pseudonymous approved absence entries for direct reports
+          description: Same rows as /manager_unavailability_v
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ApprovedAbsenceManagerView'
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
   /rpc/rpc_everstore_upsert_item:
     post:
       tags:
@@ -3277,11 +3364,584 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '403':
           $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_put:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: record ONE day of sick leave or other HR absence for one employee (J-263 B)'
+      description: 'v1.6.21 J-263 B + J-267 C (Karin 23.11). Only an active vp_hr of p_company_id (else 403 insufficient_privilege,
+        J-270); the employee must be an active employee of that company (else 403 access_denied, no existence hint).
+        p_absence_kind is REQUIRED: sick | other (else 400 invalid_absence_kind) — HEALTH DATA. No reason, diagnosis
+        or free-text field. Any date (no range set, J-273). One row per employee per day: an active day keeps its
+        coordination and takes the new kind (correction, J-279); a cancelled day is re-opened (pending_coordination).
+        Audited WITHOUT the kind (J-280, Karin 27.11, replaced J-280 B — the WORM audit log records only THAT the kind was
+        set or changed: company, date, kind_set = true, who and when; no absence_kind, no kind_review_status; the employee as the subject). A row that needs review (J-278 B) becomes reviewed. The
+        kind is readable only by the company''s vp_hr (/rpc/rpc_hr_absence_list, /rpc/rpc_hr_absence_list_company)
+        and by the employee herself (/rpc/rpc_hr_absence_my_list, audited — J-269 A / J-291 B); the direct manager sees the day only
+        as a uniform "לא זמינה" row of /manager_unavailability_v, identical for sick and other. Sick days (not cancelled)
+        feed the J-80 / J-53 team and board sickness totals as an aggregate, deduplicated per employee-day and combined
+        with the vp_hr manual monthly number as the larger of the two (J-272 B / J-276); all thresholds unchanged.
+        Retention: לא הוגדר (J-271 B).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              - p_absence_date
+              - p_absence_kind
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_absence_date:
+                  type: string
+                  format: date
+                p_absence_kind:
+                  type: string
+                  enum:
+                  - sick
+                  - other
+                  description: J-267 C — health data; never returned to the manager or any other role.
+      responses:
+        '200':
+          description: Saved (no person field, no kind)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entry_id:
+                    type: string
+                    format: uuid
+                  absence_date:
+                    type: string
+                    format: date
+                  status:
+                    type: string
+                    enum:
+                    - saved
+        '400':
+          description: invalid_requested_date (no date) | invalid_absence_kind (missing or not sick / other)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_set_employee_number:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: set or clear the per-company employee number of a user of her company (J-300 B)'
+      description: 'v1.6.21 J-300 B (Karin 23.11). The import match key: unique per company (the same number may exist
+        in another company), compared case-insensitively (J-334 A). The ONLY writer of users.employee_number — no HR sync writes it (the PR #13 directory
+        sync matches by e-mail and writes shifts only). Only an active vp_hr of p_company_id (else 403
+        insufficient_privilege); a user of another company or an unknown id → 403 access_denied (no existence hint);
+        null clears it. Audited as employee_number_set (company only; the number itself is not logged).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              - p_employee_number
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_employee_number:
+                  type: string
+                  nullable: true
+                  description: Trimmed; blank → 400. Null clears the number.
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                    - saved
+        '400':
+          description: invalid_employee_number (blank)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+        '409':
+          description: employee_number_taken (already used by another user of the same company)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_hr_employee_numbers:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: read the employee numbers of the company''s active employees (J-336 B)'
+      description: 'v1.6.21 J-336 B (Karin 25.11). The dedicated reader — numbers are NOT added to any other list. Only
+        an active vp_hr of p_company_id (else 403 insufficient_privilege). Returns full name, e-mail and employee
+        number (null = not set) of every active employee of the company (employee profile; an end date in the future
+        still counts, through its whole last company-local day — J-297 B / J-313). No user id. Every successful read is logged (J-352, Karin 27.11): action
+        hr_employee_numbers_read, who and when, company only — never the numbers.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: One row per active employee
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    full_name:
+                      type: string
+                    email:
+                      type: string
+                    employee_number:
+                      type: string
+                      nullable: true
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_import_stage:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: stage one HR absence CSV file as an import batch (J-301 B / J-307 C)'
+      description: 'v1.6.21 J-301 B / J-307 C (Karin 23.11). CSV is the standard; the client parses the file (xlsx is
+        converted to CSV outside the DB) and sends its rows in file order (row_no = position, 1-based). Columns:
+        employee_number, email, absence_date (YYYY-MM-DD), absence_kind (sick | other — HEALTH DATA), action (put |
+        cancel). No reason or free-text column (J-267 C): any other key → 400 invalid_import_rows. Optional source
+        file name and SHA-256 (hex) go to the commit header audit row. Only an active vp_hr of p_company_id (else 403
+        insufficient_privilege). Writes staging only (no HR row) plus ONE audit row hr_absence_import_stage (J-331 B,
+        Karin 25.11: who / when, company, batch, row count — no kind, no cell). J-354 (Karin 27.11, no database
+        extension): a refused file (400 invalid_import_rows / invalid_source_sha256, or 422 import_too_many_rows) is
+        logged — ONE audit row with who, when, company and the rejection reason, no file content, no batch. To keep
+        that row, the refusal is not a raised error (a raise would roll the row back): the RPC sets the HTTP status
+        itself (PostgREST response.status, PostgREST 8.0 or newer) and returns the error body, so the client still
+        gets HTTP 400 / 422 with the Error Contract body {code (SQLSTATE 22023 or PT422), message (the business code),
+        details ''http_hint=<status>;code=<code>'', hint (the business code)} — see HrImportRefusalBody. Every
+        check runs before anything is staged, so a refused call writes nothing but its audit row. Not an upload and
+        not logged: 403 insufficient_privilege (not a vp_hr of the company). Caveats: a caller that sends
+        Prefer: tx=rollback (or a server with db-tx-end = rollback) rolls the audit row back too; a direct SQL
+        caller gets the body as the function result instead of an exception. Row limit (J-335 A): the agent setting
+        hr_import_max_rows — empty by default (לא הוגדר = no limit); when a company sets it, a longer file → 422
+        import_too_many_rows. The answer reports row_limit (the number, or ''לא הוגדר''). Batch size beyond that and
+        retention of the staged rows: לא הוגדר.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_rows
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_rows:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: '#/components/schemas/HrAbsenceImportCsvRow'
+                p_source_filename:
+                  type: string
+                  nullable: true
+                p_source_sha256:
+                  type: string
+                  nullable: true
+                  pattern: ^[0-9a-fA-F]{64}$
+      responses:
+        '200':
+          description: Staged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum:
+                    - staged
+                  rows:
+                    type: integer
+                  row_limit:
+                    description: J-335 A — the row limit in effect, or the text 'לא הוגדר' (no limit)
+                    oneOf:
+                    - type: integer
+                    - type: string
+                      enum:
+                      - לא הוגדר
+        '400':
+          description: 'invalid_import_rows | invalid_source_sha256 — HTTP 400 set by the RPC (J-354); body
+            {code: ''22023'', message, details: ''http_hint=400;code=<message>'', hint: <message>}; the refusal is audited
+            (who, when, company, reason; no file content)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrImportRefusalBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+        '422':
+          description: 'import_too_many_rows (more rows than the company''s hr_import_max_rows) — HTTP 422 set by the RPC
+            (J-354); body {code: ''PT422'', message: ''import_too_many_rows'', details:
+            ''http_hint=422;code=import_too_many_rows'', hint: ''import_too_many_rows''}; the refusal is audited (who,
+            when, company, reason; no file content)'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrImportRefusalBody'
+  /rpc/rpc_hr_absence_import_validate:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: DRY RUN of a staged import batch — the report, nothing written (J-301 B)'
+      description: 'v1.6.21 J-301 B (Karin 23.11). Validates every row and returns HrAbsenceImportResult. Writes NOTHING
+        to the HR rows and nothing to the audit (staging state only); repeatable. Match (J-300 B): employee_number in
+        the company; only when it is empty, e-mail (case-insensitive). Row codes: invalid_action, invalid_date,
+        invalid_kind, missing_key, unmatched (opaque — another company, unknown, ambiguous, no employee profile:
+        J-303 B), leaver (this company''s own leaver only; an end date is active through its whole last company-local day — J-297 B, J-313),
+        no_entry (cancel of a day with no stored row; nothing is cancelled implicitly — J-305 C), duplicate and
+        conflict (J-306 C: the LAST file row of an employee + day wins; conflicts list both rows with their file
+        values). Any date (J-304 A). Only an active vp_hr of the batch''s company: not vp_hr of p_company_id → 403
+        insufficient_privilege; a batch of another company or an unknown id → 403 access_denied. Committed batch →
+        409 import_batch_committed. Karin 25.11: identity_mismatch (J-329 C — number and e-mail name two different
+        employees) and put_cancel_same_day (J-337 B — a day both put and cancelled in the file with no stored row, in
+        either order) are outcome ''exception'': never written, listed in exceptions, and requires_attention = true —
+        the report is the alert to the vp_hr (no other channel; J-347, follow-up J-357). J-346: a given e-mail that
+        names nobody is a warning (email_unmatched) — not an exception; the row is still processed by number. All cells are case-insensitive, the employee number
+        too (J-334 A). The dry run stores a fingerprint of what it saw (J-332 B).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAbsenceImportBatchRef'
+      responses:
+        '200':
+          description: The dry-run report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HrAbsenceImportResult'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+        '409':
+          description: import_batch_committed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_hr_absence_import_commit:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: commit a dry-run-validated import batch ONCE (J-301 B / J-302 A)'
+      description: 'v1.6.21 J-301 B / J-302 A (Karin 23.11). Re-runs the dry run (the state may have changed), then
+        writes the accepted rows only, set-based, with the put / cancel semantics (J-279 A: a re-put keeps the entry
+        and its coordination status and takes the new kind; a needs_review day becomes reviewed; a cancelled day is
+        re-opened; cancel is status only, never a delete). One WORM audit row per write WITHOUT the kind (hr_absence_put
+        / hr_absence_cancel, the single-RPC shape + import_batch_id — J-280 / J-371; a put also carries kind_set = true), plus ONE header row
+        hr_absence_import_commit (company, batch, counts, source file name / hash; no kind, no person). A staged batch
+        without a dry run → 409 import_batch_not_validated; a second commit → 409 import_batch_committed. J-332 B
+        (Karin 25.11): when anything the dry run saw changed — the staged rows or their results, the employees of the
+        company named by a row''s number or e-mail (id, number, e-mail, employee profile, end of employment), or the
+        stored HR rows of the file''s employee-days — → 409 import_batch_changed, nothing written; run a new dry run.
+        J-333 A: any active vp_hr of the company may commit, not only the uploader. Same access rules as the dry run.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HrAbsenceImportBatchRef'
+      responses:
+        '200':
+          description: Committed — the final report plus the rows written
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/HrAbsenceImportResult'
+                - type: object
+                  properties:
+                    written:
+                      type: object
+                      properties:
+                        put:
+                          type: integer
+                        cancel:
+                          type: integer
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+        '409':
+          description: import_batch_not_validated | import_batch_committed | import_batch_changed (J-332 B — run a new dry run)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+  /rpc/rpc_hr_absence_list:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: read the HR absence days of ONE employee, with the kind (J-267 C)'
+      description: 'v1.6.21 J-267 C (Karin 23.11). Same checks as /rpc/rpc_hr_absence_put (active vp_hr of the company,
+        else 403 insufficient_privilege; an active employee of that company, else 403 access_denied). J-292 (Karin
+        23.11): vp_hr reads are NOT logged (no audit row). One employee per call; the whole company:
+        /rpc/rpc_hr_absence_list_company (J-288 B). Rows carry the review state (J-278 B). Cancelled days are included
+        (cancelled = true). No person field in the rows; J-296 B: + reviewable (the guard''s answer). The employee reads her own days through
+        /rpc/rpc_hr_absence_my_list (J-291 B); no other role (manager, cfo, board, legal_ethics, owner_shareholder)
+        can call this.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: The employee's HR days, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceVpHrRow'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_list_company:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: read the HR absence rows of EVERY employee of the company, with kind and review state (J-288 B)'
+      description: 'v1.6.21 J-288 B (Karin 23.11). Only an active vp_hr of p_company_id; everyone else (manager, cfo,
+        board, legal_ethics, owner_shareholder, other employees, other companies, every other role) → 403
+        insufficient_privilege. J-293 (Karin 23.11): each row = the single reader''s fields + the employee''s user_id
+        and full_name — an explicitly approved exception to the no-person-id rule (like J-173), for vp_hr of the same
+        company only. p_needs_review_only = only the rows whose kind must be set (J-278 B). J-292: NOT logged.
+        Cancelled rows and leavers'' rows included (cancelled = true; a leaver''s needs_review row cannot be reviewed —
+        J-294 C / J-295; reviewable = false — J-296 B).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_needs_review_only:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: The company's HR rows, oldest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceCompanyRow'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_my_list:
+    post:
+      tags:
+      - rpc
+      summary: 'The employee reads her OWN HR absence days, with the kind — audited (J-291 B)'
+      description: 'v1.6.21 J-291 B (Karin 23.11). The only client read path of the HR absence rows: the direct table
+        read is revoked, so a read cannot bypass the log. The reader is the signed-in user (auth.uid(), no parameter).
+        Every call writes one access_audit_log row (action hr_absence_self_read, viewer = subject = herself, company
+        in the scope) WITHOUT the kind, dates or count. Same row shape as /rpc/rpc_hr_absence_list. Not signed in → 403
+        access_denied.
+        J-311 (Karin 27.11): each row also carries pending_hr_review — true while the row still waits for HR to set
+        its kind (kind_review_status needs_review; absence_kind is then null). A neutral flag only: no reason, no HR
+        note, no reviewer. J-367 / J-369 (Karin 27.11): while it is true the row also carries pending_hr_review_label_he
+        (''בהשלמה'') and pending_hr_review_explain_he (''רשומות חדשות או מעודכנות מאושרות על ידי משאבי אנוש. אין צורך
+        בפעולה מצידך.''); both are null when the flag is false. Her own rows only; the manager list and the vp_hr readers
+        do not carry them. J-368 (Karin 27.11): a CANCELLED day has pending_hr_review = false (label and explanation null)
+        even if its kind_review_status is still needs_review, and carries cancelled_label_he (''בוטל''); the vp_hr
+        readers are unchanged (the row stays in the review queue until HR closes it).'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Her own HR days, oldest first (empty when none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceSelfRow'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_set_kind:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: set (review) the kind of ONE HR row by its entry id (J-278 B)'
+      description: 'v1.6.21 J-278 B (Karin 23.11). Only an active vp_hr of p_company_id (else 403 insufficient_privilege);
+        a row of another company, an unknown id or (J-294 C, Karin 23.11) a row of an employee who is no longer active
+        → the same 403 access_denied (no existence hint, no hint that she left); p_absence_kind sick | other
+        (else 400 invalid_absence_kind — a kind is never guessed). The row becomes reviewed; coordination and
+        cancellation are unchanged; the manager list is unchanged. Audited as hr_absence_kind_set with who, when and the marker
+        kind_set = true, WITHOUT the kind or the review state (J-280), the employee as the subject. Active employees only (J-294 C replaced "any row"); J-297 B / J-313: an employee is active through the whole last day of her end date
+        (until 00:00 of the next day in the company time zone; the end timestamp is read as its company-local date).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_entry_id
+              - p_absence_kind
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_entry_id:
+                  type: string
+                  format: uuid
+                p_absence_kind:
+                  type: string
+                  enum:
+                  - sick
+                  - other
+      responses:
+        '200':
+          description: Reviewed (no person field, no kind)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entry_id:
+                    type: string
+                    format: uuid
+                  absence_date:
+                    type: string
+                    format: date
+                  status:
+                    type: string
+                    enum:
+                    - reviewed
+        '400':
+          description: invalid_absence_kind
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
+  /rpc/rpc_hr_absence_cancel:
+    post:
+      tags:
+      - rpc
+      summary: 'vp_hr: cancel the HR absence day of one employee (status only, never a delete; J-263 B)'
+      description: 'Same checks as /rpc/rpc_hr_absence_put. Idempotent. A day without an entry → 400
+        invalid_requested_date. Audited with who and when and WITHOUT the kind (J-280 / J-371; company + date only; the employee does not see it). The day
+        disappears from the manager list.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - p_company_id
+              - p_user_id
+              - p_absence_date
+              properties:
+                p_company_id:
+                  type: string
+                  format: uuid
+                p_user_id:
+                  type: string
+                  format: uuid
+                p_absence_date:
+                  type: string
+                  format: date
+      responses:
+        '200':
+          description: Cancelled (no person field)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  absence_date:
+                    type: string
+                    format: date
+                  status:
+                    type: string
+                    enum:
+                    - cancelled
+        '400':
+          description: invalid_requested_date (no entry on that day)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          $ref: '#/components/responses/BusinessError403'
   /rpc/rpc_coordinate_approved_absence:
     post:
       tags:
       - rpc
-      summary: 'Direct manager: coordinate schedule of an approved absence / refresh time entry (נעילת הפרגוד)'
+      summary: 'Direct manager: coordinate ONE row of the uniform unavailability list (any source; coordinate only)'
       requestBody:
         required: true
         content:
@@ -3294,23 +3954,25 @@ paths:
                 p_absence_id:
                   type: string
                   format: uuid
-                p_requested_date:
-                  type: string
-                  format: date
-                  nullable: true
+                  description: entry_id of a /manager_unavailability_v row, or the id of any part of that employee-day
+                    (J-262 A / J-268) — every part of the day is coordinated
       responses:
         '200':
-          description: Coordinated pseudonymous entry
+          description: The coordinated (merged) row, same shape as /manager_unavailability_v (coordination_status
+            coordinated); idempotent
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ApprovedAbsenceManagerView'
+                  $ref: '#/components/schemas/ManagerUnavailabilityRow'
         '403':
           $ref: '#/components/responses/BusinessError403'
-      description: 'v1.6.18 (A-13): a cancelled entry, or an entry of an employee whose employment has ended, cannot
-        be coordinated or moved → 403 anti_get_blocked.'
+      description: 'v1.6.21 J-169 / J-170 (Karin, relayed 23.11): the manager can only coordinate — p_requested_date was removed
+        (J-257; dates change only through the employee''s /rpc/rpc_request_absence_reschedule). Works the same for every
+        source. Not a row of the caller''s direct report → 403 access_denied. v1.6.18 (A-13): a direct report''s row that
+        is cancelled, past, or of an employee whose employment has ended → 403 anti_get_blocked. Neither refusal depends
+        on the source.'
   /rpc/rpc_submit_morning_checkin: *id014
   /rpc/rpc_submit_midday_checkin: *id015
   /rpc/rpc_get_agent_settings:
@@ -3700,7 +4362,10 @@ paths:
         (sickness + unplanned + unapproved early leave; approved / refresh / time benefits / vacation / pre-approved
         early leave not counted); month input missing → display_he "חסר: team_absence_input", used_in_risk false
         (the term is skipped, the other signals run unchanged); < 5 active employees → not shown. v1.6.20: definition_he
-        = Karin''s approved 3-line text (J-88, no טיוטה); p_team_id "ללא מחלקה" or blank → 400 invalid_team (J-92).'
+        = Karin''s approved 3-line text (J-88, no טיוטה); p_team_id "ללא מחלקה" or blank → 400 invalid_team (J-92).
+        v1.6.21 J-272 B (Karin 23.11): the sickness part = the LARGER of the manual sickness number and the HR-entered
+        sick days of the team (hr_absence_entry, kind sick, not cancelled, distinct employee-days — J-276); still
+        "חסר" without the month row (J-277); < 5 unchanged. The J-88 definition text is unchanged (J-281).'
       requestBody:
         required: true
         content:
@@ -4569,7 +5234,10 @@ paths:
       tags:
       - agents
       summary: v1.6.19-r3 (J-80 = A) — TOTAL absence days of one team month (vp_hr only)
-      description: 'The only absence source of the burnout agent and the board. Total days per team per month
+      description: 'v1.6.21 J-272 B (Karin 23.11): the stored sickness number is combined with the HR-entered sick days
+        of the team month (/rpc/rpc_hr_absence_put, kind sick, not cancelled, each employee-day once) as the LARGER of
+        the two in the burnout and board totals (J-276, flagged); the row stays required (J-277); thresholds
+        unchanged. The only manual absence source of the burnout agent and the board. Total days per team per month
         — sickness, unplanned absence, early leave that was NOT pre-approved (each ≥ 0, one decimal). Approved
         absences / refresh time, planned vacation, EverStore time benefits and pre-approved early leave are not
         counted and have no field. No employee, no name. The team must have active employees in the month (400
@@ -4667,7 +5335,9 @@ paths:
         for the vp_hr who received it). v1.6.21 (J-123 = B) no_department_cuckoo → "בקרב העובדים בלי מחלקה יש סימני
         העמסה של עבודה של אחרים. מומלץ לשייך את העובדים למחלקות, כדי שההתראות יגיעו למנהלת הנכונה." (J-129 approved; active vp_hr of a company with a delivered
         company-level alert; no number, no name). J-128 = A: one kind per call — the reminder count never comes in
-        the same response as any metric of the no-department group. Other kinds → null. The text is
+        the same response as any metric of the no-department group. J-146 A assignment_unavailable → "לא ניתן להקצות
+        לה את המשימה כרגע. אפשר להקצות למישהי אחרת בצוות או לנסות שוב מחר." (any signed-in caller; the screen text of
+        the neutral 403 of /rpc/rpc_assign_task; no number, no name). Other kinds → null. The text is
         fixed per kind (no names, no ids) and is never stored in the notification row. The notice itself is
         created once per vp_hr and company by the pack after an upgrade (re-runs add none); it is visible only
         to its recipient (/notification, RLS).'
@@ -5057,7 +5727,8 @@ components:
     BusinessError403:
       description: 'Business rule failure → HTTP 403. SQLSTATE 42501 + HINT business code.
 
-        Codes: circuit_breaker_active | anti_get_blocked | ledger_immutable | questionnaire_immutable | others.'
+        Codes: circuit_breaker_active | anti_get_blocked | ledger_immutable | questionnaire_immutable |
+        assignment_unavailable (J-146 A, rpc_assign_task by the direct manager) | others.'
       content:
         application/json:
           schema:
@@ -5074,6 +5745,317 @@ components:
             message: aggregation_privacy_threshold
             http_status: 403
   schemas:
+    HrAbsenceCompanyRow:
+      type: object
+      description: 'v1.6.21 J-288 B / J-293 — one HR absence row of the vp_hr company list: HrAbsenceVpHrRow + the
+        employee''s user_id and full_name (approved exception to the no-person-id rule, vp_hr of the same company only).'
+      allOf:
+      - $ref: '#/components/schemas/HrAbsenceVpHrRow'
+      - type: object
+        properties:
+          user_id:
+            type: string
+            format: uuid
+          full_name:
+            type: string
+    HrAbsenceImportCsvRow:
+      type: object
+      additionalProperties: false
+      description: 'J-307 C — one CSV row (all cells text; empty = missing). Key: employee_number, else email (J-300 B).'
+      properties:
+        employee_number:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        absence_date:
+          type: string
+          description: YYYY-MM-DD
+        absence_kind:
+          type: string
+          nullable: true
+          description: sick | other (required for put; may be empty for cancel) — health data
+        action:
+          type: string
+          description: put | cancel
+    HrAbsenceImportBatchRef:
+      type: object
+      required:
+      - p_company_id
+      - p_batch_id
+      properties:
+        p_company_id:
+          type: string
+          format: uuid
+        p_batch_id:
+          type: string
+          format: uuid
+    HrAbsenceImportFileRow:
+      type: object
+      description: J-306 C — one file row as typed (row number + the five cells), used in conflicts.
+      properties:
+        row_no:
+          type: integer
+        employee_number:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        absence_date:
+          type: string
+          nullable: true
+        absence_kind:
+          type: string
+          nullable: true
+        action:
+          type: string
+          nullable: true
+    HrAbsenceImportResult:
+      type: object
+      description: 'J-301 B — the import report for the batch''s vp_hr. No user id, name or other person data; the
+        conflicts echo the vp_hr''s own file values (including the kind).'
+      properties:
+        batch_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - validated
+          - committed
+        counts:
+          type: object
+          properties:
+            rows:
+              type: integer
+            accepted:
+              type: integer
+            rejected:
+              type: integer
+            duplicate:
+              type: integer
+            superseded:
+              type: integer
+            exception:
+              type: integer
+        requires_attention:
+          type: boolean
+          description: J-329 C / J-337 B — true when any row is an exception (the alert to the vp_hr)
+        exceptions:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                - identity_mismatch
+                - put_cancel_same_day
+              rows:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceImportFileRow'
+        warnings:
+          type: array
+          description: J-346 — not exceptions; a given e-mail that matches nobody (the row is still processed by number)
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                - email_unmatched
+              rows:
+                type: array
+                items:
+                  $ref: '#/components/schemas/HrAbsenceImportFileRow'
+        rows:
+          type: array
+          items:
+            type: object
+            properties:
+              row_no:
+                type: integer
+              outcome:
+                type: string
+                enum:
+                - accepted
+                - rejected
+                - duplicate
+                - superseded
+                - exception
+              code:
+                type: string
+                nullable: true
+                enum:
+                - invalid_action
+                - invalid_date
+                - invalid_kind
+                - missing_key
+                - unmatched
+                - leaver
+                - no_entry
+                - duplicate
+                - conflict
+                - identity_mismatch
+                - put_cancel_same_day
+                - null
+              winner_row_no:
+                type: integer
+                nullable: true
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                enum:
+                - conflict
+              superseded:
+                $ref: '#/components/schemas/HrAbsenceImportFileRow'
+              winner:
+                $ref: '#/components/schemas/HrAbsenceImportFileRow'
+    HrAbsenceSelfRow:
+      type: object
+      description: 'J-311 / J-367 (Karin 27.11) — HrAbsenceRow + pending_hr_review for the employee''s OWN read: true while
+        the row waits for HR to set its kind (same fact as kind_review_status = needs_review, as a neutral flag), with
+        Karin''s two Hebrew texts while true and null otherwise (a cancelled day is never pending and carries the text בוטל, J-368). No reason, no HR note, no reviewer identity.'
+      allOf:
+      - $ref: '#/components/schemas/HrAbsenceRow'
+      - type: object
+        required:
+        - pending_hr_review
+        - pending_hr_review_label_he
+        - pending_hr_review_explain_he
+        - cancelled_label_he
+        properties:
+          pending_hr_review:
+            type: boolean
+          pending_hr_review_label_he:
+            type: string
+            nullable: true
+            description: 'J-367 — exactly the text below while pending_hr_review is true; null when false'
+            enum:
+            - בהשלמה
+            - null
+          pending_hr_review_explain_he:
+            type: string
+            nullable: true
+            description: 'J-367 — exactly the text below while pending_hr_review is true; null when false'
+            enum:
+            - רשומה ישנה שמשאבי אנוש משלימים בה פרטים. אין צורך בפעולה מצידך.
+            - null
+          cancelled_label_he:
+            type: string
+            nullable: true
+            description: 'J-368 — exactly this text while cancelled is true; null otherwise'
+            enum:
+            - בוטל
+            - null
+    HrAbsenceVpHrRow:
+      type: object
+      description: 'v1.6.21 J-296 B — HrAbsenceRow + reviewable for the vp_hr readers: true when vp_hr may set the kind
+        (rpc_hr_absence_set_kind would accept it — an active employee, J-294 C / J-297 B), false e.g. for a leaver''s row.'
+      allOf:
+      - $ref: '#/components/schemas/HrAbsenceRow'
+      - type: object
+        properties:
+          reviewable:
+            type: boolean
+    OffboardResult:
+      type: object
+      description: 'v1.6.21 J-295 C — result of /rpc/rpc_offboard_employee (service_role only). hr_kind_review_pending =
+        the employee''s HR days still in needs_review (no kind, no name).'
+      properties:
+        terminated_at:
+          type: string
+          format: date-time
+        hr_kind_review_pending:
+          type: object
+          properties:
+            count:
+              type: integer
+            entries:
+              type: array
+              items:
+                type: object
+                properties:
+                  entry_id:
+                    type: string
+                    format: uuid
+                  absence_date:
+                    type: string
+                    format: date
+                  kind_review_status:
+                    type: string
+                    enum:
+                    - needs_review
+                  reviewable:
+                    type: boolean
+    HrAbsenceRow:
+      type: object
+      description: 'v1.6.21 J-267 C / J-278 B / J-288 B — one HR absence row for vp_hr (health data). absence_kind is
+        null exactly while kind_review_status = needs_review (a row from before the kind existed; never guessed). No
+        person field.'
+      properties:
+        entry_id:
+          type: string
+          format: uuid
+        absence_date:
+          type: string
+          format: date
+        absence_kind:
+          type: string
+          nullable: true
+          enum:
+          - sick
+          - other
+          - null
+        kind_review_status:
+          type: string
+          enum:
+          - reviewed
+          - needs_review
+        coordination_status:
+          type: string
+          enum:
+          - pending_coordination
+          - coordinated
+        cancelled:
+          type: boolean
+    HrImportRefusalBody:
+      type: object
+      description: 'J-354 (Karin 27.11): the body of a refused HR absence upload (rpc_hr_absence_import_stage), returned
+        with HTTP 400 or 422 set by the RPC itself (PostgREST response.status) — the same four fields PostgREST gives for a
+        raised error, so a client reads it like any other error. No file content, no batch id.'
+      required:
+      - code
+      - message
+      - details
+      - hint
+      properties:
+        code:
+          type: string
+          description: SQLSTATE — 22023 for HTTP 400, PT422 for HTTP 422
+          enum:
+          - '22023'
+          - PT422
+        message:
+          type: string
+          description: The business code
+          enum:
+          - invalid_import_rows
+          - invalid_source_sha256
+          - import_too_many_rows
+        details:
+          type: string
+          description: 'http_hint=<400|422>;code=<message>'
+        hint:
+          type: string
+          description: Equals message
     ErrorBody:
       type: object
       required:
@@ -5161,6 +6143,7 @@ components:
           - invalid_team
           - invalid_decision
           - default_department_already_decided
+          - assignment_unavailable
         message:
           type: string
           description: 'Must equal code (or human text WITHOUT spoon/HRV numbers). Glass Box.
@@ -5857,17 +6840,38 @@ components:
           type: boolean
           enum:
           - false
-    EarlyLeaveManagerView:
+    ManagerUnavailabilityRow:
       type: object
+      description: v1.6.21 J-156 A / J-169 / J-170 — the ONE row shape a direct manager sees for every unavailability
+        source. No time, כפיות, type, source text, count or reason; no person id.
       properties:
+        entry_id:
+          type: string
+          format: uuid
+          description: Opaque id of the row = the smallest id of the employee-day's parts (J-262 A; for
+            /rpc/rpc_coordinate_approved_absence only)
         display_pseudonym:
           type: string
-          nullable: true
-        entry_text:
+        unavailable_date:
+          type: string
+          format: date
+          description: The employee's own calendar day; today or later
+        availability_he:
           type: string
           enum:
-          - יציאה מוקדמת מאושרת
-        left_at: *id030
+          - לא זמינה
+          description: always 'לא זמינה', today and future (J-255 A, Karin 23.11)
+        coordination_status:
+          type: string
+          enum:
+          - pending_coordination
+          - coordinated
+    EarlyLeaveManagerView:
+      description: Replaced in v1.6.21 (J-156 A) — was pseudonym + 'יציאה מוקדמת מאושרת' + left_at; now the uniform
+        ManagerUnavailabilityRow. Removed in the next version after this one (J-258 A).
+      deprecated: true
+      allOf:
+      - $ref: '#/components/schemas/ManagerUnavailabilityRow'
     TurnoverTier:
       type: object
       properties:
@@ -6707,35 +7711,11 @@ components:
           description: 'v1.6.18 (A-13): scheduled after the end of employment → cancelled (its Golden Spoons refunded;
             never shown to the manager as an EverStore item).'
     ApprovedAbsenceManagerView:
-      type: object
-      description: Direct manager view of approved absence / refresh time entries (pseudonym only, zero link to
-        EverStore, נעילת הפרגוד).
-      properties:
-        absence_id:
-          type: string
-          format: uuid
-        display_pseudonym:
-          type: string
-        requested_date:
-          type: string
-          format: date
-        entry_type:
-          type: string
-          enum:
-          - approved_absence
-        entry_text:
-          type: string
-          enum:
-          - זמן התרעננות / היעדרות מאושרת
-        schedule_status:
-          type: string
-          enum:
-          - pending_coordination
-          - coordinated
-          - cancelled
-        created_at:
-          type: string
-          format: date-time
+      description: Replaced in v1.6.21 (J-156 A / J-170) — was absence_id, display_pseudonym, requested_date, entry_type,
+        entry_text, schedule_status (incl. cancelled) and created_at; now the uniform ManagerUnavailabilityRow. Removed in the next version after this one (J-258 A).
+      deprecated: true
+      allOf:
+      - $ref: '#/components/schemas/ManagerUnavailabilityRow'
     AgentSetting:
       type: object
       description: v1.6.16 agent parameter in effect (company override or default). value_status not_defined → display_he

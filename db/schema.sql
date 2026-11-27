@@ -69,7 +69,8 @@
 --     item automatically creates a standard HR approved absence / refresh time entry
 --     (approved_absence_entry / approved_absence_manager_v: 'זמן התרעננות / היעדרות מאושרת') so the
 --     direct manager coordinates the schedule without ever seeing that it came from EverStore, while
---     shop_purchase / shop_inventory remains strictly hidden from managers.
+--     shop_purchase / shop_inventory remains strictly hidden from managers. (v1.6.21 J-156 A: the manager
+--     now sees only the uniform manager_unavailability_v row — no type or source text.)
 -- New in 1.6.12 (Karin 24.10 + Chief of Drive 24.10):
 --   * O-7: PCQ-12 answer scale locked as 1–6 (Luthans, 12 items, all required), converted linearly
 --     to 0–100 ((mean − 1) / 5.0 × 100, fn_pcq12_score); questionnaire_submission.pcq12_score.
@@ -174,6 +175,36 @@
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- J-354 (Karin 27.11, decided again 27.11): NO extension. An earlier build (d1bdc6f) wrote the refused-stage audit
+-- row through a dblink loopback (schema chr_internal, function fn_audit_view_committed). That is removed. This
+-- block cleans it up on an upgrade and is a no-op on a fresh database. It never touches audit data and never uses
+-- CASCADE: the helper function goes, the dblink extension only when it sits in chr_internal (installed by that
+-- build), the schema only when empty. A role without the right to drop leaves the object and says so.
+DO $cleanup$
+BEGIN
+  BEGIN
+    DROP FUNCTION IF EXISTS fn_audit_view_committed(text, jsonb, uuid, uuid);
+  EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'J-354: fn_audit_view_committed is no longer used; drop it with its owner: DROP FUNCTION fn_audit_view_committed(text, jsonb, uuid, uuid);';
+  END;
+  IF EXISTS (SELECT 1 FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+              WHERE e.extname = 'dblink' AND n.nspname = 'chr_internal') THEN
+    BEGIN
+      DROP EXTENSION dblink;
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE NOTICE 'J-354: the dblink extension in chr_internal is no longer used; a superuser may drop it: DROP EXTENSION dblink; DROP SCHEMA chr_internal;';
+    END;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'chr_internal') THEN
+    BEGIN
+      DROP SCHEMA chr_internal;
+    EXCEPTION WHEN insufficient_privilege OR dependent_objects_still_exist THEN
+      RAISE NOTICE 'J-354: schema chr_internal is no longer used but is not empty or not droppable by this role; left as is.';
+    END;
+  END IF;
+END
+$cleanup$;
 
 -- ---------------------------------------------------------------------------
 -- Auth / role stubs (no-op when Supabase already provides them)
@@ -1097,6 +1128,214 @@ CREATE TABLE IF NOT EXISTS early_leave_log (
 COMMENT ON TABLE early_leave_log IS
   'Locked text only (יציאה מוקדמת מאושרת) + time; no reason, no health data; full workday, no sick day.';
 
+-- early_leave_coordination — v1.6.21 J-169 (Karin, relayed 23.11): every row of the manager's uniform unavailability list
+-- carries a coordination status, so an early-leave day can be coordinated like any other unavailability (the
+-- WORM early_leave_log itself is never updated). One row = "the direct manager coordinated this day". Internal only.
+CREATE TABLE IF NOT EXISTS early_leave_coordination (
+    log_id          uuid PRIMARY KEY REFERENCES early_leave_log(log_id) ON DELETE CASCADE,
+    coordinated_at  timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+ALTER TABLE early_leave_coordination ENABLE ROW LEVEL SECURITY;
+ALTER TABLE early_leave_coordination FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE early_leave_coordination FROM PUBLIC, anon, authenticated;
+
+-- hr_absence_entry — v1.6.21 J-263 B (Karin 23.11): sick leave and other HR-entered absence of ONE employee on ONE
+-- day, so the direct manager's uniform list shows the day as "לא זמינה" like every other source. Entered / cancelled
+-- only by an active vp_hr of the employee's company through SECURITY DEFINER RPCs (audited, J-270 A); one row per
+-- employee per day; a cancellation is a status, never a delete. Retention: לא הוגדר (J-271 B — no go-live block,
+-- no purge job).
+-- J-278 B (Karin 23.11): a row whose kind was never entered (written before the kind existed) has absence_kind
+-- NULL and kind_review_status 'needs_review' — never a guessed kind; vp_hr sets it with rpc_hr_absence_set_kind
+-- (audited). Such a row is not a sick day in the totals until reviewed (J-289). Every other row is 'reviewed'.
+-- J-267 C (Karin 23.11): absence_kind 'sick' / 'other' — HEALTH DATA (a sick day). Required on every write; no
+-- reason, diagnosis or free text. Readable ONLY by the employee herself (audited self-read RPC, J-269 A / J-291 B) and by an
+-- active vp_hr of the company through rpc_hr_absence_list (audited); never by the manager (the uniform list has no
+-- kind), cfo, board, legal_ethics or any view. J-53 "the system holds no sickness data" is superseded for
+-- HR-entered absence only. J-272 B: kind 'sick' days feed the J-80 / J-53 team and board sickness totals (combined
+-- with the manual input, J-276).
+CREATE TABLE IF NOT EXISTS hr_absence_entry (
+    entry_id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id             uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    company_id          uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    absence_date        date NOT NULL,
+    absence_kind        text CONSTRAINT chk_hr_absence_kind CHECK (absence_kind IN ('sick', 'other')),
+    kind_review_status  text NOT NULL DEFAULT 'reviewed'
+                        CONSTRAINT chk_hr_absence_review_status CHECK (kind_review_status IN ('reviewed', 'needs_review')),
+    coordination_status text NOT NULL DEFAULT 'pending_coordination'
+                        CHECK (coordination_status IN ('pending_coordination', 'coordinated')),
+    entered_at          timestamptz NOT NULL DEFAULT clock_timestamp(),
+    cancelled_at        timestamptz,
+    CONSTRAINT uq_hr_absence_user_day UNIQUE (user_id, absence_date),
+    CONSTRAINT chk_hr_absence_kind_reviewed CHECK ((absence_kind IS NULL) = (kind_review_status = 'needs_review'))
+);
+-- J-278 B upgrade — runs ONCE (only while kind_review_status is missing); never guesses a kind:
+--  * from the first J-263 B commit (c56d380: no absence_kind) → every existing row: kind NULL, 'needs_review';
+--  * from the J-267 C commit (8eade64: absence_kind NOT NULL, rows back-filled with 'other') → a back-filled 'other'
+--    cannot be told apart from an 'other' vp_hr entered, so every 'other' row becomes kind NULL, 'needs_review'
+--    (vp_hr confirms it — J-290); 'sick' rows were always entered by vp_hr and stay 'reviewed'.
+DO $$
+DECLARE
+  v_had_kind boolean;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                  WHERE table_schema = 'public' AND table_name = 'hr_absence_entry' AND column_name = 'kind_review_status') THEN
+    v_had_kind := EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_schema = 'public' AND table_name = 'hr_absence_entry' AND column_name = 'absence_kind');
+    IF NOT v_had_kind THEN
+      ALTER TABLE hr_absence_entry ADD COLUMN absence_kind text;
+    END IF;
+    ALTER TABLE hr_absence_entry ALTER COLUMN absence_kind DROP NOT NULL;
+    ALTER TABLE hr_absence_entry ADD COLUMN kind_review_status text NOT NULL DEFAULT 'reviewed';
+    UPDATE hr_absence_entry SET absence_kind = NULL, kind_review_status = 'needs_review'
+     WHERE NOT v_had_kind OR absence_kind IS NULL OR absence_kind = 'other';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_hr_absence_kind'
+                                              AND conrelid = 'hr_absence_entry'::regclass) THEN
+    ALTER TABLE hr_absence_entry ADD CONSTRAINT chk_hr_absence_kind CHECK (absence_kind IN ('sick', 'other'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_hr_absence_review_status'
+                                              AND conrelid = 'hr_absence_entry'::regclass) THEN
+    ALTER TABLE hr_absence_entry ADD CONSTRAINT chk_hr_absence_review_status
+      CHECK (kind_review_status IN ('reviewed', 'needs_review'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_hr_absence_kind_reviewed'
+                                              AND conrelid = 'hr_absence_entry'::regclass) THEN
+    ALTER TABLE hr_absence_entry ADD CONSTRAINT chk_hr_absence_kind_reviewed
+      CHECK ((absence_kind IS NULL) = (kind_review_status = 'needs_review'));
+  END IF;
+END $$;
+COMMENT ON TABLE hr_absence_entry IS
+  'J-263 B / J-267 C: a day of sick leave or other HR-entered absence (vp_hr only, audited). absence_kind sick / other is health data: own rows + vp_hr only, never the manager. No reason or diagnosis. Retention: לא הוגדר.';
+COMMENT ON COLUMN hr_absence_entry.absence_kind IS
+  'J-267 C: sick / other — health data. Readable by the employee (own rows) and the company vp_hr (rpc_hr_absence_list / rpc_hr_absence_list_company) only. NULL only while kind_review_status = needs_review (J-278 B).';
+COMMENT ON COLUMN hr_absence_entry.kind_review_status IS
+  'J-278 B: reviewed | needs_review (a row written before the kind existed; vp_hr sets the kind with rpc_hr_absence_set_kind). Never a guessed kind.';
+ALTER TABLE hr_absence_entry ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_entry FORCE ROW LEVEL SECURITY;
+-- J-291 B (Karin 23.11): NO direct client read any more — the employee reads her own rows only through the audited
+-- SECURITY DEFINER rpc_hr_absence_my_list (every read logged, without the kind), so a read cannot bypass the log.
+-- The J-269 own-rows policy hr_absence_own is REPLACED (dropped on upgrade); RLS stays forced with no policy.
+REVOKE ALL ON TABLE hr_absence_entry FROM PUBLIC, anon, authenticated;
+DROP POLICY IF EXISTS hr_absence_own ON hr_absence_entry;
+
+-- ---------------------------------------------------------------------------
+-- 6c. HR absence bulk import — v1.6.21 J-300 B … J-308 A (Karin 23.11; PR #12)
+--   * users.employee_number (J-300 B): a per-company employee number — unique per company, NULL until set. It
+--     lives on users because the "employee profile" is a flag on users (has_employee_profile), not a table.
+--     Writer: rpc_hr_set_employee_number (vp_hr of the same company only); no HR sync writes it (the PR #13
+--     directory sync matches by e-mail and writes shifts only). Email is the fallback key, case-insensitive.
+--   * hr_absence_import_batch / hr_absence_import_row (J-301 B): staging of ONE uploaded CSV (J-307 C) — written
+--     and read only through the SECURITY DEFINER import RPCs of an active vp_hr of the same company; no client
+--     grant, RLS forced with no policy. The staged rows hold the kind (health data) as typed in the file.
+--     Retention of the file, the staging rows and their size limits: 'לא הוגדר'.
+--   * Karin 25.11 (J-329 C, J-332 B, J-334 A, J-335 A, J-337 B): the employee number is unique and matched
+--     case-insensitively (J-334 A); the dry run stores a fingerprint of what it saw (J-332 B); new outcome
+--     'exception' (identity_mismatch J-329 C, put_cancel_same_day J-337 B); the row limit per file is the agent
+--     setting hr_import_max_rows (empty = 'לא הוגדר' = no limit, J-335 A).
+-- ---------------------------------------------------------------------------
+ALTER TABLE users ADD COLUMN IF NOT EXISTS employee_number text;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_users_employee_number' AND conrelid = 'users'::regclass) THEN
+    ALTER TABLE users ADD CONSTRAINT chk_users_employee_number
+      CHECK (employee_number IS NULL OR (employee_number = btrim(employee_number) AND employee_number <> ''));
+  END IF;
+END $$;
+COMMENT ON COLUMN users.employee_number IS
+  'J-300 B: per-company employee number (the HR import match key; e-mail is the fallback). Unique per company, case-insensitive (J-334 A); NULL until vp_hr sets it (rpc_hr_set_employee_number).';
+-- J-334 A (Karin 25.11): unique per company CASE-INSENSITIVELY — replaces the case-sensitive index of 130bdca
+-- (dropped on upgrade). If an upgraded database holds two numbers of one company that differ only in case, the
+-- index creation fails and the pack stops: the duplicates must be resolved by vp_hr first (never merged silently).
+DROP INDEX IF EXISTS uq_users_company_employee_number;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_company_employee_number_ci ON users (company_id, lower(employee_number))
+  WHERE employee_number IS NOT NULL;
+-- J-300 B fallback: e-mail match inside one company, case-insensitive (users.email is unique case-sensitively only).
+CREATE INDEX IF NOT EXISTS idx_users_company_lower_email ON users (company_id, lower(email));
+
+CREATE TABLE IF NOT EXISTS hr_absence_import_batch (
+    batch_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id      uuid NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    created_by      uuid REFERENCES users(user_id) ON DELETE SET NULL,
+    created_at      timestamptz NOT NULL DEFAULT clock_timestamp(),
+    source_filename text CHECK (source_filename IS NULL OR btrim(source_filename) <> ''),
+    source_sha256   text CHECK (source_sha256 IS NULL OR source_sha256 ~ '^[0-9a-f]{64}$'),
+    status          text NOT NULL DEFAULT 'staged' CHECK (status IN ('staged', 'validated', 'committed')),
+    validated_at    timestamptz,
+    committed_at    timestamptz,
+    committed_by    uuid REFERENCES users(user_id) ON DELETE SET NULL,
+    CONSTRAINT chk_hr_import_batch_committed CHECK ((status = 'committed') = (committed_at IS NOT NULL))
+);
+-- J-332 B (Karin 25.11): what the last dry run saw (fn_hr_import_fingerprint) — the commit refuses when it differs.
+ALTER TABLE hr_absence_import_batch ADD COLUMN IF NOT EXISTS validated_fingerprint text;
+CREATE INDEX IF NOT EXISTS idx_hr_import_batch_company ON hr_absence_import_batch (company_id, created_at DESC);
+
+-- One staged CSV row. The *_text columns keep the file values as typed (trimmed; empty → NULL); the normalised
+-- columns, the match (user_id — internal, never returned) and the outcome are filled by the dry run.
+CREATE TABLE IF NOT EXISTS hr_absence_import_row (
+    batch_id          uuid NOT NULL REFERENCES hr_absence_import_batch(batch_id) ON DELETE CASCADE,
+    row_no            int NOT NULL CHECK (row_no >= 1),
+    employee_number   text,
+    email             text,
+    absence_date_text text,
+    absence_kind_text text,
+    action_text       text,
+    user_id           uuid REFERENCES users(user_id) ON DELETE SET NULL,
+    absence_date      date,
+    absence_kind      text CHECK (absence_kind IS NULL OR absence_kind IN ('sick', 'other')),
+    action            text CHECK (action IS NULL OR action IN ('put', 'cancel')),
+    outcome           text CHECK (outcome IS NULL OR outcome IN ('accepted', 'rejected', 'duplicate', 'superseded', 'exception')),
+    code              text,
+    winner_row_no     int,
+    PRIMARY KEY (batch_id, row_no)
+);
+-- Upgrade from 130bdca: add the 'exception' outcome (J-329 C / J-337 B) to the existing check, same constraint name.
+DO $$
+DECLARE
+  v_name text;
+BEGIN
+  SELECT conname INTO v_name FROM pg_constraint
+   WHERE conrelid = 'hr_absence_import_row'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%outcome%';
+  IF v_name IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = v_name
+                                          AND conrelid = 'hr_absence_import_row'::regclass
+                                          AND pg_get_constraintdef(oid) LIKE '%exception%') THEN
+    EXECUTE format('ALTER TABLE hr_absence_import_row DROP CONSTRAINT %I', v_name);
+    EXECUTE format($c$ALTER TABLE hr_absence_import_row ADD CONSTRAINT %I CHECK (outcome IS NULL OR outcome IN
+                     ('accepted', 'rejected', 'duplicate', 'superseded', 'exception'))$c$, v_name);
+  END IF;
+END $$;
+
+-- J-301 B: a committed batch is final — its header and rows can no longer change (a second commit is refused by the
+-- RPC as well). Trigger function for both tables; deletes are left to ON DELETE CASCADE of the company.
+CREATE OR REPLACE FUNCTION fn_hr_import_committed_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM hr_absence_import_batch b WHERE b.batch_id = OLD.batch_id AND b.status = 'committed') THEN
+    RAISE EXCEPTION 'import_batch_committed'
+      USING ERRCODE = '23505', DETAIL = 'http_hint=409;code=import_batch_committed', HINT = 'import_batch_committed';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS trg_hr_import_batch_committed ON hr_absence_import_batch;
+CREATE TRIGGER trg_hr_import_batch_committed BEFORE UPDATE ON hr_absence_import_batch
+    FOR EACH ROW EXECUTE FUNCTION fn_hr_import_committed_immutable();
+DROP TRIGGER IF EXISTS trg_hr_import_row_committed ON hr_absence_import_row;
+CREATE TRIGGER trg_hr_import_row_committed BEFORE UPDATE ON hr_absence_import_row
+    FOR EACH ROW EXECUTE FUNCTION fn_hr_import_committed_immutable();
+REVOKE ALL ON FUNCTION fn_hr_import_committed_immutable() FROM PUBLIC;
+
+COMMENT ON TABLE hr_absence_import_batch IS
+  'J-301 B: one HR absence import (CSV, J-307 C) of one company — staged → validated (dry run) → committed (once). Import RPCs of an active vp_hr of the company only; retention לא הוגדר.';
+COMMENT ON TABLE hr_absence_import_row IS
+  'J-301 B: the staged rows of an import batch, with the dry-run outcome. Holds the kind as typed (health data). Import RPCs only; retention לא הוגדר.';
+ALTER TABLE hr_absence_import_batch ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_import_batch FORCE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_import_row ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hr_absence_import_row FORCE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE hr_absence_import_batch, hr_absence_import_row FROM PUBLIC, anon, authenticated;
+
 -- ---------------------------------------------------------------------------
 -- 7. team_aggregate — REGULAR team data, N ≥ 5 ACTUAL contributors (lock #3)
 -- Deprivation tax (count × avg × 0.12), turnover range sums, TPS-12 team average.
@@ -1454,7 +1693,8 @@ UPDATE shop_item_catalog
 --     it converts automatically through HR into a standard approved absence / refresh time entry
 --     ('זמן התרעננות / היעדרות מאושרת') with NO link to shop_purchase, item_id, or Golden Spoons,
 --     so the direct manager coordinates the schedule via approved_absence_manager_v without ever
---     seeing that the voucher came from an EverStore purchase.
+--     seeing that the voucher came from an EverStore purchase. (v1.6.21 J-156 A / J-170: that view is now an
+--     identical alias of the uniform manager_unavailability_v — date, "לא זמינה", status only.)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS shop_purchase (
     purchase_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -2572,64 +2812,15 @@ $$;
 CREATE OR REPLACE VIEW cuckoo_alert_manager_v AS
   SELECT * FROM fn_cuckoo_manager_inbox();
 
--- Early-leave notices for the calling direct manager: pseudonym + locked text + time.
-CREATE OR REPLACE FUNCTION fn_early_leave_manager_feed()
-RETURNS TABLE (display_pseudonym varchar, entry_text text, left_at timestamptz)
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-  SELECT u.display_pseudonym, l.entry_text, l.left_at
-    FROM early_leave_log l
-    JOIN users u ON u.user_id = l.user_id
-   WHERE u.reports_to = auth.uid()
-     AND fn_viewer_may_see_pseudonyms()   -- B2: CEO / owners / board see averages only
-$$;
-
-CREATE OR REPLACE VIEW early_leave_manager_v AS
-  SELECT * FROM fn_early_leave_manager_feed();
-
--- v1.6.13 (נעילת הפרגוד): Standard HR approved absence / refresh time feed for the direct manager.
--- Exposes pseudonym, requested_date, locked text 'זמן התרעננות / היעדרות מאושרת', schedule_status, created_at;
--- NEVER exposes whether the entry came from an EverStore time_benefit voucher, item_id, or Golden Spoons.
-CREATE OR REPLACE FUNCTION fn_approved_absence_manager_feed()
-RETURNS TABLE (
-  absence_id        uuid,
-  display_pseudonym varchar,
-  requested_date    date,
-  entry_type        text,
-  entry_text        text,
-  schedule_status   text,
-  created_at        timestamptz
-)
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-SET search_path = pg_catalog, public
-AS $$
-  SELECT a.absence_id, u.display_pseudonym, a.requested_date, a.entry_type, a.entry_text, a.schedule_status, a.created_at
-    FROM approved_absence_entry a
-    JOIN users u ON u.user_id = a.user_id
-   WHERE u.reports_to = auth.uid()
-     AND fn_viewer_may_see_pseudonyms()
-$$;
-
-CREATE OR REPLACE VIEW approved_absence_manager_v AS
-  SELECT * FROM fn_approved_absence_manager_feed();
+-- v1.6.21 J-156 A / J-169 / J-170 (Karin, relayed by Chief of Drive 23.11): the two type-revealing manager feeds
+-- (early_leave_manager_v: locked early-leave text + left_at; approved_absence_manager_v: entry_type / entry_text /
+-- created_at, all dates) are REPLACED by one uniform list — see rpc.sql "Manager unavailability list"
+-- (manager_unavailability_v; the two old view names stay as identical aliases of it).
 
 REVOKE ALL ON FUNCTION fn_cuckoo_manager_inbox() FROM PUBLIC;
-REVOKE ALL ON FUNCTION fn_early_leave_manager_feed() FROM PUBLIC;
-REVOKE ALL ON FUNCTION fn_approved_absence_manager_feed() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION fn_cuckoo_manager_inbox() TO authenticated;
-GRANT EXECUTE ON FUNCTION fn_early_leave_manager_feed() TO authenticated;
-GRANT EXECUTE ON FUNCTION fn_approved_absence_manager_feed() TO authenticated;
 REVOKE ALL ON TABLE cuckoo_alert_manager_v FROM PUBLIC, anon;
-REVOKE ALL ON TABLE early_leave_manager_v FROM PUBLIC, anon;
-REVOKE ALL ON TABLE approved_absence_manager_v FROM PUBLIC, anon;
 GRANT SELECT ON TABLE cuckoo_alert_manager_v TO authenticated;
-GRANT SELECT ON TABLE early_leave_manager_v TO authenticated;
-GRANT SELECT ON TABLE approved_absence_manager_v TO authenticated;
 
 -- =============================================================================
 -- v1.6.1 — role tree, access audit, notifications, projects, emergency mode,
@@ -4306,7 +4497,10 @@ INSERT INTO agent_settings (company_id, setting_key, value_kind, value_numeric, 
   (NULL, 'movement_rate_multiplier',      'numeric', 1.5,  NULL, 'set',         true,  'Karin 30.10: 5th signal — team rate ≥ 1.5 × organization average'),
   (NULL, 'movement_min_events',           'numeric', 2,    NULL, 'set',         true,  'Karin 30.10: 5th signal — at least 2 events'),
   (NULL, 'movement_min_team_size',        'numeric', 10,   NULL, 'set',         true,  'Karin 30.10: 5th signal is SENSITIVE — shown only for teams of ≥ 10 employees'),
-  (NULL, 'movement_window_months',        'numeric', 3,    NULL, 'set',         true,  'Karin 30.10: events of the last 3 months ÷ employees in the team')
+  (NULL, 'movement_window_months',        'numeric', 3,    NULL, 'set',         true,  'Karin 30.10: events of the last 3 months ÷ employees in the team'),
+  -- J-335 A (Karin 25.11): row limit per HR absence import file — starts EMPTY (לא הוגדר = no limit enforced);
+  -- a company sets a whole number ≥ 1 with rpc_put_agent_setting.
+  (NULL, 'hr_import_max_rows',            'numeric', NULL, NULL, 'not_defined', false, 'J-335 A (Karin 25.11): rows per HR absence import file — לא הוגדר')
 ON CONFLICT ((COALESCE(company_id, '00000000-0000-0000-0000-000000000000'::uuid)), setting_key) DO UPDATE SET
   value_kind = EXCLUDED.value_kind, value_numeric = EXCLUDED.value_numeric, value_text = EXCLUDED.value_text,
   value_status = EXCLUDED.value_status, is_locked = EXCLUDED.is_locked, source_note = EXCLUDED.source_note;
@@ -4812,6 +5006,7 @@ CREATE TABLE IF NOT EXISTS company_key_role_setting (
 CREATE INDEX IF NOT EXISTS idx_ckrs_company ON company_key_role_setting (company_id, set_at DESC);
 
 -- board_absence_input — v1.6.19-r2 (Karin 31.10, J-53): board absences = sickness + unplanned absence only, as
+-- [v1.6.21 J-267 C: "no sickness data" is SUPERSEDED for HR-entered absence only — hr_absence_entry.absence_kind]
 -- aggregate monthly day counts entered by cfo / vp_hr (the system holds no sickness / unplanned-absence data;
 -- planned vacation and EverStore time benefits are not counted and have no column here).
 -- v1.6.19-r3 (J-85): NO LONGER USED — the board total is the sum of team_absence_input rows; kept (rows not deleted).

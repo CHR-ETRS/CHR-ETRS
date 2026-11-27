@@ -584,25 +584,26 @@ RESET ROLE;
 SELECT t_assert('A-13: nothing was moved earlier automatically — the cancelled entries keep their own dates (today + 3, today + 10)',
   (SELECT array_agg(requested_date - (SELECT today FROM t_a13) ORDER BY requested_date) = '{3,10}'
      FROM approved_absence_entry WHERE user_id = t_u('tb1') AND schedule_status = 'cancelled'));
--- The direct manager: sees the cancellation as a plain HR status (no EverStore trace) and cannot reschedule it.
+-- The direct manager (J-156 A / J-169 / J-170, replaces the A-13 "manager sees the 4 entries" view check): the uniform
+-- list shows nothing of an ex-employee (no cancelled entries, no history), and she cannot coordinate those entries.
 -- (Manager-view rows carry the pseudonym by design, so they are kept out of the agent-output sweep table.)
 CREATE TEMP TABLE t_a13_mgr (j jsonb);
-GRANT SELECT, INSERT ON t_a13_mgr TO authenticated;
+CREATE TEMP TABLE t_a13_mgr_ids AS
+  SELECT absence_id, schedule_status FROM approved_absence_entry WHERE user_id = t_u('tb1');
+GRANT SELECT, INSERT ON t_a13_mgr, t_a13_mgr_ids TO authenticated;
 SELECT t_as(t_u('mgrD'));
 SET ROLE authenticated;
-INSERT INTO t_a13_mgr SELECT jsonb_agg(to_jsonb(v)) FROM approved_absence_manager_v v;
+INSERT INTO t_a13_mgr SELECT COALESCE(jsonb_agg(to_jsonb(v)), '[]'::jsonb) FROM approved_absence_manager_v v;
 SELECT t_expect_http('A-13: the manager cannot coordinate a cancelled entry → 403',
-  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT absence_id FROM approved_absence_manager_v WHERE schedule_status = 'cancelled' LIMIT 1), NULL)$$,
+  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT absence_id FROM t_a13_mgr_ids WHERE schedule_status = 'cancelled' LIMIT 1))$$,
   'anti_get_blocked', 403);
-SELECT t_expect_http('A-13: …nor move an ex-employee''s remaining entry → 403',
-  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT absence_id FROM approved_absence_manager_v WHERE schedule_status <> 'cancelled' LIMIT 1), NULL)$$,
+SELECT t_expect_http('A-13: …nor an ex-employee''s remaining entry → 403',
+  $$SELECT * FROM rpc_coordinate_approved_absence((SELECT absence_id FROM t_a13_mgr_ids WHERE schedule_status <> 'cancelled' LIMIT 1))$$,
   'anti_get_blocked', 403);
 RESET ROLE;
-SELECT t_assert('A-13 Curtain: the manager view shows the 4 entries (2 cancelled) with the locked HR text only — no purchase, item, price or Golden Spoons field',
-  (SELECT jsonb_array_length(j) = 4
-          AND (SELECT count(*) = 2 FROM jsonb_array_elements(j) e WHERE e->>'schedule_status' = 'cancelled')
-          AND (SELECT bool_and(e->>'entry_text' = 'זמן התרעננות / היעדרות מאושרת') FROM jsonb_array_elements(j) e)
-          AND j::text !~* '(purchase|item_id|spoon|price|everstore|voucher|refund)'
+SELECT t_assert('A-13 Curtain / J-156 A: the manager''s uniform list shows no entry of the ex-employee (no cancelled rows, no history) and no purchase, item, price, Golden Spoons or type field',
+  (SELECT jsonb_array_length(j) = 0
+          AND j::text !~* '(purchase|item_id|spoon|price|everstore|voucher|refund|entry_type|entry_text|left_at)'
      FROM t_a13_mgr));
 -- A regular move-earlier request before the end (tb2): allowed; after the end: refused.
 SELECT t_as(t_u('tb2'));

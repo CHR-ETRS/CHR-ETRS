@@ -726,8 +726,9 @@ SELECT t_assert('J-54: a cancelled absence is not an absence (team OPS 1 — of 
   fn_team_month_absences(t_u('cS'), 'OPS', (SELECT m FROM t_m)) = 1
   AND fn_company_month_absences(t_u('cS'), (SELECT m FROM t_m)) = 1);
 -- J-88 (Karin 31.10, approved): the exact 3-line absence definition, letter for letter, with no 'טיוטה'.
-CREATE TEMP TABLE t_absdef AS SELECT 'היעדרויות = סך ימי המחלה וההיעדרות הלא מתוכננת בצוות בחודש, כולל יציאה מוקדמת שלא אושרה מראש.' || chr(10) || 'לא נספרים: היעדרות מאושרת וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש.' || chr(10) || 'המקור: הזנה חודשית של vp_hr, בלי פירוט לפי עובד.' AS txt;
-SELECT t_assert('J-88: fn_absence_definition_he returns Karin''s approved text exactly — 3 lines, letter for letter, no "טיוטה"',
+-- J-281 A (Karin 23.11): line 3 gains "וימים בודדים ש-vp_hr מזינה" (was: "המקור: הזנה חודשית של vp_hr, בלי פירוט לפי עובד.").
+CREATE TEMP TABLE t_absdef AS SELECT 'היעדרויות = סך ימי המחלה וההיעדרות הלא מתוכננת בצוות בחודש, כולל יציאה מוקדמת שלא אושרה מראש.' || chr(10) || 'לא נספרים: היעדרות מאושרת וזמן התרעננות, חופשה מתוכננת, הטבות זמן מ-EverStore ויציאה מוקדמת שאושרה מראש.' || chr(10) || 'המקור: הזנה חודשית של vp_hr וימים בודדים ש-vp_hr מזינה, בלי פירוט לפי עובד.' AS txt;
+SELECT t_assert('J-88 / J-281 A: fn_absence_definition_he returns Karin''s approved text exactly — 3 lines, letter for letter, no "טיוטה"',
   fn_absence_definition_he() = (SELECT txt FROM t_absdef)
   AND array_length(string_to_array(fn_absence_definition_he(), chr(10)), 1) = 3
   AND md5(fn_absence_definition_he()) = md5((SELECT txt FROM t_absdef))
